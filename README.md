@@ -453,15 +453,6 @@ You can modify these variables in the workflow file's `env:` section:
 | `OLLAMA_MODEL` | AI model to use | `llama3:latest` |
 | `MIN_SEVERITY` | Minimum severity to report | `high` |
 
-### Trigger Configuration
-
-Current configuration runs on:
-- Pushes to `main` and `develop` branches
-- Pull requests targeting `main` and `develop` branches
-
-Commented optional triggers available:
-- Scheduled runs (e.g., weekly scans)
-- Manual workflow dispatch
 
 ---
 
