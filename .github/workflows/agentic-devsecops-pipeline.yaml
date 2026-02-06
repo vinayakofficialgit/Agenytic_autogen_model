@@ -1,0 +1,343 @@
+# DevSecOps Agentic AI Pipeline - GitHub Actions Workflow
+
+name: DevSecOps Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+#  schedule:
+#    - cron: '0 6 * * 1'  # Weekly on Monday at 6 AM#
+#  workflow_dispatch:  # Manual trigger
+
+env:
+  PYTHON_VERSION: '3.12'
+  REPORTS_DIR: 'reports'
+  OUTPUT_DIR: 'agent_output'
+  # LLM Configuration (optional - set in repo secrets)
+  LLM_ENABLED: '1'
+  OLLAMA_MODEL: 'llama3:latest'
+  MIN_SEVERITY: 'high'
+
+jobs:
+  # ============================================================
+  # JOB 1: Security Scanning
+  # ============================================================
+  security-scan:
+    name: 🔍 Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for gitleaks
+
+      - name: 📁 Create Reports Directory
+        run: mkdir -p ${{ env.REPORTS_DIR }}
+
+      # ----------------------------------------
+      # SEMGREP - Code Security
+      # ----------------------------------------
+      - name: 🔬 Install Semgrep
+        run: pip install semgrep
+
+      - name: 🔬 Run Semgrep Scan
+        continue-on-error: true
+        run: |
+          semgrep scan \
+            --config=auto \
+            --json \
+            --output=${{ env.REPORTS_DIR }}/semgrep.json \
+            . || echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/semgrep.json
+
+      # ----------------------------------------
+      # TRIVY - Vulnerability Scanner
+      # ----------------------------------------
+      - name: 🐳 Install Trivy
+        run: |
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: 🐳 Run Trivy FS Scan
+        continue-on-error: true
+        run: |
+          trivy fs \
+            --format json \
+            --output ${{ env.REPORTS_DIR }}/trivy.json \
+            . || echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy.json
+
+      - name: 🐳 Run Trivy Image Scan (if Dockerfile exists)
+        continue-on-error: true
+        run: |
+          if [ -f "Dockerfile" ] || [ -f "app/Dockerfile" ]; then
+            # Build image first
+            docker build -t scan-target:latest . 2>/dev/null || true
+            trivy image \
+              --format json \
+              --output ${{ env.REPORTS_DIR }}/trivy-image.json \
+              scan-target:latest 2>/dev/null || echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy-image.json
+          else
+            echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy-image.json
+          fi
+
+      # ----------------------------------------
+      # TFSEC - Terraform Security
+      # ----------------------------------------
+      - name: ☁️ Install tfsec
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+
+      - name: ☁️ Run tfsec Scan
+        continue-on-error: true
+        run: |
+          if [ -d "terraform" ]; then
+            tfsec terraform/ --format json > ${{ env.REPORTS_DIR }}/tfsec.json 2>/dev/null || echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/tfsec.json
+          else
+            echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/tfsec.json
+          fi
+
+      # ----------------------------------------
+      # GITLEAKS - Secret Detection
+      # ----------------------------------------
+      - name: 🔑 Install Gitleaks
+        run: |
+          wget -qO gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: 🔑 Run Gitleaks Scan
+        continue-on-error: true
+        run: |
+          gitleaks detect \
+            --source . \
+            --report-format json \
+            --report-path ${{ env.REPORTS_DIR }}/gitleaks.json \
+            --no-git 2>/dev/null || echo '[]' > ${{ env.REPORTS_DIR }}/gitleaks.json
+
+      # ----------------------------------------
+      # CONFTEST - Policy Checks (if policies exist)
+      # ----------------------------------------
+      - name: 📋 Install Conftest
+        run: |
+          wget -qO conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/download/v0.46.2/conftest_0.46.2_Linux_x86_64.tar.gz
+          tar -xzf conftest.tar.gz
+          sudo mv conftest /usr/local/bin/
+
+      - name: 📋 Run Conftest Scans
+        continue-on-error: true
+        run: |
+          # Dockerfile policy
+          if [ -f "Dockerfile" ] && [ -d "policy/dockerfile" ]; then
+            conftest test Dockerfile --policy policy/dockerfile --output json > ${{ env.REPORTS_DIR }}/conftest-dockerfile.json 2>/dev/null || echo '[]' > ${{ env.REPORTS_DIR }}/conftest-dockerfile.json
+          else
+            echo '[]' > ${{ env.REPORTS_DIR }}/conftest-dockerfile.json
+          fi
+          
+          # K8s policy
+          if [ -d "k8s" ] && [ -d "policy/kubernetes" ]; then
+            conftest test k8s/*.yaml --policy policy/kubernetes --output json > ${{ env.REPORTS_DIR }}/conftest-k8s.json 2>/dev/null || echo '[]' > ${{ env.REPORTS_DIR }}/conftest-k8s.json
+          else
+            echo '[]' > ${{ env.REPORTS_DIR }}/conftest-k8s.json
+          fi
+          
+          # Terraform policy
+          if [ -d "terraform" ] && [ -d "policy/terraform" ]; then
+            conftest test terraform/*.tf --policy policy/terraform --output json > ${{ env.REPORTS_DIR }}/conftest-terraform.json 2>/dev/null || echo '[]' > ${{ env.REPORTS_DIR }}/conftest-terraform.json
+          else
+            echo '[]' > ${{ env.REPORTS_DIR }}/conftest-terraform.json
+          fi
+
+      # ----------------------------------------
+      # Upload Reports as Artifact
+      # ----------------------------------------
+      - name: 📤 Upload Scan Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: ${{ env.REPORTS_DIR }}/
+          retention-days: 30
+
+  # ============================================================
+  # JOB 2: AI Analysis
+  # ============================================================
+  ai-analysis:
+    name: 🤖 AI Analysis
+    runs-on: ubuntu-latest
+    needs: security-scan
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install requests pyyaml
+
+      - name: 📥 Download Scan Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: security-reports
+          path: ${{ env.REPORTS_DIR }}/
+
+      - name: 📁 Create Output Directory
+        run: mkdir -p ${{ env.OUTPUT_DIR }}
+
+      
+      - name: 🤖 Setup Ollama (Optional)
+        continue-on-error: true
+        run: |
+          # Install Ollama
+          curl -fsSL https://ollama.com/install.sh | sh
+          
+          # Start Ollama in background
+          ollama serve &
+          sleep 5
+          
+          # Pull model (use smaller model for CI)
+          ollama pull llama3:8b-instruct-q4_0 || true
+          
+          # Set environment
+          echo "OLLAMA_URL=http://localhost:11434" >> $GITHUB_ENV
+          echo "OLLAMA_MODEL=llama3:8b-instruct-q4_0" >> $GITHUB_ENV
+        timeout-minutes: 10
+
+      # ----------------------------------------
+      # Run AI Pipeline
+      # ----------------------------------------
+      - name: 🔬 Run AI Analysis Pipeline
+        id: analysis
+        run: |
+          python main.py --outputs-env $GITHUB_OUTPUT
+        env:
+          LLM_ENABLED: ${{ env.LLM_ENABLED }}
+          OLLAMA_URL: ${{ env.OLLAMA_URL || 'http://localhost:11434' }}
+          OLLAMA_MODEL: ${{ env.OLLAMA_MODEL || 'llama3:latest' }}
+          MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
+          LLM_VERBOSE: '0'
+          OLLAMA_NUM_CTX: '8192'
+          OLLAMA_NUM_PREDICT: '2048'
+
+      - name: 📤 Upload Analysis Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-analysis-results
+          path: ${{ env.OUTPUT_DIR }}/
+          retention-days: 30
+
+      - name: 📊 Display Summary
+        run: |
+          echo "## 🛡️ Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
+            STATUS=$(cat ${{ env.OUTPUT_DIR }}/decision.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','unknown'))")
+            REASON=$(cat ${{ env.OUTPUT_DIR }}/decision.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('reason',''))")
+            
+            if [ "$STATUS" = "fail" ]; then
+              echo "### ❌ Status: FAILED" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ Status: PASSED" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Reason:** $REASON" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "${{ env.OUTPUT_DIR }}/pr_comment.md" ]; then
+            echo "### 📝 Details" >> $GITHUB_STEP_SUMMARY
+            cat ${{ env.OUTPUT_DIR }}/pr_comment.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+    outputs:
+      pipeline_status: ${{ steps.analysis.outputs.pipeline_status }}
+      open_pr: ${{ steps.analysis.outputs.open_pr }}
+
+  # ============================================================
+  # JOB 3: PR Comment (only on pull requests)
+  # ============================================================
+  pr-comment:
+    name: 💬 PR Comment
+    runs-on: ubuntu-latest
+    needs: ai-analysis
+    if: github.event_name == 'pull_request'
+    
+    permissions:
+      pull-requests: write
+    
+    steps:
+      - name: 📥 Download Analysis Results
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-analysis-results
+          path: ${{ env.OUTPUT_DIR }}/
+
+      - name: 💬 Post PR Comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let comment = '## 🛡️ Security Scan Results\n\n';
+            
+            // Read PR comment file if exists
+            const prCommentPath = '${{ env.OUTPUT_DIR }}/pr_comment.md';
+            if (fs.existsSync(prCommentPath)) {
+              comment += fs.readFileSync(prCommentPath, 'utf8');
+            } else {
+              comment += '⚠️ No detailed results available.\n';
+            }
+            
+            // Add footer
+            comment += '\n\n---\n';
+            comment += '_Generated by DevSecOps Agentic AI Pipeline_';
+            
+            // Post comment
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  # ============================================================
+  # JOB 4: Gate Check (fail pipeline if needed)
+  # ============================================================
+  gate-check:
+    name: 🚦 Security Gate
+    runs-on: ubuntu-latest
+    needs: ai-analysis
+    
+    steps:
+      - name: 📥 Download Analysis Results
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-analysis-results
+          path: ${{ env.OUTPUT_DIR }}/
+
+      - name: 🚦 Check Security Gate
+        run: |
+          if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
+            STATUS=$(cat ${{ env.OUTPUT_DIR }}/decision.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','ok'))")
+            
+            if [ "$STATUS" = "fail" ]; then
+              echo "❌ Security gate FAILED"
+              echo "Review the findings and fix HIGH/CRITICAL issues before merging."
+              exit 1
+            else
+              echo "✅ Security gate PASSED"
+            fi
+          else
+            echo "⚠️ No decision file found, passing by default"
+          fi
