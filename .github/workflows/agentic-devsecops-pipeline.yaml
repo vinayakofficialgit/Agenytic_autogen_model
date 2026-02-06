@@ -10,12 +10,12 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
-  schedule:
-    - cron: '0 6 * * 1'
-  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 6 * * 1'
+  # workflow_dispatch:
 
 env:
-  PYTHON_VERSION: '3.11'
+  PYTHON_VERSION: '3.12'
   REPORTS_DIR: 'reports'
   OUTPUT_DIR: 'agent_output'
   LLM_ENABLED: '1'
