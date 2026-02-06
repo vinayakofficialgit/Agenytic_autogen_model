@@ -1,0 +1,23 @@
+
+{
+  "Results": [
+    {
+      "Target": "Dockerfile",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2025-0001",
+          "Severity": "HIGH",
+          "Title": "Example OpenSSL issue",
+          "PkgName": "openssl"
+        }
+      ],
+      "Misconfigurations": [
+        {
+          "ID": "AVD-TRIVY-0001",
+          "Severity": "MEDIUM",
+          "Title": "Root user in Dockerfile"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "severity": "high",
+      "category": "code",
+      "location": "app/main.py:12",
+      "tool": "semgrep",
+      "id": "TEST001",
+      "message": "Hardcoded password detected"
+    }
+  ]
+}

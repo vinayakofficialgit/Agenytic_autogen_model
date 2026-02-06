@@ -1,0 +1,31 @@
+{
+  "semgrep": [
+    {
+      "file": "app/main.py",
+      "line": 12,
+      "rule_id": "TEST001",
+      "severity": "high",
+      "suggestion": "[Fallback]\n\n**Issue**: Hardcoded credential in app/main.py:12\n\n**Fix**:\n```python\n# Replace hardcoded value with:\nimport os\nvalue = os.environ.get('SECRET_NAME')\n```\n\n**Action**: Add the secret to your .env file and ensure .env is in .gitignore",
+      "used_fallback": true
+    }
+  ],
+  "trivy_fs": [
+    {
+      "file": "Dockerfile",
+      "id": "CVE-2025-0001",
+      "severity": "high",
+      "suggestion": "[Fallback]\n\n**Issue**: the vulnerability in Dockerfile\n\n**Fix**:\n```bash\n# Update the affected package:\npip install --upgrade <package-name>\n# Or update Docker base image:\ndocker pull <image>:latest\n```\n\n**Action**: Check if a patched version is available",
+      "used_fallback": true
+    },
+    {
+      "file": "Dockerfile",
+      "id": "AVD-TRIVY-0001",
+      "severity": "medium",
+      "suggestion": "[Fallback]\n\n**Issue**: the vulnerability in Dockerfile\n\n**Fix**:\n```bash\n# Update the affected package:\npip install --upgrade <package-name>\n# Or update Docker base image:\ndocker pull <image>:latest\n```\n\n**Action**: Check if a patched version is available",
+      "used_fallback": true
+    }
+  ],
+  "notes": [
+    "Used 3 fallback suggestion(s) - LLM was unavailable."
+  ]
+}

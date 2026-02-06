@@ -1,0 +1,8 @@
+
+pyyaml
+autogen-agentchat
+autogen-ext[ollama]
+rich
+# Optional (only if you enable llm.enabled):
+# autogen-agentchat
+# autogen-ext[openai]
