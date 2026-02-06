@@ -257,8 +257,8 @@ jobs:
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           subject: "${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
-          to: ${{ vars.NOTIFICATION_EMAIL }}
-          from: "DevSecOps Pipeline <${{ secrets.GMAIL_USERNAME }}>"
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: "Agentic Pipeline DevSecOps Pipeline Vinayak<${{ secrets.GMAIL_USERNAME }}>"
           body: |
             ═══════════════════════════════════════════════════════════
                         DevSecOps Security Scan Report
