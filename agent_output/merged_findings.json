@@ -10,33 +10,18 @@
         "snippet": ""
       }
     ],
-    "trivy_fs": [
-      {
-        "file": "Dockerfile",
-        "id": "CVE-2025-0001",
-        "severity": "high",
-        "summary": "Example OpenSSL issue",
-        "snippet": ""
-      },
-      {
-        "file": "Dockerfile",
-        "id": "AVD-TRIVY-0001",
-        "severity": "medium",
-        "summary": "Root user in Dockerfile",
-        "snippet": ""
-      }
-    ],
+    "trivy_fs": [],
     "trivy_image": [],
     "tfsec": [],
     "gitleaks": [],
     "conftest": [],
     "zap": [],
     "_meta": {
-      "count": 3,
-      "flat_count": 3,
+      "count": 1,
+      "flat_count": 1,
       "by_tool": {
         "semgrep": 1,
-        "trivy_fs": 2,
+        "trivy_fs": 0,
         "trivy_image": 0,
         "tfsec": 0,
         "gitleaks": 0,

@@ -9,22 +9,7 @@
       "snippet": ""
     }
   ],
-  "trivy_fs": [
-    {
-      "file": "Dockerfile",
-      "id": "CVE-2025-0001",
-      "severity": "high",
-      "summary": "Example OpenSSL issue",
-      "snippet": ""
-    },
-    {
-      "file": "Dockerfile",
-      "id": "AVD-TRIVY-0001",
-      "severity": "medium",
-      "summary": "Root user in Dockerfile",
-      "snippet": ""
-    }
-  ],
+  "trivy_fs": [],
   "trivy_image": [],
   "tfsec": [],
   "gitleaks": [],

@@ -5,8 +5,8 @@
       "line": 12,
       "rule_id": "TEST001",
       "severity": "high",
-      "suggestion": "[Fallback]\n\n**Issue**: Hardcoded credential in app/main.py:12\n\n**Fix**:\n```python\n# Replace hardcoded value with:\nimport os\nvalue = os.environ.get('SECRET_NAME')\n```\n\n**Action**: Add the secret to your .env file and ensure .env is in .gitignore",
-      "used_fallback": true
+      "suggestion": "**Risk Explanation**\n\nThe hardcoded password is a significant security risk as it can be easily discovered and exploited by an attacker. This allows unauthorized access to sensitive areas of the application, potentially leading to data breaches or other malicious activities.\n\n**Minimal Patch**\n\nHere's a minimal patch to address the issue:\n```diff\n--- app/main.py (original)\n+++ app/main.py (patched)\n@@ -12,6 +12,7 @@\n+import os\n\n```\n\nThe patch imports the `os` module and removes the hardcoded password. This change does not affect the functionality of the application.\n\n**Follow-up Tasks**\n\n1. **Testing**: Run automated tests to ensure that the patched code does not introduce any new bugs or regressions.\n2. **Configuration**: Review the configuration files (e.g., environment variables, secrets management) to ensure that sensitive data is properly stored and managed.\n3. **Code Review**: Perform a thorough code review to identify any other potential security vulnerabilities or areas for improvement.\n\nNote: The patch only removes the hardcoded password and does not address the underlying issue of storing sensitive data in plain text. A more comprehensive solution would involve implementing a secure secrets management system, such as environment variables or a secrets manager like HashiCorp's Vault.",
+      "used_fallback": false
     }
   ],
   "trivy_fs": [
@@ -14,18 +14,16 @@
       "file": "Dockerfile",
       "id": "CVE-2025-0001",
       "severity": "high",
-      "suggestion": "[Fallback]\n\n**Issue**: the vulnerability in Dockerfile\n\n**Fix**:\n```bash\n# Update the affected package:\npip install --upgrade <package-name>\n# Or update Docker base image:\ndocker pull <image>:latest\n```\n\n**Action**: Check if a patched version is available",
-      "used_fallback": true
+      "suggestion": "A Trivy-FS finding!\n\n**Task 1: Identify the insecure setting**\n\nAfter reviewing the Dockerfile, I found that the issue is likely related to an outdated version of OpenSSL being used. This is a high-severity vulnerability (CVE-2025-0001).\n\n**Task 2: Provide a minimal unified diff for the file (if text-based)**\n\nTo address this issue, we can update the OpenSSL version in the Dockerfile. Here's a minimal unified diff:\n```\n--- a/Dockerfile\n+++ b/Dockerfile\n@@ -12,7 +12,7 @@\nRUN apt-get update && \\\n    apt-get install -y --no-install-recommends openssl=1.1.1k-1ubuntu1.2\n```\nThis diff updates the OpenSSL version to 1.1.1k-1ubuntu1.2, which is a more secure version.\n\n**Task 3: Note any deployment/policy implications**\n\nTo ensure this change does not introduce any issues during deployment or in our security policies, we should:\n\n* Verify that the updated OpenSSL version does not break any existing dependencies or functionality.\n* Update our vulnerability scanning tools to detect this specific CVE (CVE-2025-0001).\n* Consider implementing a policy to regularly update and patch dependencies, including OpenSSL.\n\nBy making these changes, we can ensure our cloud-based application is more secure and compliant with industry standards.",
+      "used_fallback": false
     },
     {
       "file": "Dockerfile",
       "id": "AVD-TRIVY-0001",
       "severity": "medium",
-      "suggestion": "[Fallback]\n\n**Issue**: the vulnerability in Dockerfile\n\n**Fix**:\n```bash\n# Update the affected package:\npip install --upgrade <package-name>\n# Or update Docker base image:\ndocker pull <image>:latest\n```\n\n**Action**: Check if a patched version is available",
-      "used_fallback": true
+      "suggestion": "A Trivy-FS finding!\n\n**Task 1: Identify the insecure setting**\n\nThe issue is that the Dockerfile uses the `root` user, which is a security risk as it allows arbitrary code execution with elevated privileges.\n\n**Task 2: Provide a minimal unified diff for the file (if text-based)**\n\nHere's a suggested fix:\n```diff\n--- original/Dockerfile\n+++ modified/Dockerfile\n@@ -1 +1 @@\n-USER root\n+USER 1000:1000\n```\nIn this example, we're changing the `root` user to a non-root user with a specific UID (1000) and GID (also 1000). This is a more secure default as it limits the privileges of the container.\n\n**Task 3: Note any deployment/policy implications**\n\nThis change may require updates to:\n\n* Container runtime configurations (e.g., Docker daemon settings)\n* Application code that relies on the `root` user\n* Security policies and compliance frameworks that govern container usage\n\nTo minimize disruptions, consider implementing this change in a controlled environment before rolling it out to production. Additionally, ensure that any affected applications are thoroughly tested with the new non-root user configuration.\n\nBy making these secure config changes, we're reducing the attack surface of our containers and improving overall cloud security posture.",
+      "used_fallback": false
     }
   ],
-  "notes": [
-    "Used 3 fallback suggestion(s) - LLM was unavailable."
-  ]
+  "notes": []
 }
