@@ -350,10 +350,10 @@ jobs:
             > $REPORTS_DIR/tfsec.json || true
           test -f $REPORTS_DIR/tfsec.json
 
-       - name: Debug tfsec output
-         run: |
-            ls -lh $REPORTS_DIR
-            head -n 20 $REPORTS_DIR/tfsec.json
+       # - name: Debug tfsec output
+       #   run: |
+       #      ls -lh $REPORTS_DIR
+       #      head -n 20 $REPORTS_DIR/tfsec.json
 
 
 
