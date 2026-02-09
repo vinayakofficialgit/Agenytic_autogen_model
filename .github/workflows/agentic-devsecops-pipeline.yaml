@@ -258,10 +258,6 @@
 
 
 
-
-
-
-
 name: DevSecOps Agentic AI Pipeline
 
 on:
@@ -269,110 +265,90 @@ on:
     branches: [main, test-v-branch]
   pull_request:
     branches: [main, test-v-branch]
+  workflow_dispatch:
 
 env:
   PYTHON_VERSION: '3.12'
-  REPORTS_DIR: reports
-  OUTPUT_DIR: agent_output
-  MIN_SEVERITY: high
-  LLM_ENABLED: '1'
-  OLLAMA_MODEL: llama3:latest
+  REPORTS_DIR: 'reports'
+  OUTPUT_DIR: 'agent_output'
+  MIN_SEVERITY: 'high'
+  ACTIONS_STEP_DEBUG: 'true'
 
-# ==========================================================
-# JOB 1: SECURITY SCANNING
-# ==========================================================
 jobs:
+# ============================================================
+# JOB 1: SECURITY SCANS (FAIL FAST, DATA ONLY)
+# ============================================================
   security-scan:
     name: 🔍 Security Scan
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Enable Debug
-        run: set -x
-
-      - name: Prepare directories
-        run: mkdir -p $REPORTS_DIR
+      - name: Prepare reports directory
+        run: |
+          set -e
+          mkdir -p "${REPORTS_DIR}"
 
       # ---------------- SEMGREP ----------------
       - name: Run Semgrep
-        continue-on-error: true
         run: |
+          set -e
           pip install semgrep
           semgrep scan --config=auto --json \
-            --output=$REPORTS_DIR/semgrep.json . \
-            || echo '{"results":[]}' > $REPORTS_DIR/semgrep.json
+            --output "${REPORTS_DIR}/semgrep.json" .
+          test -s "${REPORTS_DIR}/semgrep.json"
 
       # ---------------- TRIVY ----------------
-      - name: Install Trivy
+      - name: Run Trivy FS
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
+          set -e
           sudo apt-get update
           sudo apt-get install -y trivy
-
-      - name: Run Trivy FS + Image
-        continue-on-error: true
-        run: |
-          trivy fs --format json --output $REPORTS_DIR/trivy_fs.json . \
-            || echo '{"Results":[]}' > $REPORTS_DIR/trivy_fs.json
-
-          if [ -f Dockerfile ]; then
-            docker build -t scan-target .
-            trivy image --format json \
-              --output $REPORTS_DIR/trivy_image.json scan-target \
-              || echo '{"Results":[]}' > $REPORTS_DIR/trivy_image.json
-          fi
+          trivy fs --format json --output "${REPORTS_DIR}/trivy_fs.json" .
+          test -s "${REPORTS_DIR}/trivy_fs.json"
 
       # ---------------- TFSEC ----------------
       - name: Run tfsec
-        continue-on-error: true
         run: |
+          set -e
           curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
-          if [ -d terraform ]; then
-            tfsec terraform --format json > $REPORTS_DIR/tfsec.json \
-              || echo '{"results":[]}' > $REPORTS_DIR/tfsec.json
-          fi
+          tfsec . --format json > "${REPORTS_DIR}/tfsec.json"
+          test -s "${REPORTS_DIR}/tfsec.json"
 
       # ---------------- GITLEAKS ----------------
       - name: Run Gitleaks
-        continue-on-error: true
         run: |
-          wget -qO gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz
-          tar -xzf gitleaks.tar.gz
-          sudo mv gitleaks /usr/local/bin
-          gitleaks detect --source . \
+          set -e
+          curl -s https://raw.githubusercontent.com/gitleaks/gitleaks/master/install.sh | bash
+          gitleaks detect \
+            --source . \
             --report-format json \
-            --report-path $REPORTS_DIR/gitleaks.json \
-            --no-git || echo '[]' > $REPORTS_DIR/gitleaks.json
+            --report-path "${REPORTS_DIR}/gitleaks.json" \
+            --no-git
+          test -s "${REPORTS_DIR}/gitleaks.json"
 
       # ---------------- CONFTEST ----------------
       - name: Run Conftest
-        continue-on-error: true
         run: |
-          wget -qO conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz
-          tar -xzf conftest.tar.gz
-          sudo mv conftest /usr/local/bin
+          set -e
+          curl -L https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz | tar xz
+          sudo mv conftest /usr/local/bin/
+          conftest test . --output json > "${REPORTS_DIR}/conftest.json"
+          test -f "${REPORTS_DIR}/conftest.json"
 
-          conftest test Dockerfile -o json > $REPORTS_DIR/conftest_docker.json || echo '[]' > $REPORTS_DIR/conftest_docker.json
-          conftest test k8s/ -o json > $REPORTS_DIR/conftest_k8s.json || echo '[]' > $REPORTS_DIR/conftest_k8s.json
-          conftest test terraform/ -o json > $REPORTS_DIR/conftest_tf.json || echo '[]' > $REPORTS_DIR/conftest_tf.json
-
+      # ---------------- ARTIFACT UPLOAD ----------------
       - name: Upload scan reports
         uses: actions/upload-artifact@v4
         with:
           name: scan-reports
-          path: $REPORTS_DIR/
+          path: reports/
+          retention-days: 30
 
-# ==========================================================
-# JOB 2: AGENTIC AI ANALYSIS
-# ==========================================================
+# ============================================================
+# JOB 2: AGENTIC AI + POLICY DECISION
+# ============================================================
   ai-analysis:
     name: 🤖 Agentic AI Analysis
     runs-on: ubuntu-latest
@@ -382,40 +358,43 @@ jobs:
       pipeline_status: ${{ steps.analyze.outputs.pipeline_status }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install requests pyyaml
+      - name: Install dependencies
+        run: pip install requests pyyaml jq
 
-      - uses: actions/download-artifact@v4
+      - name: Download scan reports
+        uses: actions/download-artifact@v4
         with:
           name: scan-reports
-          path: $REPORTS_DIR
+          path: reports/
 
-      - run: mkdir -p $OUTPUT_DIR
-
-      - name: Run pipeline (DEBUG)
+      - name: Run Agentic Pipeline (DEBUG)
         id: analyze
         run: |
-          set -x
+          set -e
           python main.py -v
+          STATUS=$(jq -r '.status' "${OUTPUT_DIR}/decision.json")
+          echo "pipeline_status=${STATUS}" >> "$GITHUB_OUTPUT"
 
-          STATUS=$(jq -r '.status' $OUTPUT_DIR/decision.json)
-          echo "pipeline_status=$STATUS" >> $GITHUB_OUTPUT
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload AI analysis artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: ai-output
-          path: $OUTPUT_DIR/
+          name: ai-results
+          path: agent_output/
+          retention-days: 30
 
-# ==========================================================
-# JOB 3: CREATE REMEDIATION PR (BEST PRACTICE)
-# ==========================================================
-  create-pr:
-    name: 🔧 Create Remediation PR
+# ============================================================
+# JOB 3: AUTO REMEDIATION PR (ONLY ON PUSH + FAILURE)
+# ============================================================
+  auto-pr:
+    name: 🔁 Auto Remediation PR
     runs-on: ubuntu-latest
     needs: ai-analysis
 
@@ -428,85 +407,89 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Create PR
+      - name: Download AI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-results
+          path: agent_output/
+
+      - name: Apply automated fixes
         run: |
-          set -x
-          gh pr create \
-            --title "security: automated remediation" \
-            --body "Agentic DevSecOps pipeline detected security issues and applied fixes." \
-            --base main \
-            --head ${{ github.ref_name }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          set -e
+          python main.py --skip-llm
 
-# ==========================================================
-# JOB 4: PR COMMENT (READ-ONLY MODE)
-# ==========================================================
-  pr-comment:
-    name: 💬 PR Comment
-    runs-on: ubuntu-latest
-    needs: ai-analysis
-    if: github.event_name == 'pull_request'
-
-    permissions:
-      pull-requests: write
-
-    steps:
-      - uses: actions/download-artifact@v4
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          name: ai-output
-          path: $OUTPUT_DIR
+          commit-message: "fix: automated security remediation"
+          title: "🔧 Automated Security Fixes"
+          body: |
+            This PR was created automatically by the DevSecOps Agentic AI pipeline.
+            The security gate failed and safe remediations were applied.
+          branch: auto/security-fixes
+          delete-branch: false
 
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.readFileSync('agent_output/pr_comment.md','utf8');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body
-            })
-
-# ==========================================================
-# JOB 5: SECURITY GATE
-# ==========================================================
-  gate:
+# ============================================================
+# JOB 4: SECURITY GATE (HARD STOP)
+# ============================================================
+  gate-check:
     name: 🚦 Security Gate
     runs-on: ubuntu-latest
     needs: ai-analysis
 
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download AI analysis results
+        uses: actions/download-artifact@v4
         with:
-          name: ai-output
-          path: $OUTPUT_DIR
+          name: ai-results
+          path: agent_output/
 
-      - run: |
-          STATUS=$(jq -r '.status' $OUTPUT_DIR/decision.json)
-          [ "$STATUS" = "fail" ] && exit 1 || echo "Gate passed"
+      - name: Enforce security gate
+        run: |
+          set -e
+          STATUS=$(jq -r '.status' "${OUTPUT_DIR}/decision.json")
+          echo "Gate status: ${STATUS}"
+          if [ "${STATUS}" = "fail" ]; then
+            echo "❌ SECURITY GATE FAILED"
+            exit 1
+          fi
+          echo "✅ SECURITY GATE PASSED"
 
-# ==========================================================
-# JOB 6: EMAIL NOTIFICATION
-# ==========================================================
-  notify:
-    name: 📧 Email Notification
+# ============================================================
+# JOB 5: EMAIL NOTIFICATION (ALWAYS)
+# ============================================================
+  email-notification:
+    name: 📧 Gmail Notification
     runs-on: ubuntu-latest
-    needs: [ai-analysis, gate]
+    needs: [ai-analysis, gate-check]
     if: always()
 
     steps:
-      - uses: dawidd6/action-send-mail@v3
+      - name: Send security report email
+        uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "DevSecOps Scan Result"
           to: ${{ secrets.NOTIFICATION_EMAIL }}
-          from: "DevSecOps Pipeline <${{ secrets.GMAIL_USERNAME }}>"
-          body: "Pipeline completed. Status: ${{ needs.ai-analysis.outputs.pipeline_status }}"
+          from: "Agentic DevSecOps Pipeline <${{ secrets.GMAIL_USERNAME }}>"
+          subject: "${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
+          body: |
+            DevSecOps Security Scan Report
+
+            Status:     ${{ needs.ai-analysis.outputs.pipeline_status }}
+            Repository: ${{ github.repository }}
+            Branch:     ${{ github.ref_name }}
+            Commit:     ${{ github.sha }}
+
+            View Run:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          priority: ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
+
+
 
