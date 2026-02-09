@@ -358,13 +358,13 @@ jobs:
 
 
        - name: Install Gitleaks
-        run: |
-          set -e
-          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -sL https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz \
-            | tar -xz
-          sudo mv gitleaks /usr/local/bin/
-          gitleaks version
+         run: |
+            set -e
+            VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+            curl -sL https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz \
+              | tar -xz
+            sudo mv gitleaks /usr/local/bin/
+            gitleaks version
 
 
       - name: Run Gitleaks (Repo-wide)
