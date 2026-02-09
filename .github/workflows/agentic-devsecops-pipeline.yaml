@@ -1,295 +1,534 @@
-# .github/workflows/devsecops-pipeline.yml
-# DevSecOps Agentic AI Pipeline - GitHub Actions Workflow
-#
+# # .github/workflows/devsecops-pipeline.yml
+# # DevSecOps Agentic AI Pipeline - GitHub Actions Workflow
+# #
 
 
-name: DevSecOps Security Scan
+# name: DevSecOps Security Scan
+
+# on:
+#   push:
+#     branches: [main, develop]
+#   pull_request:
+#     branches: [main, develop]
+#   # schedule:
+#   #   - cron: '0 6 * * 1'
+#   # workflow_dispatch:
+
+# env:
+#   PYTHON_VERSION: '3.12'
+#   REPORTS_DIR: 'reports'
+#   OUTPUT_DIR: 'agent_output'
+#   LLM_ENABLED: '1'
+#   OLLAMA_MODEL: 'llama3:latest'
+#   MIN_SEVERITY: 'high'
+
+# jobs:
+#   # ══════════════════════════════════════════════════════════════
+#   # JOB 1: Security Scanning
+#   # ══════════════════════════════════════════════════════════════
+#   security-scan:
+#     name: 🔍 Security Scan
+#     runs-on: ubuntu-latest
+    
+#     steps:
+#       - name: 📥 Checkout Code
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - name: 📁 Create Reports Directory
+#         run: mkdir -p ${{ env.REPORTS_DIR }}
+
+#       # SEMGREP
+#       - name: 🔬 Install & Run Semgrep
+#         continue-on-error: true
+#         run: |
+#           pip install semgrep
+#           semgrep scan --config=auto --json --output=${{ env.REPORTS_DIR }}/semgrep.json . 2>/dev/null || echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/semgrep.json
+
+#       # TRIVY
+#       - name: 🐳 Install Trivy
+#         run: |
+#           sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+#           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+#           echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+#           sudo apt-get update
+#           sudo apt-get install -y trivy
+
+#       - name: 🐳 Run Trivy Scans
+#         continue-on-error: true
+#         run: |
+#           trivy fs --format json --output ${{ env.REPORTS_DIR }}/trivy.json . 2>/dev/null || echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy.json
+#           if [ -f "Dockerfile" ] || [ -f "app/Dockerfile" ]; then
+#             docker build -t scan-target:latest . 2>/dev/null || true
+#             trivy image --format json --output ${{ env.REPORTS_DIR }}/trivy-image.json scan-target:latest 2>/dev/null || echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy-image.json
+#           else
+#             echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy-image.json
+#           fi
+
+#       # TFSEC
+#       - name: ☁️ Install & Run tfsec
+#         continue-on-error: true
+#         run: |
+#           curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash || true
+#           if [ -d "terraform" ]; then
+#             tfsec terraform/ --format json > ${{ env.REPORTS_DIR }}/tfsec.json 2>/dev/null || echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/tfsec.json
+#           else
+#             echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/tfsec.json
+#           fi
+
+#       # GITLEAKS
+#       - name: 🔑 Install & Run Gitleaks
+#         continue-on-error: true
+#         run: |
+#           GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/' || echo "8.18.4")
+#           wget -qO gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" || true
+#           [ -f gitleaks.tar.gz ] && tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+#           gitleaks detect --source . --report-format json --report-path ${{ env.REPORTS_DIR }}/gitleaks.json --no-git 2>/dev/null || echo '[]' > ${{ env.REPORTS_DIR }}/gitleaks.json
+
+#       # CONFTEST
+#       - name: 📋 Install & Run Conftest
+#         continue-on-error: true
+#         run: |
+#           CONFTEST_VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/' || echo "0.49.1")
+#           wget -qO conftest.tar.gz "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" || true
+#           [ -f conftest.tar.gz ] && tar -xzf conftest.tar.gz 2>/dev/null && sudo mv conftest /usr/local/bin/ 2>/dev/null || true
+          
+#           echo '[]' > ${{ env.REPORTS_DIR }}/conftest-dockerfile.json
+#           echo '[]' > ${{ env.REPORTS_DIR }}/conftest-k8s.json
+#           echo '[]' > ${{ env.REPORTS_DIR }}/conftest-terraform.json
+
+#       - name: 📤 Upload Scan Reports
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: security-reports
+#           path: ${{ env.REPORTS_DIR }}/
+#           retention-days: 30
+
+#   # ══════════════════════════════════════════════════════════════
+#   # JOB 2: AI Analysis
+#   # ══════════════════════════════════════════════════════════════
+#   ai-analysis:
+#     name: 🤖 AI Analysis
+#     runs-on: ubuntu-latest
+#     needs: security-scan
+    
+#     outputs:
+#       pipeline_status: ${{ steps.analysis.outputs.pipeline_status }}
+#       total_findings: ${{ steps.analysis.outputs.total_findings }}
+#       critical_count: ${{ steps.analysis.outputs.critical_count }}
+#       high_count: ${{ steps.analysis.outputs.high_count }}
+#       medium_count: ${{ steps.analysis.outputs.medium_count }}
+#       reason: ${{ steps.analysis.outputs.reason }}
+    
+#     steps:
+#       - name: 📥 Checkout Code
+#         uses: actions/checkout@v4
+
+#       - name: 🐍 Setup Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: 📦 Install Dependencies
+#         run: pip install requests pyyaml
+
+#       - name: 📥 Download Scan Reports
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: security-reports
+#           path: ${{ env.REPORTS_DIR }}/
+
+#       - name: 📁 Create Output Directory
+#         run: mkdir -p ${{ env.OUTPUT_DIR }}
+
+#       - name: 🤖 Setup Ollama (Optional)
+#         continue-on-error: true
+#         timeout-minutes: 10
+#         run: |
+#           curl -fsSL https://ollama.com/install.sh | sh || true
+#           nohup ollama serve > /dev/null 2>&1 &
+#           sleep 10
+#           timeout 300 ollama pull llama3:8b-instruct-q4_0 || true
+
+#       - name: 🔬 Run AI Analysis Pipeline
+#         id: analysis
+#         run: |
+#           python main.py || true
+          
+#           if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
+#             echo "pipeline_status=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('status','ok'))")" >> $GITHUB_OUTPUT
+#             echo "total_findings=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('total',0))")" >> $GITHUB_OUTPUT
+#             echo "critical_count=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('by_severity',{}).get('critical',0))")" >> $GITHUB_OUTPUT
+#             echo "high_count=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('by_severity',{}).get('high',0))")" >> $GITHUB_OUTPUT
+#             echo "medium_count=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('by_severity',{}).get('medium',0))")" >> $GITHUB_OUTPUT
+#             echo "reason=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('reason','N/A'))")" >> $GITHUB_OUTPUT
+#           else
+#             echo "pipeline_status=ok" >> $GITHUB_OUTPUT
+#             echo "total_findings=0" >> $GITHUB_OUTPUT
+#             echo "critical_count=0" >> $GITHUB_OUTPUT
+#             echo "high_count=0" >> $GITHUB_OUTPUT
+#             echo "medium_count=0" >> $GITHUB_OUTPUT
+#             echo "reason=No issues found" >> $GITHUB_OUTPUT
+#           fi
+
+#       - name: 📤 Upload Analysis Results
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: ai-analysis-results
+#           path: ${{ env.OUTPUT_DIR }}/
+#           retention-days: 30
+
+#       - name: 📊 Job Summary
+#         run: |
+#           echo "## 🛡️ Security Scan Results" >> $GITHUB_STEP_SUMMARY
+#           [ -f "${{ env.OUTPUT_DIR }}/pr_comment.md" ] && cat ${{ env.OUTPUT_DIR }}/pr_comment.md >> $GITHUB_STEP_SUMMARY
+
+#   # ══════════════════════════════════════════════════════════════
+#   # JOB 3: PR Comment
+#   # ══════════════════════════════════════════════════════════════
+#   pr-comment:
+#     name: 💬 PR Comment
+#     runs-on: ubuntu-latest
+#     needs: ai-analysis
+#     if: github.event_name == 'pull_request'
+#     permissions:
+#       pull-requests: write
+    
+#     steps:
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: ai-analysis-results
+#           path: ${{ env.OUTPUT_DIR }}/
+
+#       - uses: actions/github-script@v7
+#         with:
+#           script: |
+#             const fs = require('fs');
+#             let comment = '## 🛡️ Security Scan Results\n\n';
+#             if (fs.existsSync('${{ env.OUTPUT_DIR }}/pr_comment.md')) {
+#               comment += fs.readFileSync('${{ env.OUTPUT_DIR }}/pr_comment.md', 'utf8');
+#             }
+#             github.rest.issues.createComment({
+#               issue_number: context.issue.number,
+#               owner: context.repo.owner,
+#               repo: context.repo.repo,
+#               body: comment
+#             });
+
+#   # ══════════════════════════════════════════════════════════════
+#   # JOB 4: Security Gate
+#   # ══════════════════════════════════════════════════════════════
+#   gate-check:
+#     name: 🚦 Security Gate
+#     runs-on: ubuntu-latest
+#     needs: ai-analysis
+    
+#     steps:
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: ai-analysis-results
+#           path: ${{ env.OUTPUT_DIR }}/
+
+#       - name: 🚦 Check Gate
+#         run: |
+#           if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
+#             STATUS=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('status','ok'))")
+#             [ "$STATUS" = "fail" ] && echo "❌ FAILED" && exit 1
+#           fi
+#           echo "✅ PASSED"
+
+#   # ══════════════════════════════════════════════════════════════
+#   # JOB 5: Gmail Email Notification
+#   # ══════════════════════════════════════════════════════════════
+#   email-notification:
+#     name: 📧 Gmail Notification
+#     runs-on: ubuntu-latest
+#     needs: [ai-analysis, gate-check]
+#     if: always()
+    
+#     steps:
+#       - name: 📧 Prepare & Send Email
+#         uses: dawidd6/action-send-mail@v3
+#         with:
+#           server_address: smtp.gmail.com
+#           server_port: 587
+#           username: ${{ secrets.GMAIL_USERNAME }}
+#           password: ${{ secrets.GMAIL_APP_PASSWORD }}
+#           subject: "${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
+#           to: ${{ secrets.NOTIFICATION_EMAIL }}
+#           from: "Agentic Pipeline DevSecOps Pipeline Vinayak<${{ secrets.GMAIL_USERNAME }}>"
+#           body: |
+#             ═══════════════════════════════════════════════════════════
+#                         DevSecOps Security Scan Report
+#             ═══════════════════════════════════════════════════════════
+            
+#             Status:     ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '❌ FAILED' || '✅ PASSED' }}
+#             Repository: ${{ github.repository }}
+#             Branch:     ${{ github.ref_name }}
+#             Commit:     ${{ github.sha }}
+#             Actor:      ${{ github.actor }}
+            
+#             ───────────────────────────────────────────────────────────
+#                                 SCAN RESULTS
+#             ───────────────────────────────────────────────────────────
+            
+#             Total Findings: ${{ needs.ai-analysis.outputs.total_findings }}
+            
+#             🔴 Critical:    ${{ needs.ai-analysis.outputs.critical_count }}
+#             🟠 High:        ${{ needs.ai-analysis.outputs.high_count }}
+#             🟡 Medium:      ${{ needs.ai-analysis.outputs.medium_count }}
+            
+#             Reason: ${{ needs.ai-analysis.outputs.reason }}
+            
+#             ───────────────────────────────────────────────────────────
+#                                     LINKS
+#             ───────────────────────────────────────────────────────────
+            
+#             📋 View Run:    https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+#             📝 View Commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+            
+#             ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '⚠️  ACTION REQUIRED: Please fix security issues before merging.' || '✅ All security checks passed.' }}
+            
+#             ───────────────────────────────────────────────────────────
+#             DevSecOps Agentic AI Pipeline | Automated Security Scanning
+#           priority: ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+name: DevSecOps Agentic AI Pipeline
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
     branches: [main, develop]
-  # schedule:
-  #   - cron: '0 6 * * 1'
-  # workflow_dispatch:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "Enable verbose/debug mode"
+        required: false
+        default: "false"
 
 env:
-  PYTHON_VERSION: '3.12'
-  REPORTS_DIR: 'reports'
-  OUTPUT_DIR: 'agent_output'
-  LLM_ENABLED: '1'
-  OLLAMA_MODEL: 'llama3:latest'
-  MIN_SEVERITY: 'high'
+  PYTHON_VERSION: "3.12"
+  REPORTS_DIR: "reports"
+  OUTPUT_DIR: "agent_output"
+  MIN_SEVERITY: "high"
+  LLM_ENABLED: "1"
+  OLLAMA_MODEL: "llama3:latest"
+  DEBUG: ${{ github.event.inputs.debug || 'false' }}
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  # ══════════════════════════════════════════════════════════════
-  # JOB 1: Security Scanning
-  # ══════════════════════════════════════════════════════════════
-  security-scan:
-    name: 🔍 Security Scan
+  devsecops:
+    name: 🛡️ Scan → AI → Gate → PR
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: 📥 Checkout Code
+      # ----------------------------------------------------
+      # 0. Checkout
+      # ----------------------------------------------------
+      - name: 📥 Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 📁 Create Reports Directory
-        run: mkdir -p ${{ env.REPORTS_DIR }}
-
-      # SEMGREP
-      - name: 🔬 Install & Run Semgrep
-        continue-on-error: true
+      # ----------------------------------------------------
+      # 1. Debug Mode
+      # ----------------------------------------------------
+      - name: 🐞 Enable Debug Mode
         run: |
-          pip install semgrep
-          semgrep scan --config=auto --json --output=${{ env.REPORTS_DIR }}/semgrep.json . 2>/dev/null || echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/semgrep.json
-
-      # TRIVY
-      - name: 🐳 Install Trivy
-        run: |
-          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
-
-      - name: 🐳 Run Trivy Scans
-        continue-on-error: true
-        run: |
-          trivy fs --format json --output ${{ env.REPORTS_DIR }}/trivy.json . 2>/dev/null || echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy.json
-          if [ -f "Dockerfile" ] || [ -f "app/Dockerfile" ]; then
-            docker build -t scan-target:latest . 2>/dev/null || true
-            trivy image --format json --output ${{ env.REPORTS_DIR }}/trivy-image.json scan-target:latest 2>/dev/null || echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy-image.json
-          else
-            echo '{"Results":[]}' > ${{ env.REPORTS_DIR }}/trivy-image.json
+          if [ "${DEBUG}" = "true" ]; then
+            echo "🔍 Debug enabled"
+            set -x
+            echo "LLM_VERBOSE=1" >> $GITHUB_ENV
           fi
 
-      # TFSEC
-      - name: ☁️ Install & Run tfsec
-        continue-on-error: true
-        run: |
-          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash || true
-          if [ -d "terraform" ]; then
-            tfsec terraform/ --format json > ${{ env.REPORTS_DIR }}/tfsec.json 2>/dev/null || echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/tfsec.json
-          else
-            echo '{"results":[]}' > ${{ env.REPORTS_DIR }}/tfsec.json
-          fi
-
-      # GITLEAKS
-      - name: 🔑 Install & Run Gitleaks
-        continue-on-error: true
-        run: |
-          GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/' || echo "8.18.4")
-          wget -qO gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" || true
-          [ -f gitleaks.tar.gz ] && tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
-          gitleaks detect --source . --report-format json --report-path ${{ env.REPORTS_DIR }}/gitleaks.json --no-git 2>/dev/null || echo '[]' > ${{ env.REPORTS_DIR }}/gitleaks.json
-
-      # CONFTEST
-      - name: 📋 Install & Run Conftest
-        continue-on-error: true
-        run: |
-          CONFTEST_VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/' || echo "0.49.1")
-          wget -qO conftest.tar.gz "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" || true
-          [ -f conftest.tar.gz ] && tar -xzf conftest.tar.gz 2>/dev/null && sudo mv conftest /usr/local/bin/ 2>/dev/null || true
-          
-          echo '[]' > ${{ env.REPORTS_DIR }}/conftest-dockerfile.json
-          echo '[]' > ${{ env.REPORTS_DIR }}/conftest-k8s.json
-          echo '[]' > ${{ env.REPORTS_DIR }}/conftest-terraform.json
-
-      - name: 📤 Upload Scan Reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: ${{ env.REPORTS_DIR }}/
-          retention-days: 30
-
-  # ══════════════════════════════════════════════════════════════
-  # JOB 2: AI Analysis
-  # ══════════════════════════════════════════════════════════════
-  ai-analysis:
-    name: 🤖 AI Analysis
-    runs-on: ubuntu-latest
-    needs: security-scan
-    
-    outputs:
-      pipeline_status: ${{ steps.analysis.outputs.pipeline_status }}
-      total_findings: ${{ steps.analysis.outputs.total_findings }}
-      critical_count: ${{ steps.analysis.outputs.critical_count }}
-      high_count: ${{ steps.analysis.outputs.high_count }}
-      medium_count: ${{ steps.analysis.outputs.medium_count }}
-      reason: ${{ steps.analysis.outputs.reason }}
-    
-    steps:
-      - name: 📥 Checkout Code
-        uses: actions/checkout@v4
-
+      # ----------------------------------------------------
+      # 2. Python Setup
+      # ----------------------------------------------------
       - name: 🐍 Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: 📦 Install Dependencies
-        run: pip install requests pyyaml
-
-      - name: 📥 Download Scan Reports
-        uses: actions/download-artifact@v4
-        with:
-          name: security-reports
-          path: ${{ env.REPORTS_DIR }}/
-
-      - name: 📁 Create Output Directory
-        run: mkdir -p ${{ env.OUTPUT_DIR }}
-
-      - name: 🤖 Setup Ollama (Optional)
-        continue-on-error: true
-        timeout-minutes: 10
+      - name: 📦 Install Python Dependencies
         run: |
-          curl -fsSL https://ollama.com/install.sh | sh || true
-          nohup ollama serve > /dev/null 2>&1 &
-          sleep 10
-          timeout 300 ollama pull llama3:8b-instruct-q4_0 || true
+          python -m pip install --upgrade pip
+          pip install requests pyyaml semgrep
 
-      - name: 🔬 Run AI Analysis Pipeline
-        id: analysis
+      # ----------------------------------------------------
+      # 3. Prepare Directories
+      # ----------------------------------------------------
+      - name: 📁 Prepare directories
         run: |
-          python main.py || true
-          
-          if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
-            echo "pipeline_status=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('status','ok'))")" >> $GITHUB_OUTPUT
-            echo "total_findings=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('total',0))")" >> $GITHUB_OUTPUT
-            echo "critical_count=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('by_severity',{}).get('critical',0))")" >> $GITHUB_OUTPUT
-            echo "high_count=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('by_severity',{}).get('high',0))")" >> $GITHUB_OUTPUT
-            echo "medium_count=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('stats',{}).get('by_severity',{}).get('medium',0))")" >> $GITHUB_OUTPUT
-            echo "reason=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('reason','N/A'))")" >> $GITHUB_OUTPUT
+          mkdir -p $REPORTS_DIR
+          mkdir -p $OUTPUT_DIR
+
+      # ----------------------------------------------------
+      # 4. Security Scans (FAIL FAST)
+      # ----------------------------------------------------
+      - name: 🔬 Run Semgrep
+        run: |
+          semgrep scan --config=auto \
+            --json \
+            --output $REPORTS_DIR/semgrep.json .
+
+      - name: 🐳 Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: 🐳 Run Trivy FS
+        run: |
+          trivy fs \
+            --format json \
+            --output $REPORTS_DIR/trivy_fs.json .
+
+      - name: 🐳 Run Trivy Image (if Dockerfile exists)
+        run: |
+          if [ -f Dockerfile ] || [ -f app/Dockerfile ]; then
+            docker build -t scan-target:latest .
+            trivy image \
+              --format json \
+              --output $REPORTS_DIR/trivy_image.json scan-target:latest
           else
-            echo "pipeline_status=ok" >> $GITHUB_OUTPUT
-            echo "total_findings=0" >> $GITHUB_OUTPUT
-            echo "critical_count=0" >> $GITHUB_OUTPUT
-            echo "high_count=0" >> $GITHUB_OUTPUT
-            echo "medium_count=0" >> $GITHUB_OUTPUT
-            echo "reason=No issues found" >> $GITHUB_OUTPUT
+            echo '{"Results":[]}' > $REPORTS_DIR/trivy_image.json
           fi
 
-      - name: 📤 Upload Analysis Results
+      - name: ☁️ Install & Run tfsec
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+          if [ -d terraform ]; then
+            tfsec terraform/ --format json > $REPORTS_DIR/tfsec.json
+          else
+            echo '{"results":[]}' > $REPORTS_DIR/tfsec.json
+          fi
+
+      - name: 🔑 Run Gitleaks
+        run: |
+          docker run --rm \
+            -v "$(pwd):/repo" \
+            zricethezav/gitleaks:latest \
+            detect \
+            --source=/repo \
+            --report-format json \
+            --report-path /repo/$REPORTS_DIR/gitleaks.json
+
+      - name: 📋 Install & Run Conftest
+        run: |
+          CONFTEST_VERSION=0.49.1
+          wget -q https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz
+          tar -xzf conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz
+          sudo mv conftest /usr/local/bin/
+
+          echo '[]' > $REPORTS_DIR/conftest-k8s.json
+          echo '[]' > $REPORTS_DIR/conftest-dockerfile.json
+          echo '[]' > $REPORTS_DIR/conftest-terraform.json
+
+      # ----------------------------------------------------
+      # 5. Upload Raw Scan Reports (BEST PRACTICE)
+      # ----------------------------------------------------
+      - name: 📤 Upload Scan Reports
         uses: actions/upload-artifact@v4
         with:
-          name: ai-analysis-results
-          path: ${{ env.OUTPUT_DIR }}/
+          name: security-scan-reports
+          path: ${{ env.REPORTS_DIR }}
           retention-days: 30
 
-      - name: 📊 Job Summary
+      # ----------------------------------------------------
+      # 6. Agentic AI Analysis
+      # ----------------------------------------------------
+      - name: 🤖 Run Agentic AI Pipeline
         run: |
-          echo "## 🛡️ Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          [ -f "${{ env.OUTPUT_DIR }}/pr_comment.md" ] && cat ${{ env.OUTPUT_DIR }}/pr_comment.md >> $GITHUB_STEP_SUMMARY
-
-  # ══════════════════════════════════════════════════════════════
-  # JOB 3: PR Comment
-  # ══════════════════════════════════════════════════════════════
-  pr-comment:
-    name: 💬 PR Comment
-    runs-on: ubuntu-latest
-    needs: ai-analysis
-    if: github.event_name == 'pull_request'
-    permissions:
-      pull-requests: write
-    
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ai-analysis-results
-          path: ${{ env.OUTPUT_DIR }}/
-
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let comment = '## 🛡️ Security Scan Results\n\n';
-            if (fs.existsSync('${{ env.OUTPUT_DIR }}/pr_comment.md')) {
-              comment += fs.readFileSync('${{ env.OUTPUT_DIR }}/pr_comment.md', 'utf8');
-            }
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
-
-  # ══════════════════════════════════════════════════════════════
-  # JOB 4: Security Gate
-  # ══════════════════════════════════════════════════════════════
-  gate-check:
-    name: 🚦 Security Gate
-    runs-on: ubuntu-latest
-    needs: ai-analysis
-    
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ai-analysis-results
-          path: ${{ env.OUTPUT_DIR }}/
-
-      - name: 🚦 Check Gate
-        run: |
-          if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
-            STATUS=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('status','ok'))")
-            [ "$STATUS" = "fail" ] && echo "❌ FAILED" && exit 1
+          if [ "${DEBUG}" = "true" ]; then
+            python main.py -v
+          else
+            python main.py
           fi
-          echo "✅ PASSED"
 
-  # ══════════════════════════════════════════════════════════════
-  # JOB 5: Gmail Email Notification
-  # ══════════════════════════════════════════════════════════════
-  email-notification:
-    name: 📧 Gmail Notification
-    runs-on: ubuntu-latest
-    needs: [ai-analysis, gate-check]
-    if: always()
-    
-    steps:
-      - name: 📧 Prepare & Send Email
+      # ----------------------------------------------------
+      # 7. Policy Gate (HARD STOP)
+      # ----------------------------------------------------
+      - name: 🚦 Enforce Policy Gate
+        run: |
+          STATUS=$(python - <<EOF
+          import json
+          d=json.load(open("${OUTPUT_DIR}/decision.json"))
+          print(d.get("status","ok"))
+          EOF
+          )
+          echo "Pipeline status: $STATUS"
+          if [ "$STATUS" = "fail" ]; then
+            echo "❌ Policy gate failed. Stopping pipeline."
+            exit 1
+          fi
+          echo "✅ Policy gate passed."
+
+      # ----------------------------------------------------
+      # 8. Create PR (ONLY IF PASSED)
+      # ----------------------------------------------------
+      - name: 🚀 Create Security Fix PR
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/create_pr.py
+
+      # ----------------------------------------------------
+      # 9. Upload AI Outputs
+      # ----------------------------------------------------
+      - name: 📤 Upload AI Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-ai-output
+          path: ${{ env.OUTPUT_DIR }}
+          retention-days: 30
+
+      # ----------------------------------------------------
+      # 10. Gmail Notification
+      # ----------------------------------------------------
+      - name: 📧 Send Gmail Notification
+        if: always()
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
           to: ${{ secrets.NOTIFICATION_EMAIL }}
-          from: "Agentic Pipeline DevSecOps Pipeline Vinayak<${{ secrets.GMAIL_USERNAME }}>"
+          from: "DevSecOps Agentic Pipeline <${{ secrets.GMAIL_USERNAME }}>"
+          subject: >
+            ${{ job.status == 'failure' && '🔴 SECURITY PIPELINE FAILED' || '🟢 SECURITY PIPELINE PASSED' }}
+            - ${{ github.repository }}
           body: |
-            ═══════════════════════════════════════════════════════════
-                        DevSecOps Security Scan Report
-            ═══════════════════════════════════════════════════════════
-            
-            Status:     ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '❌ FAILED' || '✅ PASSED' }}
+            DevSecOps Agentic AI Pipeline Result
+
             Repository: ${{ github.repository }}
             Branch:     ${{ github.ref_name }}
             Commit:     ${{ github.sha }}
-            Actor:      ${{ github.actor }}
-            
-            ───────────────────────────────────────────────────────────
-                                SCAN RESULTS
-            ───────────────────────────────────────────────────────────
-            
-            Total Findings: ${{ needs.ai-analysis.outputs.total_findings }}
-            
-            🔴 Critical:    ${{ needs.ai-analysis.outputs.critical_count }}
-            🟠 High:        ${{ needs.ai-analysis.outputs.high_count }}
-            🟡 Medium:      ${{ needs.ai-analysis.outputs.medium_count }}
-            
-            Reason: ${{ needs.ai-analysis.outputs.reason }}
-            
-            ───────────────────────────────────────────────────────────
-                                    LINKS
-            ───────────────────────────────────────────────────────────
-            
-            📋 View Run:    https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-            📝 View Commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
-            
-            ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '⚠️  ACTION REQUIRED: Please fix security issues before merging.' || '✅ All security checks passed.' }}
-            
-            ───────────────────────────────────────────────────────────
-            DevSecOps Agentic AI Pipeline | Automated Security Scanning
-          priority: ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
+            Status:     ${{ job.status }}
+
+            View Run:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

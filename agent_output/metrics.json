@@ -1,40 +1,42 @@
 {
   "counts": {
-    "other": 1
+    "other": 3
   },
   "counts_by_source": {
-    "other": 1
+    "other": 3
   },
   "counts_by_tool": {
-    "other": 1
+    "other": 3
   },
   "counts_by_severity": {
-    "high": 1
+    "high": 2,
+    "medium": 1
   },
-  "total_findings": 1,
+  "total_findings": 3,
   "gate_status": "fail",
   "reason": "Found high (>= high) from semgrep at app/main.py:12",
   "fail_count": 1,
   "stats": {
-    "total": 1,
+    "total": 3,
     "by_severity": {
       "low": 0,
-      "medium": 0,
-      "high": 1,
+      "medium": 1,
+      "high": 2,
       "critical": 0
     },
     "by_category": {
       "code": 1,
-      "infra": 0,
+      "infra": 2,
       "image": 0,
       "policy": 0,
       "secrets": 0,
       "webapp": 0
     },
     "by_tool": {
-      "semgrep": 1
+      "semgrep": 1,
+      "trivy_fs": 2
     },
     "worst_severity": "high",
-    "weighted_score": 3
+    "weighted_score": 8
   }
 }

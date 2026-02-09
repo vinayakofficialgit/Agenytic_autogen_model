@@ -3,9 +3,9 @@
 **Reason:** Found high (>= high) from semgrep at app/main.py:12
 
 ### Summary
-- **Total findings:** 1
+- **Total findings:** 3
 - **Worst severity:** high
-- 🔴 Critical: 0 | 🟠 High: 1 | 🟡 Medium: 0 | 🟢 Low: 0
+- 🔴 Critical: 0 | 🟠 High: 2 | 🟡 Medium: 1 | 🟢 Low: 0
 
 ### Top Recommendations
 

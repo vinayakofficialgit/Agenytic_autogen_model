@@ -22,7 +22,46 @@
         "id": "TEST001",
         "message": "Hardcoded password detected"
       }
+    },
+    {
+      "source": "trivy-fs",
+      "id": "CVE-2025-0001",
+      "title": "Example OpenSSL issue",
+      "summary": "Example OpenSSL issue",
+      "severity": "high",
+      "tool": "trivy-fs",
+      "message": "Example OpenSSL issue",
+      "location": "Dockerfile",
+      "file": "Dockerfile",
+      "line": null,
+      "snippet": "",
+      "category": "infra",
+      "raw": {
+        "VulnerabilityID": "CVE-2025-0001",
+        "Severity": "HIGH",
+        "Title": "Example OpenSSL issue",
+        "PkgName": "openssl"
+      }
+    },
+    {
+      "source": "trivy-misconfig",
+      "id": "AVD-TRIVY-0001",
+      "title": "Root user in Dockerfile",
+      "summary": "Root user in Dockerfile",
+      "severity": "medium",
+      "tool": "trivy-fs",
+      "message": "Root user in Dockerfile",
+      "location": "Dockerfile",
+      "file": "Dockerfile",
+      "line": null,
+      "snippet": "",
+      "category": "infra",
+      "raw": {
+        "ID": "AVD-TRIVY-0001",
+        "Severity": "MEDIUM",
+        "Title": "Root user in Dockerfile"
+      }
     }
   ],
-  "count": 1
+  "count": 3
 }
