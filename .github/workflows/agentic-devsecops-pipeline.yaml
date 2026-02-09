@@ -299,15 +299,23 @@ jobs:
           semgrep scan --config=auto --json \
             --output "${REPORTS_DIR}/semgrep.json" .
           test -s "${REPORTS_DIR}/semgrep.json"
-
-      # ---------------- TRIVY ----------------
+      
+      - name: Install Trivy (Official)
+        run: |
+          set -e
+          TRIVY_VERSION="0.50.2"
+          wget -q https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.deb
+          sudo dpkg -i trivy_${TRIVY_VERSION}_Linux-64bit.deb
+          trivy --version
+        
       - name: Run Trivy FS
         run: |
           set -e
-          sudo apt-get update
-          sudo apt-get install -y trivy
-          trivy fs --format json --output "${REPORTS_DIR}/trivy_fs.json" .
+          trivy fs \
+            --format json \
+            --output "${REPORTS_DIR}/trivy_fs.json" .
           test -s "${REPORTS_DIR}/trivy_fs.json"
+        
 
       # ---------------- TFSEC ----------------
       - name: Run tfsec
