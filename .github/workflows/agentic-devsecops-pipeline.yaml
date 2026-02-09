@@ -148,8 +148,49 @@ jobs:
           name: scan-reports
           path: reports/
 
+# # ============================================================
+# # JOB 2: AI ANALYSIS (NEVER FAILS)
+# # ============================================================
+#   ai-analysis:
+#     name: 🤖 Agentic AI Analysis
+#     runs-on: ubuntu-latest
+#     needs: security-scan
+
+#     outputs:
+#       pipeline_status: ${{ steps.status.outputs.pipeline_status }}
+
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - run: pip install pyyaml requests jq
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: scan-reports
+#           path: reports/
+
+#       - name: Run analysis (do not exit)
+#         run: |
+#           python main.py -v || true
+
+#       - name: Capture decision
+#         id: status
+#         run: |
+#           STATUS=$(jq -r '.status' "$OUTPUT_DIR/decision.json")
+#           echo "pipeline_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output/
+
+
+
 # ============================================================
-# JOB 2: AI ANALYSIS (NEVER FAILS)
+# JOB 2: AI ANALYSIS (OLLAMA ENABLED)
 # ============================================================
   ai-analysis:
     name: 🤖 Agentic AI Analysis
@@ -172,9 +213,18 @@ jobs:
           name: scan-reports
           path: reports/
 
-      - name: Run analysis (do not exit)
+      # ---------- START OLLAMA ----------
+      - name: Start Ollama
         run: |
-          python main.py -v || true
+          set -e
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          sleep 10
+          ollama pull "$OLLAMA_MODEL"
+
+      - name: Run agentic analysis
+        run: |
+          python main.py --verbose || true
 
       - name: Capture decision
         id: status
@@ -188,7 +238,7 @@ jobs:
           path: agent_output/
 
 # ============================================================
-# JOB 3: AUTO REMEDIATION PR (AGENTIC)
+# JOB 3: AUTO REMEDIATION PR (AI APPLIES FIXES)
 # ============================================================
   auto-pr:
     name: 🔁 Auto Remediation PR
@@ -207,8 +257,17 @@ jobs:
           name: ai-results
           path: agent_output/
 
-      - name: Apply AI fixes (Ollama)
-        run: python main.py --fix --llm
+      # Ollama must run again
+      - name: Start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          sleep 10
+          ollama pull "$OLLAMA_MODEL"
+
+      - name: Apply agentic fixes
+        run: |
+          python main.py --verbose
 
       - name: Create remediation PR
         uses: peter-evans/create-pull-request@v6
@@ -217,8 +276,13 @@ jobs:
           title: "🔧 Automated Security Fixes"
           commit-message: "fix: agentic security remediation"
           body: |
-            This PR was created automatically.
-            Security findings were detected and fixed using AI remediation.
+            This PR was created automatically by the DevSecOps Agentic AI pipeline.
+            The pipeline failed policy checks and safe AI remediations were applied.
+
+
+
+
+
 
 # ============================================================
 # JOB 4: GATE
