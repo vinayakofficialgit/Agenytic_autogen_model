@@ -301,17 +301,23 @@ jobs:
             --output $REPORTS_DIR/semgrep.json \
             $APP_DIR
           test -f $REPORTS_DIR/semgrep.json
-
-      # ---------------- TRIVY FS (DEPENDENCIES) ----------------
+      
       - name: Run Trivy FS (Application)
         run: |
           set -e
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh
+      
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv ./bin/trivy /usr/local/bin/trivy
+      
+          trivy version
+      
           trivy fs \
             --format json \
             --output $REPORTS_DIR/trivy_fs.json \
             $APP_DIR
+      
           test -f $REPORTS_DIR/trivy_fs.json
+
 
       # ---------------- TRIVY IMAGE (OPTIONAL APP IMAGE) ----------------
       - name: Run Trivy Image (if Dockerfile exists)
