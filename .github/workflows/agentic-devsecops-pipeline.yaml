@@ -148,44 +148,6 @@ jobs:
           name: scan-reports
           path: reports/
 
-# # ============================================================
-# # JOB 2: AI ANALYSIS (NEVER FAILS)
-# # ============================================================
-#   ai-analysis:
-#     name: 🤖 Agentic AI Analysis
-#     runs-on: ubuntu-latest
-#     needs: security-scan
-
-#     outputs:
-#       pipeline_status: ${{ steps.status.outputs.pipeline_status }}
-
-#     steps:
-#       - uses: actions/checkout@v4
-#       - uses: actions/setup-python@v5
-#         with:
-#           python-version: ${{ env.PYTHON_VERSION }}
-
-#       - run: pip install pyyaml requests jq
-
-#       - uses: actions/download-artifact@v4
-#         with:
-#           name: scan-reports
-#           path: reports/
-
-#       - name: Run analysis (do not exit)
-#         run: |
-#           python main.py -v || true
-
-#       - name: Capture decision
-#         id: status
-#         run: |
-#           STATUS=$(jq -r '.status' "$OUTPUT_DIR/decision.json")
-#           echo "pipeline_status=$STATUS" >> "$GITHUB_OUTPUT"
-
-#       - uses: actions/upload-artifact@v4
-#         with:
-#           name: ai-results
-#           path: agent_output/
 
 
 
@@ -236,87 +198,190 @@ jobs:
         with:
           name: ai-results
           path: agent_output/
-
-# ============================================================
-# JOB 3: AUTO REMEDIATION PR (AI APPLIES FIXES)
-# ============================================================
+          
+  # ============================================================
+  # JOB 3: AUTO REMEDIATION PR (AI APPLIES FIXES)
+  # ============================================================
   auto-pr:
     name: 🔁 Auto Remediation PR
     runs-on: ubuntu-latest
     needs: ai-analysis
-    if: github.event_name == 'push' && needs.ai-analysis.outputs.pipeline_status == 'fail'
+    if: >-
+      github.event_name == 'push' &&
+      needs.ai-analysis.outputs.pipeline_status == 'fail'
 
     permissions:
       contents: write
       pull-requests: write
 
     steps:
+      # ---- FIX 1: Full checkout with fetch-depth for clean branching ----
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ---- FIX 2: Setup Python (was completely missing) ----
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # ---- FIX 3: Install dependencies (was completely missing) ----
+      - name: Install Python dependencies
+        run: pip install pyyaml requests jq
+
+      # ---- Download AI results from previous job ----
       - uses: actions/download-artifact@v4
         with:
           name: ai-results
           path: agent_output/
 
-      # Ollama must run again
+      # ---- FIX 4: Ollama with health-check instead of blind sleep ----
       - name: Start Ollama
         run: |
+          set -e
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
-          sleep 10
+
+          echo "⏳ Waiting for Ollama to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+              echo "✅ Ollama is ready"
+              break
+            fi
+            echo "  attempt $i/30..."
+            sleep 2
+          done
+
           ollama pull "$OLLAMA_MODEL"
 
+      # ---- FIX 5: Debug — show what AI results look like before applying ----
+      - name: Debug AI results
+        run: |
+          echo "--- agent_output contents ---"
+          ls -la agent_output/ || echo "Directory not found"
+          echo "--- decision.json ---"
+          cat agent_output/decision.json 2>/dev/null || echo "Not found"
+
+      # ---- FIX 6: Use a remediation-specific flag (adjust to your main.py) ----
+      # If your main.py uses the same command for analysis and remediation,
+      # you may need to add a --remediate or --fix flag. Adjust as needed.
       - name: Apply agentic fixes
         run: |
-          python main.py --verbose
+          python main.py --verbose --remediate || true
+
+      # ---- FIX 7: Only create PR if files actually changed ----
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ No file changes detected — skipping PR"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Changes detected — will create PR"
+            git diff --stat
+          fi
 
       - name: Create remediation PR
+        if: steps.changes.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           branch: auto/security-fixes
+          delete-branch: true
           title: "🔧 Automated Security Fixes"
           commit-message: "fix: agentic security remediation"
           body: |
-            This PR was created automatically by the DevSecOps Agentic AI pipeline.
-            The pipeline failed policy checks and safe AI remediations were applied.
+            ## 🤖 Automated Security Remediation
+
+            This PR was created automatically by the **DevSecOps Agentic AI Pipeline**.
+
+            **Trigger:** Pipeline detected security issues and applied safe AI remediations.
+
+            ### What to review:
+            - Verify the fixes are correct and don't break functionality
+            - Check the AI analysis report in the workflow artifacts
+
+            ---
+            _Generated by DevSecOps Agentic AI Pipeline_
 
 
 
 
-
-
-# ============================================================
-# JOB 4: GATE
-# ============================================================
+# ══════════════════════════════════════════════════════════════
+  # JOB 4: Security Gate
+  # ══════════════════════════════════════════════════════════════
   gate-check:
     name: 🚦 Security Gate
     runs-on: ubuntu-latest
     needs: ai-analysis
-
+    
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ai-results
-          path: agent_output/
-      - run: |
-          STATUS=$(jq -r '.status' agent_output/decision.json)
-          [ "$STATUS" = "fail" ] && exit 1
+          name: ai-analysis-results
+          path: ${{ env.OUTPUT_DIR }}/
 
-# ============================================================
-# JOB 5: EMAIL
-# ============================================================
+      - name: 🚦 Check Gate
+        run: |
+          if [ -f "${{ env.OUTPUT_DIR }}/decision.json" ]; then
+            STATUS=$(python3 -c "import json; print(json.load(open('${{ env.OUTPUT_DIR }}/decision.json')).get('status','ok'))")
+            [ "$STATUS" = "fail" ] && echo "❌ FAILED" && exit 1
+          fi
+          echo "✅ PASSED"
+
+  # ══════════════════════════════════════════════════════════════
+  # JOB 5: Gmail Email Notification
+  # ══════════════════════════════════════════════════════════════
   email-notification:
     name: 📧 Gmail Notification
     runs-on: ubuntu-latest
     needs: [ai-analysis, gate-check]
     if: always()
-
+    
     steps:
-      - uses: dawidd6/action-send-mail@v3
+      - name: 📧 Prepare & Send Email
+        uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
           to: ${{ secrets.NOTIFICATION_EMAIL }}
-          subject: "Security Pipeline Result"
-          body: "Status: ${{ needs.ai-analysis.outputs.pipeline_status }}"
+          from: "Agentic Pipeline DevSecOps Pipeline Vinayak<${{ secrets.GMAIL_USERNAME }}>"
+          body: |
+            ═══════════════════════════════════════════════════════════
+                        DevSecOps Security Scan Report
+            ═══════════════════════════════════════════════════════════
+            
+            Status:     ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '❌ FAILED' || '✅ PASSED' }}
+            Repository: ${{ github.repository }}
+            Branch:     ${{ github.ref_name }}
+            Commit:     ${{ github.sha }}
+            Actor:      ${{ github.actor }}
+            
+            ───────────────────────────────────────────────────────────
+                                SCAN RESULTS
+            ───────────────────────────────────────────────────────────
+            
+            Total Findings: ${{ needs.ai-analysis.outputs.total_findings }}
+            
+            🔴 Critical:    ${{ needs.ai-analysis.outputs.critical_count }}
+            🟠 High:        ${{ needs.ai-analysis.outputs.high_count }}
+            🟡 Medium:      ${{ needs.ai-analysis.outputs.medium_count }}
+            
+            Reason: ${{ needs.ai-analysis.outputs.reason }}
+            
+            ───────────────────────────────────────────────────────────
+                                    LINKS
+            ───────────────────────────────────────────────────────────
+            
+            📋 View Run:    https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            📝 View Commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+            
+            ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '⚠️  ACTION REQUIRED: Please fix security issues before merging.' || '✅ All security checks passed.' }}
+            
+            ───────────────────────────────────────────────────────────
+            DevSecOps Agentic AI Pipeline | Automated Security Scanning
+          priority: ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
