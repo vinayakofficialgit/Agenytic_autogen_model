@@ -125,8 +125,8 @@ jobs:
           sudo mv conftest /usr/local/bin/
           conftest --version
 
-       - name: Run Conftest (Policies)
-         run: |
+      - name: Run Conftest (Policies)
+        run: |
             set -e
             conftest test k8s terraform policy \
               --output json \
