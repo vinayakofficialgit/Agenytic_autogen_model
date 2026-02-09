@@ -109,14 +109,32 @@ jobs:
             --report-path "$REPORTS_DIR/gitleaks.json" --no-git || true
           test -f "$REPORTS_DIR/gitleaks.json"
 
-      # ---------------- CONFTEST ----------------
-      - name: Run Conftest
+      # ---------------- CONFTEST (POLICY) ----------------
+      - name: Install Conftest
         run: |
           set -e
-          curl -sfL https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz | tar xz
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+      
+          VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
+          echo "Installing conftest $VERSION"
+      
+          curl -sL https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz \
+            | tar -xz
+      
           sudo mv conftest /usr/local/bin/
-          conftest test k8s terraform policy --output json \
-            > "$REPORTS_DIR/conftest.json" || echo "[]" > "$REPORTS_DIR/conftest.json"
+          conftest --version
+
+       - name: Run Conftest (Policies)
+         run: |
+            set -e
+            conftest test k8s terraform policy \
+              --output json \
+              > "$REPORTS_DIR/conftest.json" || echo "[]" > "$REPORTS_DIR/conftest.json"
+        
+            test -f "$REPORTS_DIR/conftest.json"
+          
+
 
       - name: Upload scan reports
         uses: actions/upload-artifact@v4
