@@ -143,7 +143,7 @@ jobs:
           path: reports/
 
 # ============================================================
-# JOB 2: AGENTIC AI
+# JOB 2: AI ANALYSIS (NEVER FAILS)
 # ============================================================
   ai-analysis:
     name: 🤖 Agentic AI Analysis
@@ -151,28 +151,28 @@ jobs:
     needs: security-scan
 
     outputs:
-      pipeline_status: ${{ steps.analyze.outputs.pipeline_status }}
+      pipeline_status: ${{ steps.status.outputs.pipeline_status }}
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Python deps
-        run: pip install pyyaml requests jq
+      - run: pip install pyyaml requests jq
 
       - uses: actions/download-artifact@v4
         with:
           name: scan-reports
           path: reports/
 
-      - name: Run Agentic Pipeline
-        id: analyze
+      - name: Run analysis (do not exit)
         run: |
-          set -e
-          python main.py -v
+          python main.py -v || true
+
+      - name: Capture decision
+        id: status
+        run: |
           STATUS=$(jq -r '.status' "$OUTPUT_DIR/decision.json")
           echo "pipeline_status=$STATUS" >> "$GITHUB_OUTPUT"
 
@@ -182,7 +182,7 @@ jobs:
           path: agent_output/
 
 # ============================================================
-# JOB 3: AUTO PR
+# JOB 3: AUTO REMEDIATION PR (AGENTIC)
 # ============================================================
   auto-pr:
     name: 🔁 Auto Remediation PR
@@ -200,11 +200,19 @@ jobs:
         with:
           name: ai-results
           path: agent_output/
-      - run: python main.py --skip-llm
-      - uses: peter-evans/create-pull-request@v6
+
+      - name: Apply AI fixes (Ollama)
+        run: python main.py --fix --llm
+
+      - name: Create remediation PR
+        uses: peter-evans/create-pull-request@v6
         with:
           branch: auto/security-fixes
           title: "🔧 Automated Security Fixes"
+          commit-message: "fix: agentic security remediation"
+          body: |
+            This PR was created automatically.
+            Security findings were detected and fixed using AI remediation.
 
 # ============================================================
 # JOB 4: GATE
