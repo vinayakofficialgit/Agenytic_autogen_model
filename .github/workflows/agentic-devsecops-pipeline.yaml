@@ -7,9 +7,9 @@ name: DevSecOps Security Scan
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, test-v-branch]
   pull_request:
-    branches: [main, develop]
+    branches: [main, test-v-branch]
   # schedule:
   #   - cron: '0 6 * * 1'
   # workflow_dispatch:
