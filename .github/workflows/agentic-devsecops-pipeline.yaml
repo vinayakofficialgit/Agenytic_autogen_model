@@ -350,10 +350,10 @@ jobs:
             > $REPORTS_DIR/tfsec.json || true
           test -f $REPORTS_DIR/tfsec.json
 
-       # - name: Debug tfsec output
-       #   run: |
-       #      ls -lh $REPORTS_DIR
-       #      head -n 20 $REPORTS_DIR/tfsec.json
+       - name: Debug tfsec output
+         run: |
+            ls -lh $REPORTS_DIR
+            head -n 20 $REPORTS_DIR/tfsec.json
 
 
 
@@ -375,7 +375,7 @@ jobs:
             --report-format json \
             --report-path $REPORTS_DIR/gitleaks.json \
             --no-git || true
-          test -f $REPORTS_DIR/gitleaks.json
+            test -f $REPORTS_DIR/gitleaks.json
 
 
       # ---------------- CONFTEST (POLICY) ----------------
