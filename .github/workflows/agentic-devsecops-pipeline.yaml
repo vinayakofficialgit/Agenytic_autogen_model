@@ -12,8 +12,14 @@ env:
   APP_DIR: "Order-app-main"
   REPORTS_DIR: "reports"
   OUTPUT_DIR: "agent_output"
-  MIN_SEVERITY: "high"
-  ACTIONS_STEP_DEBUG: "true"
+  ACTIONS_STEP_DEBUG: "true"  
+  LLM_ENABLED: ${{ secrets.LLM_ENABLED }}
+  OLLAMA_MODEL: ${{ secrets.OLLAMA_MODEL }}
+  OLLAMA_NUM_CTX: ${{ secrets.OLLAMA_NUM_CTX }}
+  OLLAMA_NUM_PREDICT: ${{ secrets.OLLAMA_NUM_PREDICT }}
+  OLLAMA_TEMPERATURE: ${{ secrets.OLLAMA_TEMPERATURE }}
+  MIN_SEVERITY: ${{ secrets.MIN_SEVERITY }}
+
 
 jobs:
 # ============================================================
