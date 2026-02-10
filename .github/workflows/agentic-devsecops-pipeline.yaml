@@ -273,7 +273,7 @@ jobs:
       # you may need to add a --remediate or --fix flag. Adjust as needed.
       - name: Apply agentic fixes
         run: |
-          python main.py --verbose --remediate || true
+          python main.py --verbose  || true
 
       # ---- FIX 7: Only create PR if files actually changed ----
       - name: Check for changes
@@ -294,7 +294,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: auto/security-fixes
-          delete-branch: true
+          delete-branch: false
           title: "🔧 Automated Security Fixes"
           commit-message: "fix: agentic security remediation"
           body: |
@@ -325,8 +325,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: ai-analysis-results
-          path: ${{ env.OUTPUT_DIR }}/
+          name: ai-results
+          path: agent_output/
 
       - name: 🚦 Check Gate
         run: |
