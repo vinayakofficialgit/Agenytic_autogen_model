@@ -39,49 +39,49 @@ jobs:
 
     
       
-      # ---------------- SEMGREP (CODE) ----------------
-      # - name: Run Semgrep (Application)
-      #   run: |
-      #     set -e
-      #     pip install semgrep
-      #     semgrep scan \
-      #       --config=auto \
-      #       --json \
-      #       --output $REPORTS_DIR/semgrep.json \
-      #       $APP_DIR
-      #     test -f $REPORTS_DIR/semgrep.json
+     ## ---------------- SEMGREP (CODE) ----------------
+      - name: Run Semgrep (Application)
+        run: |
+          set -e
+          pip install semgrep
+          semgrep scan \
+            --config=auto \
+            --json \
+            --output $REPORTS_DIR/semgrep.json \
+            $APP_DIR
+          test -f $REPORTS_DIR/semgrep.json
       
-      # - name: Run Trivy FS (Application)
-      #   run: |
-      #     set -e
+      - name: Run Trivy FS (Application)
+        run: |
+          set -e
       
-      #     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-      #     sudo mv ./bin/trivy /usr/local/bin/trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv ./bin/trivy /usr/local/bin/trivy
       
-      #     trivy version
+          trivy version
       
-      #     trivy fs \
-      #       --format json \
-      #       --output $REPORTS_DIR/trivy_fs.json \
-      #       $APP_DIR
+          trivy fs \
+            --format json \
+            --output $REPORTS_DIR/trivy_fs.json \
+            $APP_DIR
       
-      #     test -f $REPORTS_DIR/trivy_fs.json
+          test -f $REPORTS_DIR/trivy_fs.json
 
 
-      # # ---------------- TRIVY IMAGE (OPTIONAL APP IMAGE) ----------------
-      # - name: Run Trivy Image (if Dockerfile exists)
-      #   run: |
-      #     set -e
-      #     if [ -f "$APP_DIR/Dockerfile" ]; then
-      #       docker build -t order-app:scan $APP_DIR
-      #       trivy image \
-      #         --format json \
-      #         --output $REPORTS_DIR/trivy_image.json \
-      #         order-app:scan
-      #     else
-      #       echo '{}' > $REPORTS_DIR/trivy_image.json
-      #     fi
-      #     test -f $REPORTS_DIR/trivy_image.json
+      # ---------------- TRIVY IMAGE (OPTIONAL APP IMAGE) ----------------
+      - name: Run Trivy Image (if Dockerfile exists)
+        run: |
+          set -e
+          if [ -f "$APP_DIR/Dockerfile" ]; then
+            docker build -t order-app:scan $APP_DIR
+            trivy image \
+              --format json \
+              --output $REPORTS_DIR/trivy_image.json \
+              order-app:scan
+          else
+            echo '{}' > $REPORTS_DIR/trivy_image.json
+          fi
+          test -f $REPORTS_DIR/trivy_image.json
 
 
       # ---------------- TFSEC ----------------
