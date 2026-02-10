@@ -262,6 +262,12 @@ jobs:
           echo "--- decision.json ---"
           cat agent_output/decision.json 2>/dev/null || echo "Not found"
 
+      - name: Clean up unwanted files
+        run: |
+          echo "__pycache__/" >> .gitignore
+          echo "*.pyc" >> .gitignore
+          find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
       # ---- FIX 6: Use a remediation-specific flag (adjust to your main.py) ----
       # If your main.py uses the same command for analysis and remediation,
       # you may need to add a --remediate or --fix flag. Adjust as needed.
