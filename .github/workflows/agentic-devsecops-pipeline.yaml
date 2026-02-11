@@ -34,7 +34,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - name: Prepare directories
         run: |
           set -e
