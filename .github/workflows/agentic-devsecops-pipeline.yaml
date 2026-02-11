@@ -226,7 +226,7 @@ jobs:
     if: >-
       always() &&
       github.event_name == 'push' &&
-      needs.ai-analysis.outputs.pipeline_status == 'fail'
+      needs.llm-agent-analysis.outputs.pipeline_status == 'fail'
 
     outputs:
       suggestions_created: ${{ steps.generate.outputs.suggestions_created }}
@@ -907,7 +907,7 @@ jobs:
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
+          subject: "${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
           to: ${{ secrets.NOTIFICATION_EMAIL }}
           from: "Agentic Pipeline DevSecOps Pipeline Vinayak<${{ secrets.GMAIL_USERNAME }}>"
           body: |
@@ -915,7 +915,7 @@ jobs:
                         DevSecOps Security Scan Report
             ═══════════════════════════════════════════════════════════
             
-            Status:     ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '❌ FAILED' || '✅ PASSED' }}
+            Status:     ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '❌ FAILED' || '✅ PASSED' }}
             Repository: ${{ github.repository }}
             Branch:     ${{ github.ref_name }}
             Commit:     ${{ github.sha }}
@@ -925,13 +925,13 @@ jobs:
                                 SCAN RESULTS
             ───────────────────────────────────────────────────────────
             
-            Total Findings: ${{ needs.ai-analysis.outputs.total_findings }}
+            Total Findings: ${{ needs.llm-agent-analysis.outputs.total_findings }}
             
-            🔴 Critical:    ${{ needs.ai-analysis.outputs.critical_count }}
-            🟠 High:        ${{ needs.ai-analysis.outputs.high_count }}
-            🟡 Medium:      ${{ needs.ai-analysis.outputs.medium_count }}
+            🔴 Critical:    ${{ needs.llm-agent-analysis.outputs.critical_count }}
+            🟠 High:        ${{ needs.llm-agent-analysis.outputs.high_count }}
+            🟡 Medium:      ${{ needs.llm-agent-analysis.outputs.medium_count }}
             
-            Reason: ${{ needs.ai-analysis.outputs.reason }}
+            Reason: ${{ needs.llm-agent-analysis.outputs.reason }}
             
             ───────────────────────────────────────────────────────────
                             REMEDIATION SUGGESTIONS
@@ -949,8 +949,8 @@ jobs:
             📋 View Run:    https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
             📝 View Commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
             
-            ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && '⚠️  ACTION REQUIRED: Please review remediation suggestions and fix security issues before merging.' || '✅ All security checks passed.' }}
+            ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '⚠️  ACTION REQUIRED: Please review remediation suggestions and fix security issues before merging.' || '✅ All security checks passed.' }}
             
             ───────────────────────────────────────────────────────────
             DevSecOps Agentic AI Pipeline | Automated Security Scanning
-          priority: ${{ needs.ai-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
+          priority: ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
