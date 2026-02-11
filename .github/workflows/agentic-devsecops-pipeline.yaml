@@ -178,6 +178,13 @@ jobs:
           path: reports/
 
       # ---------- START OLLAMA ----------
+      
+      - name: Validate OLLAMA_MODEL environment variable
+        run: |
+          if [ -z "${OLLAMA_MODEL}" ]; then
+          echo "OLLAMA_MODEL is not set"; exit 1
+          fi
+      
       - name: Start Ollama
         run: |
           set -e
