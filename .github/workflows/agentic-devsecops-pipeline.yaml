@@ -2,9 +2,9 @@ name: DevSecOps Agentic AI Pipeline
 
 on:
   push:
-    branches: [main, test-v-branch]
+    branches: [feature/AgentAI]
   pull_request:
-    branches: [main, test-v-branch]
+    branches: []
   workflow_dispatch:
 
 env:
