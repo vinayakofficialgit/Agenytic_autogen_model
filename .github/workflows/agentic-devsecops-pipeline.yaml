@@ -71,7 +71,7 @@ jobs:
           test -f $REPORTS_DIR/trivy_fs.json
 
 
-      # ---------------- TRIVY IMAGE (OPTIONAL APP IMAGE) ----------------
+      # ---------------- TRIVY IMAGE () ----------------
       - name: Run Trivy Image (if Dockerfile exists)
         run: |
           set -e
@@ -157,7 +157,7 @@ jobs:
 # ============================================================
 # JOB 2: AI ANALYSIS (OLLAMA ENABLED)
 # ============================================================
-  ai-analysis:
+  llm-agent-analysis:
     name: 🤖 Agentic AI Analysis
     runs-on: ubuntu-latest
     needs: security-scan
