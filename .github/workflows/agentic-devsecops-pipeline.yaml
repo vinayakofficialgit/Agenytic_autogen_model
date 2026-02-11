@@ -26,7 +26,7 @@ env:
 
 jobs:
 # ============================================================
-# JOB 1: SECURITY SCANS
+# JOB 1: SECURITY SCANS #DummyCommit1
 # ============================================================
   security-scan:
     name: 🔍 Security Scan
