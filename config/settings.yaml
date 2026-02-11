@@ -6,7 +6,7 @@ llm:
   temperature: 0.2
 
 policy:
-  min_severity_to_fail: high
+  min_severity_to_fail: critical
   remediation:
     auto_pr: true
 
