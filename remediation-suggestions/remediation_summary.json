@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-02-11T12:13:39.255171Z",
+  "tools": {
+    "semgrep": {
+      "findings": 1,
+      "suggestions": 1
+    },
+    "trivy_fs": {
+      "findings": 57,
+      "suggestions": 57
+    },
+    "tfsec": {
+      "findings": 1,
+      "suggestions": 1
+    },
+    "gitleaks": {
+      "findings": 2,
+      "suggestions": 2
+    }
+  },
+  "total_findings": 61,
+  "total_suggestions": 61
+}
