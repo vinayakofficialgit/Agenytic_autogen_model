@@ -171,11 +171,7 @@ class PolicyConfig:
 
 def load_policy_config() -> PolicyConfig:
     """Load policy configuration from environment variables."""
-    min_sev = os.getenv("MIN_SEVERITY", "critical
-    
-                        
-                        
-                        ").strip().lower()
+    min_sev = os.getenv("MIN_SEVERITY", "critical").strip().lower()
     max_total = _int_env("MAX_FINDINGS_TOTAL", None)
 
     # Per-category caps
