@@ -592,7 +592,7 @@ def _load_cfg() -> dict:
         "inputs": {"reports_dir": "reports", "output_dir": "agent_output"},
         "policy": {
             "remediation": {"auto_pr": True},
-            "min_severity_to_fail": os.getenv("MIN_SEVERITY", "high"),
+            "min_severity_to_fail": os.getenv("MIN_SEVERITY", "critical"),
         },
         "llm": {
             "enabled": bool(os.getenv("OLLAMA_URL")) or (os.getenv("LLM_ENABLED", "").strip() == "1"),
