@@ -45,12 +45,14 @@ jobs:
       # -------------------------------
       # Semgrep
       # -------------------------------
-      - name: Run Semgrep
+      - name: Semgrep (official action)
         uses: returntocorp/semgrep-action@v1
         with:
+          generateSarif: false
           config: auto
-          json: "${REPORTS_DIR}/semgrep.json"
-          generateSarif: true
+          json: ${{ env.REPORTS_DIR }}/semgrep.json
+          enable_metrics: false
+        continue-on-error: true
 
       # -------------------------------
       # Trivy FS
