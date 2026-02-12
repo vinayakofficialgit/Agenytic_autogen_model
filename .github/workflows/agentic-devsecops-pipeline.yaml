@@ -39,6 +39,8 @@ jobs:
         run: |
           set -e
           mkdir -p "$REPORTS_DIR"
+          sudo apt update
+          sudo apt install python3-pip
 
     
       
