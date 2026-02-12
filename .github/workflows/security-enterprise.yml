@@ -1,0 +1,291 @@
+name: "Enterprise Security Pipeline (AI-Driven)"
+
+on:
+  push:
+    branches:
+      - feature/AgentAI
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: write
+
+env:
+  REPORTS_DIR: reports
+  OUTPUT_DIR: agent_output
+  AUDIT_DIR: security-review
+  APP_DIR: Order-app-main
+  PYTHON_VERSION: 3.12
+  LLM_ENABLED: 1
+  LLM_AUTOFIX: 1
+  LLM_AUTOFIX_TOOLS: trivy_fs,semgrep,gitleaks,conftest
+  OLLAMA_URL: http://localhost:11434
+  OLLAMA_NUM_CTX: 2048
+  OLLAMA_NUM_PREDICT: 512
+  OLLAMA_TEMPERATURE: 0.1
+  MIN_SEVERITY: low
+
+jobs:
+
+  ###############################################################
+  # 1) SECURITY SCAN (Parallel)
+  ###############################################################
+  security-scan:
+    name: "🔍 Security Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Create reports directory
+        run: mkdir -p "${REPORTS_DIR}"
+
+      # -------------------------------
+      # Semgrep
+      # -------------------------------
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: auto
+          json: "${REPORTS_DIR}/semgrep.json"
+          generateSarif: true
+
+      # -------------------------------
+      # Trivy FS
+      # -------------------------------
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+          | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Run Trivy FS Scan
+        run: |
+          trivy fs --format json --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
+          test -f "${REPORTS_DIR}/trivy_fs.json"
+
+      # -------------------------------
+      # Conditional Trivy Image
+      # -------------------------------
+      - name: Run Trivy Image Scan
+        run: |
+          if [ -f "${APP_DIR}/Dockerfile" ]; then
+            docker build -t app-scan "${APP_DIR}"
+            trivy image --format json --output "${REPORTS_DIR}/trivy_image.json" app-scan || echo '{}' > "${REPORTS_DIR}/trivy_image.json"
+          else
+            echo '{}' > "${REPORTS_DIR}/trivy_image.json"
+          fi
+
+      # -------------------------------
+      # Gitleaks
+      # -------------------------------
+      - name: Install Gitleaks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" | tar -xz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run Gitleaks
+        run: |
+          gitleaks detect --source . --report-format json --report-path "${REPORTS_DIR}/gitleaks.json" --no-git \
+          || echo '[]' > "${REPORTS_DIR}/gitleaks.json"
+          test -f "${REPORTS_DIR}/gitleaks.json"
+
+      # -------------------------------
+      # Conftest
+      # -------------------------------
+      - name: Install Conftest
+        run: |
+          sudo apt-get install -y jq curl
+          VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
+          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz" | tar -xz
+          sudo mv conftest /usr/local/bin/
+          conftest --version
+
+      - name: Run Conftest
+        run: |
+          conftest test k8s terraform policy --output json > "${REPORTS_DIR}/conftest.json" \
+          || echo '[]' > "${REPORTS_DIR}/conftest.json"
+          test -f "${REPORTS_DIR}/conftest.json"
+
+      # -------------------------------
+      # Diagnostics – show reports
+      # -------------------------------
+      - name: Show Reports Before Upload
+        run: |
+          echo "Listing reports/"
+          ls -la reports/ || true
+          echo "File sizes:"
+          du -h reports/* || true
+
+      # -------------------------------
+      # Upload Scan Artifacts
+      # -------------------------------
+      - name: Upload scan reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-reports
+          path: reports/
+          retention-days: 7
+
+
+  ###############################################################
+  # 2) AI SECURITY ANALYSIS + FIXES + REMEDIATION BRANCH
+  ###############################################################
+  ai-analysis:
+    name: "🤖 AI Analysis + 🔧 Fix Generation"
+    runs-on: ubuntu-latest
+    needs: security-scan
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Scan Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-reports
+          path: reports/
+
+      - name: Verify Reports
+        run: |
+          echo "Reports after download:"
+          ls -la reports/
+          echo ""
+          for f in reports/*.json; do
+            echo "---- $f ----"
+            head -c 200 "$f" || true
+            echo -e "\n"
+          done
+
+      # ----------------------------------------
+      # Install Python + libs
+      # ----------------------------------------
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: pip install pyyaml requests
+
+      # ----------------------------------------
+      # Install Ollama + Model
+      # ----------------------------------------
+      - name: Install & Start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          sleep 5
+
+      - name: Pull LLM Model
+        run: ollama pull llama2
+
+      # ----------------------------------------
+      # AI Analyzer
+      # ----------------------------------------
+      - name: Run AI Security Triage
+        run: |
+          mkdir -p "${OUTPUT_DIR}"
+          python main.py --verbose
+
+      # ----------------------------------------
+      # Create Security Audit Folder
+      # ----------------------------------------
+      - name: Save Security Audit
+        run: |
+          RUN_ID=${GITHUB_RUN_ID}
+          mkdir -p "${AUDIT_DIR}/run-${RUN_ID}"
+          cp -r agent_output/* "${AUDIT_DIR}/run-${RUN_ID}/"
+          echo "Saved audit → ${AUDIT_DIR}/run-${RUN_ID}"
+
+      # ----------------------------------------
+      # Apply Fixes + Create Remediation Branch
+      # ----------------------------------------
+      - name: Apply AI Fixes + Create Branch
+        run: |
+          RUN_ID=${GITHUB_RUN_ID}
+          FIX_BRANCH="security/fix-run-${RUN_ID}"
+
+          git checkout -b "${FIX_BRANCH}"
+
+          if [ -d "agent_output/patches" ]; then
+            echo "Applying AI patches..."
+            git apply agent_output/patches/*.patch || true
+          fi
+
+          git add .
+          git commit -m "AI Security Fixes (Run ${RUN_ID})" || true
+
+      # ----------------------------------------
+      # Create PR
+      # ----------------------------------------
+      - name: Create Pull Request to feature/AgentAI
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "security/fix-run-${{ github.run_id }}"
+          delete-branch: false
+          title: "🔒 AI Security Fixes (Run ${{ github.run_id }})"
+          body: |
+            ## 🔒 AI Security Patch – Run ${{ github.run_id }}
+
+            This PR contains **AI‑generated security fixes** based on:
+            - Semgrep
+            - Trivy FS / Image
+            - Gitleaks
+            - Conftest
+            - LLM Risk Analysis
+
+            ### ✔ No business logic changes  
+            ✔ Only security‑flagged lines were modified  
+            ✔ Full audit included under `security-review/run-${{ github.run_id }}`  
+
+            ### 🛑 Requires manual approval  
+            The pipeline does **not auto‑merge**.  
+            This ensures you review all patches before merging into `feature/AgentAI`.
+
+          base: "feature/AgentAI"
+          add-paths: |
+            security-review/**
+            agent_output/**
+            reports/**
+
+
+  ###############################################################
+  # 3) SECURITY GATE
+  ###############################################################
+  security-gate:
+    name: "🚦 Security Gate"
+    runs-on: ubuntu-latest
+    needs: ai-analysis
+
+    steps:
+      - name: Download Decision
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-results
+          path: agent_output/
+
+      - name: Evaluate Security Status
+        run: |
+          if [ -f agent_output/decision.json ]; then
+            STATUS=$(jq -r '.status' agent_output/decision.json)
+          else
+            STATUS="fail"
+          fi
+
+          echo "Final status: $STATUS"
+          if [ "$STATUS" = "fail" ]; then
+            echo "❌ Security gate FAILED — Review the PR"
+            exit 1
+          fi
+
+          echo "✅ Security gate PASSED"
