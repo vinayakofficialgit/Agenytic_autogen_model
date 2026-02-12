@@ -42,31 +42,20 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - name: Prepare directories
         run: |
           set -Eeuo pipefail
           mkdir -p "$REPORTS_DIR"
 
-      # -------- SEMGREP (pin version and fix pkg_resources) --------
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      # -------- SEMGREP (official action) --------
+      - name: Semgrep (official action)
+        uses: returntocorp/semgrep-action@v1
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-
-      - name: Install Semgrep (and fix pkg_resources via setuptools)
-        run: |
-          set -Eeuo pipefail
-          python -m pip install --upgrade pip setuptools wheel
-          pip install "semgrep==1.83.0"
-
-      - name: Run Semgrep
+          generateSarif: false
+          config: auto
+          json: ${{ env.REPORTS_DIR }}/semgrep.json
+          enable_metrics: false
         continue-on-error: true
-        run: |
-          set -Eeuo pipefail
-          semgrep scan --config=auto --json --output "$REPORTS_DIR/semgrep.json" "$APP_DIR" || true
-          test -f "$REPORTS_DIR/semgrep.json" || echo '{}' > "$REPORTS_DIR/semgrep.json"
 
       # -------- TRIVY FS (pin release) --------
       - name: Install Trivy
@@ -132,6 +121,15 @@ jobs:
           conftest test k8s terraform policy --output json > "$REPORTS_DIR/conftest.json" || echo "[]" > "$REPORTS_DIR/conftest.json"
           test -f "$REPORTS_DIR/conftest.json"
 
+      - name: Show Job 1 reports (before upload)
+        run: |
+          set -Eeuo pipefail
+          echo "Listing reports/ just before upload:"
+          ls -la reports/ || true
+          echo ""
+          echo "File sizes:"
+          du -h reports/* || true    
+
       - name: Upload scan reports
         uses: actions/upload-artifact@v4
         with:
@@ -148,7 +146,7 @@ jobs:
     needs: security-scan
 
     permissions:
-      contents: write         # needed to create PR
+      contents: write
       pull-requests: write
 
     outputs:
@@ -165,7 +163,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -183,6 +180,19 @@ jobs:
         with:
           name: scan-reports
           path: reports/
+
+      - name: Verify downloaded reports (start of Job 2)
+        run: |
+          set -Eeuo pipefail
+          echo "Listing reports/ right after artifact download:"
+          ls -la reports/ || true
+          echo ""
+          for f in reports/*.json; do
+            [ -f "$f" ] || continue
+            echo "---- $f (head -c 300) ----"
+            head -c 300 "$f" || true
+            echo -e "\n"
+          done    
 
       # ------ OLLAMA: start once & pull model ------
       - name: Validate OLLAMA_MODEL
@@ -407,6 +417,11 @@ jobs:
     if: always()
 
     steps:
+      - name: Ensure jq is available
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
       - name: Download AI results
         uses: actions/download-artifact@v4
         with:
