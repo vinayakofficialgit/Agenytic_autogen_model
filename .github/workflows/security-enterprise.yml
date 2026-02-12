@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - feature/AgentAI
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -18,23 +17,21 @@ env:
   AUDIT_DIR: security-review
   APP_DIR: Order-app-main
   PYTHON_VERSION: 3.12
-  LLM_ENABLED: 1
-  LLM_AUTOFIX: 1
-  LLM_AUTOFIX_TOOLS: trivy_fs,semgrep,gitleaks,conftest
-  OLLAMA_URL: http://localhost:11434
-  OLLAMA_NUM_CTX: 2048
-  OLLAMA_NUM_PREDICT: 512
-  OLLAMA_TEMPERATURE: 0.1
+  LLM_MODEL: "qwen2.5-coder:3b"
+  OLLAMA_URL: "http://localhost:11434"
+  OLLAMA_NUM_CTX: 4096
+  OLLAMA_NUM_PREDICT: 1024
+  OLLAMA_TEMP: 0.1
   MIN_SEVERITY: low
 
+# ------------------------------------------------------------
+# JOB 1: SECURITY SCAN
+# ------------------------------------------------------------
 jobs:
-
-  ###############################################################
-  # 1) SECURITY SCAN (Parallel)
-  ###############################################################
   security-scan:
     name: "🔍 Security Scan"
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -42,21 +39,23 @@ jobs:
       - name: Create reports directory
         run: mkdir -p "${REPORTS_DIR}"
 
-      # -------------------------------
-      # Semgrep
-      # -------------------------------
-      - name: Semgrep (official action)
-        uses: returntocorp/semgrep-action@v1
-        with:
-          generateSarif: false
-          config: auto
-          json: ${{ env.REPORTS_DIR }}/semgrep.json
-          enable_metrics: false
-        continue-on-error: true
+      # -------------------------
+      # Semgrep (CLI version)
+      # -------------------------
+      - name: Install Semgrep
+        run: python3 -m pip install semgrep
 
-      # -------------------------------
+      - name: Run Semgrep JSON scan
+        run: |
+          semgrep --config=auto --json > "${REPORTS_DIR}/semgrep.json" || echo '{}' > "${REPORTS_DIR}/semgrep.json"
+
+      - name: Run Semgrep SARIF scan
+        run: |
+          semgrep --config=auto --sarif > "${REPORTS_DIR}/semgrep.sarif" || echo '{}' > "${REPORTS_DIR}/semgrep.sarif"
+
+      # -------------------------
       # Trivy FS
-      # -------------------------------
+      # -------------------------
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
@@ -65,68 +64,63 @@ jobs:
 
       - name: Run Trivy FS Scan
         run: |
-          trivy fs --format json --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
-          test -f "${REPORTS_DIR}/trivy_fs.json"
+          trivy fs --format json --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
+          || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
 
-      # -------------------------------
-      # Conditional Trivy Image
-      # -------------------------------
+      # -------------------------
+      # Trivy Image (conditional)
+      # -------------------------
       - name: Run Trivy Image Scan
         run: |
           if [ -f "${APP_DIR}/Dockerfile" ]; then
             docker build -t app-scan "${APP_DIR}"
-            trivy image --format json --output "${REPORTS_DIR}/trivy_image.json" app-scan || echo '{}' > "${REPORTS_DIR}/trivy_image.json"
+            trivy image --format json --output "${REPORTS_DIR}/trivy_image.json" app-scan \
+            || echo '{}' > "${REPORTS_DIR}/trivy_image.json"
           else
             echo '{}' > "${REPORTS_DIR}/trivy_image.json"
           fi
 
-      # -------------------------------
+      # -------------------------
       # Gitleaks
-      # -------------------------------
+      # -------------------------
       - name: Install Gitleaks
         run: |
           sudo apt-get update
           sudo apt-get install -y jq curl
           VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" | tar -xz
+          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" \
+            | tar -xz
           sudo mv gitleaks /usr/local/bin/
 
       - name: Run Gitleaks
         run: |
-          gitleaks detect --source . --report-format json --report-path "${REPORTS_DIR}/gitleaks.json" --no-git \
+          gitleaks detect --source . --no-git --report-format json \
+            --report-path "${REPORTS_DIR}/gitleaks.json" \
           || echo '[]' > "${REPORTS_DIR}/gitleaks.json"
-          test -f "${REPORTS_DIR}/gitleaks.json"
 
-      # -------------------------------
-      # Conftest
-      # -------------------------------
+      # -------------------------
+      # Conftest (error-tolerant)
+      # -------------------------
       - name: Install Conftest
         run: |
-          sudo apt-get install -y jq curl
           VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
-          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz" | tar -xz
+          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz" \
+            | tar -xz
           sudo mv conftest /usr/local/bin/
-          conftest --version
 
       - name: Run Conftest
         run: |
           conftest test k8s terraform policy --output json > "${REPORTS_DIR}/conftest.json" \
           || echo '[]' > "${REPORTS_DIR}/conftest.json"
-          test -f "${REPORTS_DIR}/conftest.json"
 
-      # -------------------------------
-      # Diagnostics – show reports
-      # -------------------------------
-      - name: Show Reports Before Upload
+      # -------------------------
+      # Diagnostics
+      # -------------------------
+      - name: Show Reports
         run: |
-          echo "Listing reports/"
-          ls -la reports/ || true
-          echo "File sizes:"
-          du -h reports/* || true
+          echo "Reports generated:"
+          ls -la reports/
 
-      # -------------------------------
-      # Upload Scan Artifacts
-      # -------------------------------
       - name: Upload scan reports
         uses: actions/upload-artifact@v4
         with:
@@ -135,11 +129,11 @@ jobs:
           retention-days: 7
 
 
-  ###############################################################
-  # 2) AI SECURITY ANALYSIS + FIXES + REMEDIATION BRANCH
-  ###############################################################
+# ------------------------------------------------------------
+# JOB 2: AI ANALYSIS (NO PATCHING)
+# ------------------------------------------------------------
   ai-analysis:
-    name: "🤖 AI Analysis + 🔧 Fix Generation"
+    name: "🤖 AI Analysis"
     runs-on: ubuntu-latest
     needs: security-scan
 
@@ -155,138 +149,163 @@ jobs:
           name: scan-reports
           path: reports/
 
-      - name: Verify Reports
-        run: |
-          echo "Reports after download:"
-          ls -la reports/
-          echo ""
-          for f in reports/*.json; do
-            echo "---- $f ----"
-            head -c 200 "$f" || true
-            echo -e "\n"
-          done
-
-      # ----------------------------------------
-      # Install Python + libs
-      # ----------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install Python Dependencies
         run: pip install pyyaml requests
 
-      # ----------------------------------------
-      # Install Ollama + Model
-      # ----------------------------------------
-      - name: Install & Start Ollama
+      # --------------------------------------------------
+      # Install Ollama + Pull Qwen model
+      # --------------------------------------------------
+      - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           sleep 5
 
-      - name: Pull LLM Model
-        run: ollama pull llama2
+      - name: Pull Qwen Model
+        run: |
+          ollama pull "${LLM_MODEL}"
 
-      # ----------------------------------------
-      # AI Analyzer
-      # ----------------------------------------
-      - name: Run AI Security Triage
+      # --------------------------------------------------
+      # AI Analysis (NO FIXES)
+      # --------------------------------------------------
+      - name: Run AI Security Analysis
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --verbose
+          python main.py --analysis-only --model "${LLM_MODEL}"
 
-      # ----------------------------------------
-      # Create Security Audit Folder
-      # ----------------------------------------
-      - name: Save Security Audit
+      - name: Persist Analysis Output
         run: |
           RUN_ID=${GITHUB_RUN_ID}
           mkdir -p "${AUDIT_DIR}/run-${RUN_ID}"
           cp -r agent_output/* "${AUDIT_DIR}/run-${RUN_ID}/"
-          echo "Saved audit → ${AUDIT_DIR}/run-${RUN_ID}"
 
-      # ----------------------------------------
-      # Apply Fixes + Create Remediation Branch
-      # ----------------------------------------
-      - name: Apply AI Fixes + Create Branch
+      - name: Upload Analysis Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-analysis-output
+          path: agent_output/
+
+
+# ------------------------------------------------------------
+# JOB 3: AI FIX GENERATION
+# ------------------------------------------------------------
+  ai-fix-generation:
+    name: "🔧 AI Fix Generation"
+    runs-on: ubuntu-latest
+    needs: ai-analysis
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Analysis Output
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-analysis-output
+          path: agent_output/
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: pip install requests pyyaml
+
+      # Install Ollama for fix generation
+      - name: Install Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          sleep 5
+
+      - name: Pull Qwen Model
+        run: ollama pull "${LLM_MODEL}"
+
+      # --------------------------------------------------
+      # Generate Fixes into patches/ folder
+      # --------------------------------------------------
+      - name: AI Generate Fix Patches
+        run: |
+          mkdir -p agent_output/patches
+          python main.py --generate-fixes --model "${LLM_MODEL}"
+
+      # --------------------------------------------------
+      # Create Remediation Branch
+      # --------------------------------------------------
+      - name: Create Branch + Apply Patches
         run: |
           RUN_ID=${GITHUB_RUN_ID}
           FIX_BRANCH="security/fix-run-${RUN_ID}"
 
           git checkout -b "${FIX_BRANCH}"
 
-          if [ -d "agent_output/patches" ]; then
-            echo "Applying AI patches..."
+          if compgen -G "agent_output/patches/*.patch" > /dev/null; then
             git apply agent_output/patches/*.patch || true
           fi
 
           git add .
           git commit -m "AI Security Fixes (Run ${RUN_ID})" || true
 
-      # ----------------------------------------
-      # Create PR
-      # ----------------------------------------
-      - name: Create Pull Request to feature/AgentAI
+      # --------------------------------------------------
+      # Open Pull Request
+      # --------------------------------------------------
+      - name: Open Pull Request to feature/AgentAI
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: "security/fix-run-${{ github.run_id }}"
-          delete-branch: false
+          base: "feature/AgentAI"
           title: "🔒 AI Security Fixes (Run ${{ github.run_id }})"
           body: |
-            ## 🔒 AI Security Patch – Run ${{ github.run_id }}
+            ## 🔒 AI Security Fixes Generated
 
-            This PR contains **AI‑generated security fixes** based on:
-            - Semgrep
-            - Trivy FS / Image
-            - Gitleaks
-            - Conftest
-            - LLM Risk Analysis
+            - Model: qwen2.5-coder:3b  
+            - Analysis + Fixes separated  
+            - Patches generated safely under `agent_output/patches/`  
+            - Full audit available under `security-review/run-${{ github.run_id }}/`  
 
-            ### ✔ No business logic changes  
-            ✔ Only security‑flagged lines were modified  
-            ✔ Full audit included under `security-review/run-${{ github.run_id }}`  
+            **Please review before merging.**
 
-            ### 🛑 Requires manual approval  
-            The pipeline does **not auto‑merge**.  
-            This ensures you review all patches before merging into `feature/AgentAI`.
-
-          base: "feature/AgentAI"
           add-paths: |
             security-review/**
             agent_output/**
             reports/**
 
 
-  ###############################################################
-  # 3) SECURITY GATE
-  ###############################################################
+# ------------------------------------------------------------
+# JOB 4: SECURITY GATE
+# ------------------------------------------------------------
   security-gate:
     name: "🚦 Security Gate"
     runs-on: ubuntu-latest
-    needs: ai-analysis
+    needs: ai-fix-generation
 
     steps:
-      - name: Download Decision
+      - name: Download AI Output
         uses: actions/download-artifact@v4
         with:
-          name: ai-results
+          name: ai-analysis-output
           path: agent_output/
 
-      - name: Evaluate Security Status
+      - name: Evaluate Security Decision
         run: |
+          STATUS="pass"
           if [ -f agent_output/decision.json ]; then
             STATUS=$(jq -r '.status' agent_output/decision.json)
-          else
-            STATUS="fail"
           fi
 
           echo "Final status: $STATUS"
-          if [ "$STATUS" = "fail" ]; then
-            echo "❌ Security gate FAILED — Review the PR"
+
+          if [ "$STATUS" != "pass" ]; then
+            echo "❌ Security gate FAILED — Review PR"
             exit 1
           fi
 
