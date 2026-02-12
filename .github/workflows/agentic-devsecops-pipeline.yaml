@@ -30,7 +30,7 @@ jobs:
 # ============================================================
   security-scan:
     name: 🔍 Security Scan
-    runs-on: agentic-runner
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
@@ -159,7 +159,7 @@ jobs:
 # ============================================================
   llm-agent-analysis:
     name: 🤖 Agentic AI Analysis
-    runs-on: agentic-runner
+    runs-on: self-hosted
     needs: security-scan
 
     outputs:
@@ -868,7 +868,7 @@ jobs:
 # ============================================================
   remediation-suggestions:
       name: 💡 Remediation Suggestions
-      runs-on: agentic-runner
+      runs-on: self-hosted
       needs: llm-agent-analysis
       if: always()
     
@@ -1093,7 +1093,7 @@ jobs:
   # ============================================================
   gate-check:
     name: 🚦 Security Gate
-    runs-on: agentic-runner
+    runs-on: self-hosted
     needs: [llm-agent-analysis, remediation-suggestions]
     if: always()
 
@@ -1123,7 +1123,7 @@ jobs:
   # ============================================================
   email-notification:
     name: 📧 Gmail Notification
-    runs-on: agentic-runner
+    runs-on: self-hosted
     needs: [llm-agent-analysis, remediation-suggestions, gate-check]
     if: always()
 
