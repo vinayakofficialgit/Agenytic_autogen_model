@@ -1,3 +1,6 @@
+
+
+###########################test
 name: DevSecOps Agentic AI Pipeline
 
 on:
@@ -34,19 +37,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Prepare directories
+      
+      # THIS STEP must be repeated in every job
+      - name: Setup Python & Venv
         run: |
-          set -e
-          mkdir -p "$REPORTS_DIR"
-          sudo apt update
-          sudo apt install python3-pip
-          
+          sudo apt update && sudo apt install -y python3-venv
           python3 -m venv envmine
-          
-          # Activate it
-          source envmine/bin/activate
-          
+          # This makes 'pip' and 'python' use the venv automatically for this job
+          echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+      - name: Install Dependencies
+        run: |
+          # Now this uses the venv pip automatically!
+          pip install -r requirements.txt
 
     
       
@@ -178,6 +181,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Setup Python & Venv
+        run: |
+          sudo apt update && sudo apt install -y python3-venv
+          python3 -m venv envmine
+          # This makes 'pip' and 'python' use the venv automatically for this job
+          echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+      - name: Install Dependencies
+        run: |
+          # Now this uses the venv pip automatically!
+          pip install -r requirements.txt
 
       - run: pip install pyyaml requests jq
 
@@ -891,6 +906,22 @@ jobs:
         - uses: actions/checkout@v4
           with:
             fetch-depth: 0
+
+
+            
+        - name: Setup Python & Venv
+          run: |
+            sudo apt update && sudo apt install -y python3-venv
+            python3 -m venv envmine
+            # This makes 'pip' and 'python' use the venv automatically for this job
+            echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+        - name: Install Dependencies
+          run: |
+            # Now this uses the venv pip automatically!
+            pip install -r requirements.txt
+
+
     
         - uses: actions/setup-python@v5
           with:
