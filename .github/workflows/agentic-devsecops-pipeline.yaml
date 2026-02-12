@@ -866,7 +866,7 @@ jobs:
 # ============================================================
 # JOB 3: REMEDIATION SUGGESTIONS (ALWAYS RUNS)
 # ============================================================
-remediation-suggestions:
+ remediation-suggestions:
   name: 💡 Remediation Suggestions
   runs-on: ubuntu-latest
   needs: llm-agent-analysis
