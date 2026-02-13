@@ -885,7 +885,6 @@ jobs:
 
 
 
-
 # ============================================================
 # JOB 3: REMEDIATION SUGGESTIONS (ALWAYS RUNS)
 # ============================================================
@@ -907,21 +906,15 @@ jobs:
           with:
             fetch-depth: 0
 
-
-            
         - name: Setup Python & Venv
           run: |
             sudo apt update && sudo apt install -y python3-venv
             python3 -m venv envmine
-            # This makes 'pip' and 'python' use the venv automatically for this job
             echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
 
         - name: Install Dependencies
           run: |
-            # Now this uses the venv pip automatically!
             pip install -r requirements.txt
-
-
     
         - uses: actions/setup-python@v5
           with:
@@ -959,17 +952,17 @@ jobs:
           run: |
             set -e
             mkdir -p remediation-suggestions
-    
+
             python3 << 'PYEOF'
             import json, os, sys, requests
             from pathlib import Path
-            from datetime import datetime
-    
+            from datetime import datetime, timezone
+
             SUGGESTIONS = Path("remediation-suggestions")
             OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
             OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:7b")
             PIPELINE_STATUS = os.getenv("PIPELINE_STATUS", "unknown")
-    
+
             def llm_ask(system_prompt: str, user_prompt: str) -> str:
                 try:
                     resp = requests.post(
@@ -988,31 +981,33 @@ jobs:
                     resp.raise_for_status()
                     return resp.json().get("message", {}).get("content", "")
                 except Exception as e:
-                print(f"[LLM Error] {e}")
-                return ""
-    
+                    print(f"[LLM Error] {e}")
+                    return ""
+
+            now_utc = datetime.now(timezone.utc)
+
             summary = {
-                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "generated_at": now_utc.isoformat(),
                 "pipeline_status": PIPELINE_STATUS,
                 "mode": "improvement" if PIPELINE_STATUS != "fail" else "remediation",
             }
-    
+
             readme = []
             readme.append("# 🔧 Security Suggestions\n")
-            readme.append(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n")
+            readme.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
             readme.append(f"Pipeline status: **{PIPELINE_STATUS}**\n")
             readme.append("---\n")
-    
+
             # =====================================================
             # MODE 1: PIPELINE PASSED → IMPROVEMENT ONLY
             # =====================================================
             if PIPELINE_STATUS != "fail":
                 print("[INFO] Pipeline passed — generating improvement suggestions.")
-    
-            improvement_prompt = """
+
+                improvement_prompt = """
                 Repository passed all security gates.
                 Provide a concise improvement and hardening checklist.
-                
+
                 Include:
                 1. CI/CD hardening
                 2. Dependency hygiene
@@ -1020,65 +1015,65 @@ jobs:
                 4. Runtime security
                 5. Monitoring and alerting
                 """
-    
+
                 improvement = llm_ask(
                     "You are a senior DevSecOps architect.",
                     improvement_prompt,
                 )
-    
+
                 (SUGGESTIONS / "security_improvements.md").write_text(
                     improvement if improvement.strip()
                     else "No improvement suggestions generated."
                 )
-    
+
                 readme.append("## 🟢 Security Improvements\n")
                 readme.append("📄 security_improvements.md\n")
                 readme.append("Pipeline passed. These are improvement suggestions only.\n")
-    
+
                 (SUGGESTIONS / "remediation_summary.json").write_text(
                     json.dumps(summary, indent=2)
                 )
-    
+
                 (SUGGESTIONS / "README.md").write_text("\n".join(readme))
-    
+
                 with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                     f.write("suggestions_created=true\n")
-    
+
                 sys.exit(0)
-    
+
             # =====================================================
             # MODE 2: PIPELINE FAILED → FULL REMEDIATION
             # =====================================================
             print("[INFO] Pipeline failed — generating remediation suggestions.")
-    
+
             remediation_prompt = """
               Security scans detected critical or high vulnerabilities.
-              
+
               Provide:
               1. Top priority fixes
               2. Ordered remediation steps
               3. Any configuration changes needed
               """
-    
+
             remediation = llm_ask(
                 "You are a senior security engineer.",
                 remediation_prompt,
             )
-    
+
             (SUGGESTIONS / "priority_remediation.md").write_text(
                 remediation if remediation.strip()
                 else "No remediation suggestions generated."
             )
-    
+
             readme.append("## 🔴 Remediation Required\n")
             readme.append("📄 priority_remediation.md\n")
-    
+
             (SUGGESTIONS / "remediation_summary.json").write_text(
                 json.dumps(summary, indent=2)
             )
-    
+
             (SUGGESTIONS / "README.md").write_text("\n".join(readme))
-    
+
             with open(os.environ["GITHUB_OUTPUT"], "a") as f:
                 f.write("suggestions_created=true\n")
             PYEOF
@@ -1088,13 +1083,13 @@ jobs:
           with:
             name: remediation-suggestions
             path: remediation-suggestions/
-    
+
         - name: Generate unique branch name
           id: branch
           run: |
             BRANCH="remediation/suggestions-run-${{ github.run_number }}"
             echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
-    
+
         - name: Create suggestions PR (only if pipeline failed)
           if: >
             steps.generate.outputs.suggestions_created == 'true' &&
@@ -1111,12 +1106,6 @@ jobs:
             body: |
               AI-generated remediation suggestions.
               Review before applying.
-    
-    
-    
-    
-    
-    
     
     
     
