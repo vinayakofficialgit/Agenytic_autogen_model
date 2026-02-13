@@ -18,11 +18,11 @@ env:
   ACTIONS_STEP_DEBUG: "true"  
   LLM_ENABLED: ${{ secrets.LLM_ENABLED }}
   LLM_AUTOFIX: ${{ secrets.LLM_AUTOFIX }}   
-  OLLAMA_MODEL: ${{ secrets.OLLAMA_MODEL }}
+  OLLAMA_MODEL: "qwen2.5-coder:1.5b"
   OLLAMA_NUM_CTX: ${{ secrets.OLLAMA_NUM_CTX }}
   OLLAMA_NUM_PREDICT: ${{ secrets.OLLAMA_NUM_PREDICT }}
   OLLAMA_TEMPERATURE: ${{ secrets.OLLAMA_TEMPERATURE }}
-  MIN_SEVERITY: ${{ secrets.MIN_SEVERITY }}
+  MIN_SEVERITY: "high"
   LLM_AUTOFIX_TOOLS: ${{ secrets.LLM_AUTOFIX_TOOLS }}
   
 
