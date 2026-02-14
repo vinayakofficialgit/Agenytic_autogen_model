@@ -218,39 +218,43 @@ jobs:
           name: scan-reports
           path: reports/
 
-      # ── Cache Ollama binary + model ──
-      - name: Cache Ollama
+      # ── Cache Ollama model only (binary installed fresh each time) ──
+      - name: Cache Ollama model
         id: ollama-cache
         uses: actions/cache@v4
         with:
-          path: |
-            /usr/local/bin/ollama
-            /usr/share/ollama/.ollama/models
-            ~/.ollama/models
-          key: ollama-${{ env.OLLAMA_MODEL }}-v2
+          path: /home/runner/.ollama-model-cache
+          key: ollama-model-${{ env.OLLAMA_MODEL }}-v3
 
-      - name: Install Ollama
-        if: steps.ollama-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Start Ollama & pull model
+      - name: Install & Start Ollama
         run: |
           set -e
-          # Ensure model directory exists for cache restore
-          sudo mkdir -p /usr/share/ollama/.ollama/models
-          sudo chown -R $USER:$USER /usr/share/ollama/.ollama/models 2>/dev/null || true
-          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          # Always install fresh (fast, ~45s) — avoids systemd/user permission hell
+          curl -fsSL https://ollama.com/install.sh | sh
+
+          # Stop the systemd service — we run ollama manually as runner user
+          sudo systemctl stop ollama 2>/dev/null || true
+          sudo systemctl disable ollama 2>/dev/null || true
+
+          # Set up model storage under runner user (no permission issues)
+          export OLLAMA_MODELS="/home/runner/.ollama-model-cache"
+          mkdir -p "$OLLAMA_MODELS"
+
+          # Start ollama serve as current user with our model path
+          OLLAMA_MODELS="$OLLAMA_MODELS" nohup ollama serve > /tmp/ollama.log 2>&1 &
+
+          # Wait for API to be ready
           for i in $(seq 1 30); do
             curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
             sleep 2
           done
-          # Pull only if model not already cached
-          if ! ollama list | grep -q "$OLLAMA_MODEL"; then
-            echo "Model not found locally, pulling..."
-            ollama pull "$OLLAMA_MODEL"
+
+          # Pull only if not cached
+          if OLLAMA_MODELS="$OLLAMA_MODELS" ollama list 2>/dev/null | grep -q "$OLLAMA_MODEL"; then
+            echo "✅ Model already cached, skipping pull"
           else
-            echo "Model already cached, skipping pull"
+            echo "⬇️ Pulling model $OLLAMA_MODEL..."
+            OLLAMA_MODELS="$OLLAMA_MODELS" ollama pull "$OLLAMA_MODEL"
           fi
 
       - name: Run agentic analysis
@@ -376,39 +380,38 @@ jobs:
           name: ai-results
           path: agent_output/
 
-      # ── Cache Ollama binary + model ──
-      - name: Cache Ollama
+      # ── Cache Ollama model only ──
+      - name: Cache Ollama model
         id: ollama-cache-remed
         uses: actions/cache@v4
         with:
-          path: |
-            /usr/local/bin/ollama
-            /usr/share/ollama/.ollama/models
-            ~/.ollama/models
-          key: ollama-${{ env.OLLAMA_MODEL }}-v2
+          path: /home/runner/.ollama-model-cache
+          key: ollama-model-${{ env.OLLAMA_MODEL }}-v3
 
-      - name: Install Ollama
-        if: steps.ollama-cache-remed.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-
-      - name: Start Ollama & pull model
+      - name: Install & Start Ollama
         run: |
           set -e
-          # Ensure model directory exists for cache restore
-          sudo mkdir -p /usr/share/ollama/.ollama/models
-          sudo chown -R $USER:$USER /usr/share/ollama/.ollama/models 2>/dev/null || true
-          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          curl -fsSL https://ollama.com/install.sh | sh
+
+          # Stop systemd service — run manually as runner user
+          sudo systemctl stop ollama 2>/dev/null || true
+          sudo systemctl disable ollama 2>/dev/null || true
+
+          export OLLAMA_MODELS="/home/runner/.ollama-model-cache"
+          mkdir -p "$OLLAMA_MODELS"
+
+          OLLAMA_MODELS="$OLLAMA_MODELS" nohup ollama serve > /tmp/ollama.log 2>&1 &
+
           for i in $(seq 1 30); do
             curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
             sleep 2
           done
-          # Pull only if model not already cached
-          if ! ollama list | grep -q "$OLLAMA_MODEL"; then
-            echo "Model not found locally, pulling..."
-            ollama pull "$OLLAMA_MODEL"
+
+          if OLLAMA_MODELS="$OLLAMA_MODELS" ollama list 2>/dev/null | grep -q "$OLLAMA_MODEL"; then
+            echo "✅ Model already cached, skipping pull"
           else
-            echo "Model already cached, skipping pull"
+            echo "⬇️ Pulling model $OLLAMA_MODEL..."
+            OLLAMA_MODELS="$OLLAMA_MODELS" ollama pull "$OLLAMA_MODEL"
           fi
 
       - name: Generate suggestions Reports
@@ -1192,6 +1195,12 @@ jobs:
             ───────────────────────────────────────────────────────────
             DevSecOps Agentic AI Pipeline | Automated Security Scanning
           priority: ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
+
+
+
+
+
+
 
 
 
