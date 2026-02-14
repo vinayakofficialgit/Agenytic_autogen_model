@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-02-14T14:06:02.576316+00:00",
+  "pipeline_status": "fail",
+  "mode": "remediation",
+  "tools": {
+    "semgrep": {
+      "findings": 1,
+      "suggestions": 1
+    },
+    "trivy": {
+      "findings": 58,
+      "suggestions": 58
+    },
+    "tfsec": {
+      "findings": 1,
+      "suggestions": 1
+    },
+    "gitleaks": {
+      "findings": 0,
+      "suggestions": 1
+    },
+    "conftest": {
+      "findings": 0,
+      "suggestions": 1
+    }
+  },
+  "total_findings": 60,
+  "total_suggestions": 62
+}
