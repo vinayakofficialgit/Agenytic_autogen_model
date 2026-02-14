@@ -40,9 +40,32 @@ jobs:
           python3 -m venv envmine
           echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
 
+      # ── Cache pip packages ──
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ github.workspace }}/envmine
+          key: scan-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            scan-pip-
+
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
+
+      # ── Cache security tool binaries ──
+      - name: Cache security tools
+        id: tool-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/trivy
+            /usr/local/bin/tfsec
+            /usr/local/bin/gitleaks
+            /usr/local/bin/conftest
+          key: security-tools-v2-${{ runner.os }}
 
       ## ---------------- SEMGREP (CODE) ----------------
       - name: Run Semgrep (Application)
@@ -56,11 +79,17 @@ jobs:
             $APP_DIR
           test -f $REPORTS_DIR/semgrep.json
 
-      - name: Run Trivy FS (Application)
+      ## ---------------- TRIVY FS ----------------
+      - name: Install Trivy
+        if: steps.tool-cache.outputs.cache-hit != 'true'
         run: |
           set -e
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
           sudo mv ./bin/trivy /usr/local/bin/trivy
+
+      - name: Run Trivy FS (Application)
+        run: |
+          set -e
           trivy version
           trivy fs \
             --format json \
@@ -85,6 +114,7 @@ jobs:
 
       # ---------------- TFSEC ----------------
       - name: Install tfsec
+        if: steps.tool-cache.outputs.cache-hit != 'true'
         run: |
           set -e
           curl -sfL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
@@ -98,6 +128,7 @@ jobs:
 
       # ---------------- GITLEAKS ----------------
       - name: Install Gitleaks
+        if: steps.tool-cache.outputs.cache-hit != 'true'
         run: |
           set -e
           sudo apt-get update
@@ -116,6 +147,7 @@ jobs:
 
       # ---------------- CONFTEST (POLICY) ----------------
       - name: Install Conftest
+        if: steps.tool-cache.outputs.cache-hit != 'true'
         run: |
           set -e
           sudo apt-get update
@@ -142,10 +174,10 @@ jobs:
           path: reports/
 
 # ============================================================
-# JOB 2: AI ANALYSIS (OLLAMA ENABLED)#Agentic AI Analysis
+# JOB 2: AI ANALYSIS (OLLAMA ENABLED) — Agentic AI Analysis
 # ============================================================
   llm-agent-analysis:
-    name: 🤖 Run whole script with Agentic AI Analysis         
+    name: 🤖 Run whole script with Agentic AI Analysis
     runs-on: ubuntu-latest
     needs: security-scan
 
@@ -164,6 +196,17 @@ jobs:
           python3 -m venv envmine
           echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
 
+      # ── Cache pip packages ──
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ github.workspace }}/envmine
+          key: analysis-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            analysis-pip-
+
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
@@ -175,12 +218,29 @@ jobs:
           name: scan-reports
           path: reports/
 
-      - name: Start Ollama
+      # ── Cache Ollama binary + model ──
+      - name: Cache Ollama
+        id: ollama-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ollama
+            ~/.ollama/models
+          key: ollama-${{ env.OLLAMA_MODEL }}-v1
+
+      - name: Install Ollama
+        if: steps.ollama-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama & pull model
         run: |
           set -e
-          curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
-          sleep 10
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
+            sleep 2
+          done
           ollama pull "$OLLAMA_MODEL"
 
       - name: Run agentic analysis
@@ -199,7 +259,43 @@ jobs:
           path: agent_output/
 
 # ============================================================
-# JOB 3: REMEDIATION SUGGESTIONS (ALWAYS RUNS)
+# JOB 3: SECURITY GATE (official pass/fail verdict)
+# ============================================================
+  gate-check:
+    name: 🚦 Security Gate
+    runs-on: ubuntu-latest
+    needs: llm-agent-analysis
+    if: always()
+
+    outputs:
+      gate_result: ${{ steps.gate.outputs.gate_result }}
+
+    steps:
+      - name: Download AI results
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-results
+          path: agent_output/
+
+      - name: Evaluate gate
+        id: gate
+        run: |
+          if [ ! -f agent_output/decision.json ]; then
+            echo "❌ decision.json not found — failing gate"
+            echo "gate_result=fail" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          STATUS=$(jq -r '.status' agent_output/decision.json)
+          echo "gate_result=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "Final status: $STATUS"
+          if [ "$STATUS" = "fail" ]; then
+            echo "❌ Security gate FAILED — remediation suggestions will be generated next"
+            exit 1
+          fi
+          echo "✅ Security gate PASSED"
+
+# ============================================================
+# JOB 4: REMEDIATION SUGGESTIONS (ALWAYS RUNS after gate)
 #
 # OUTPUT STRUCTURE (in remediation-suggestions/ folder):
 #   remediation-suggestions/
@@ -217,7 +313,7 @@ jobs:
   remediation-suggestions:
     name: 💡 Remediation Suggestions
     runs-on: ubuntu-latest
-    needs: llm-agent-analysis
+    needs: [llm-agent-analysis, gate-check]
     if: always()
 
     outputs:
@@ -237,6 +333,17 @@ jobs:
           sudo apt update && sudo apt install -y python3-venv
           python3 -m venv envmine
           echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+      # ── Cache pip packages ──
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ github.workspace }}/envmine
+          key: remediation-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            remediation-pip-
 
       - name: Install Dependencies
         run: |
@@ -259,10 +366,24 @@ jobs:
           name: ai-results
           path: agent_output/
 
-      - name: Start Ollama
+      # ── Cache Ollama binary + model ──
+      - name: Cache Ollama
+        id: ollama-cache-remed
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/bin/ollama
+            ~/.ollama/models
+          key: ollama-${{ env.OLLAMA_MODEL }}-v1
+
+      - name: Install Ollama
+        if: steps.ollama-cache-remed.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama & pull model
         run: |
           set -e
-          curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
@@ -417,7 +538,6 @@ jobs:
               # ── PASS MODE: General improvement suggestions ──
               print("[SEMGREP] No critical findings — generating improvement suggestions...")
 
-              # Build context from scan results if available
               finding_summary = f"{len(semgrep_results)} total finding(s) found (none above threshold)." if semgrep_results else "No findings detected."
 
               prompt = (
@@ -459,7 +579,6 @@ jobs:
           print("[TRIVY] Processing...")
           print("="*60)
 
-          # ── Parse Trivy FS ──
           trivy_fs_data = load_json(REPORTS / "trivy_fs.json")
           trivy_findings = []
           if isinstance(trivy_fs_data, dict):
@@ -488,7 +607,6 @@ jobs:
                           "description": vuln.get("Description", "")[:300],
                       })
 
-          # ── Parse Trivy Image ──
           trivy_img_data = load_json(REPORTS / "trivy_image.json")
           if isinstance(trivy_img_data, dict):
               for result in trivy_img_data.get("Results", []):
@@ -613,7 +731,6 @@ jobs:
 
           tfsec_data = load_json(REPORTS / "tfsec.json")
           tfsec_results = tfsec_data.get("results", []) if isinstance(tfsec_data, dict) else []
-          # tfsec sometimes returns null for results
           if tfsec_results is None:
               tfsec_results = []
 
@@ -721,7 +838,6 @@ jobs:
                   rule     = finding.get("RuleID", finding.get("rule", ""))
                   filename = finding.get("File", finding.get("file", ""))
                   line     = finding.get("StartLine", finding.get("line", "?"))
-                  # Mask the match for safety
                   match_preview = finding.get("Match", finding.get("match", ""))[:30] + "***"
 
                   prompt = (
@@ -993,42 +1109,12 @@ jobs:
             _Generated by DevSecOps Agentic AI Pipeline_
 
 # ============================================================
-# JOB 4: SECURITY GATE (runs AFTER suggestions)
-# ============================================================
-  gate-check:
-    name: 🚦 Security Gate
-    runs-on: ubuntu-latest
-    needs: [llm-agent-analysis, remediation-suggestions]
-    if: always()
-
-    steps:
-      - name: Download AI results
-        uses: actions/download-artifact@v4
-        with:
-          name: ai-results
-          path: agent_output/
-
-      - name: Evaluate gate
-        run: |
-          if [ ! -f agent_output/decision.json ]; then
-            echo "❌ decision.json not found — failing gate"
-            exit 1
-          fi
-          STATUS=$(jq -r '.status' agent_output/decision.json)
-          echo "Final status: $STATUS"
-          if [ "$STATUS" = "fail" ]; then
-            echo "❌ Security gate FAILED — review remediation suggestions in the PR"
-            exit 1
-          fi
-          echo "✅ Security gate PASSED"
-
-# ============================================================
 # JOB 5: EMAIL NOTIFICATION
 # ============================================================
   email-notification:
     name: 📧 Gmail Notification
     runs-on: ubuntu-latest
-    needs: [llm-agent-analysis, remediation-suggestions, gate-check]
+    needs: [llm-agent-analysis, gate-check, remediation-suggestions]
     if: always()
 
     steps:
@@ -1086,3 +1172,1113 @@ jobs:
             ───────────────────────────────────────────────────────────
             DevSecOps Agentic AI Pipeline | Automated Security Scanning
           priority: ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ###########################
+# name: DevSecOps Agentic AI Pipeline
+
+# on:
+#   push:
+#     branches: [main, test-v-branch]
+#   pull_request:
+#     branches: [main, test-v-branch]
+#   workflow_dispatch:
+
+# env:
+#   PYTHON_VERSION: "3.12"
+#   APP_DIR: "Order-app-main"
+#   REPORTS_DIR: "reports"
+#   OUTPUT_DIR: "agent_output"
+#   ACTIONS_STEP_DEBUG: "true"
+#   LLM_ENABLED: ${{ secrets.LLM_ENABLED }}
+#   LLM_AUTOFIX: ${{ secrets.LLM_AUTOFIX }}
+#   OLLAMA_MODEL: "qwen2.5-coder:1.5b"
+#   OLLAMA_NUM_CTX: ${{ secrets.OLLAMA_NUM_CTX }}
+#   OLLAMA_NUM_PREDICT: ${{ secrets.OLLAMA_NUM_PREDICT }}
+#   OLLAMA_TEMPERATURE: ${{ secrets.OLLAMA_TEMPERATURE }}
+#   MIN_SEVERITY: "high"
+#   LLM_AUTOFIX_TOOLS: ${{ secrets.LLM_AUTOFIX_TOOLS }}
+
+# jobs:
+# # ============================================================
+# # JOB 1: SECURITY SCANS
+# # ============================================================
+#   security-scan:
+#     name: 🔍 Security Scan
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Setup Python & Venv
+#         run: |
+#           sudo apt update && sudo apt install -y python3-venv
+#           python3 -m venv envmine
+#           echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+#       - name: Install Dependencies
+#         run: |
+#           pip install -r requirements.txt
+
+#       ## ---------------- SEMGREP (CODE) ----------------
+#       - name: Run Semgrep (Application)
+#         run: |
+#           set -e
+#           pip install semgrep
+#           semgrep scan \
+#             --config=auto \
+#             --json \
+#             --output $REPORTS_DIR/semgrep.json \
+#             $APP_DIR
+#           test -f $REPORTS_DIR/semgrep.json
+
+#       - name: Run Trivy FS (Application)
+#         run: |
+#           set -e
+#           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+#           sudo mv ./bin/trivy /usr/local/bin/trivy
+#           trivy version
+#           trivy fs \
+#             --format json \
+#             --output $REPORTS_DIR/trivy_fs.json \
+#             $APP_DIR
+#           test -f $REPORTS_DIR/trivy_fs.json
+
+#       # ---------------- TRIVY IMAGE ----------------
+#       - name: Run Trivy Image (if Dockerfile exists)
+#         run: |
+#           set -e
+#           if [ -f "$APP_DIR/Dockerfile" ]; then
+#             docker build -t order-app:scan $APP_DIR
+#             trivy image \
+#               --format json \
+#               --output $REPORTS_DIR/trivy_image.json \
+#               order-app:scan
+#           else
+#             echo '{}' > $REPORTS_DIR/trivy_image.json
+#           fi
+#           test -f $REPORTS_DIR/trivy_image.json
+
+#       # ---------------- TFSEC ----------------
+#       - name: Install tfsec
+#         run: |
+#           set -e
+#           curl -sfL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+
+#       - name: Run tfsec
+#         run: |
+#           set -e
+#           tfsec terraform --format json \
+#             > "$REPORTS_DIR/tfsec.json" || true
+#           test -f "$REPORTS_DIR/tfsec.json"
+
+#       # ---------------- GITLEAKS ----------------
+#       - name: Install Gitleaks
+#         run: |
+#           set -e
+#           sudo apt-get update
+#           sudo apt-get install -y jq
+#           VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+#           curl -sL https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz \
+#             | tar -xz
+#           sudo mv gitleaks /usr/local/bin/
+
+#       - name: Run Gitleaks
+#         run: |
+#           set -e
+#           gitleaks detect --source . --report-format json \
+#             --report-path "$REPORTS_DIR/gitleaks.json" --no-git || true
+#           test -f "$REPORTS_DIR/gitleaks.json"
+
+#       # ---------------- CONFTEST (POLICY) ----------------
+#       - name: Install Conftest
+#         run: |
+#           set -e
+#           sudo apt-get update
+#           sudo apt-get install -y jq curl
+#           VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
+#           echo "Installing conftest $VERSION"
+#           curl -sL https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz \
+#             | tar -xz
+#           sudo mv conftest /usr/local/bin/
+#           conftest --version
+
+#       - name: Run Conftest (Policies)
+#         run: |
+#           set -e
+#           conftest test k8s terraform policy \
+#             --output json \
+#             > "$REPORTS_DIR/conftest.json" || echo "[]" > "$REPORTS_DIR/conftest.json"
+#           test -f "$REPORTS_DIR/conftest.json"
+
+#       - name: Upload scan reports
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: scan-reports
+#           path: reports/
+
+# # ============================================================
+# # JOB 2: AI ANALYSIS (OLLAMA ENABLED)#Agentic AI Analysis
+# # ============================================================
+#   llm-agent-analysis:
+#     name: 🤖 Run whole script with Agentic AI Analysis         
+#     runs-on: ubuntu-latest
+#     needs: security-scan
+
+#     outputs:
+#       pipeline_status: ${{ steps.status.outputs.pipeline_status }}
+
+#     steps:
+#       - uses: actions/checkout@v4
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Setup Python & Venv
+#         run: |
+#           sudo apt update && sudo apt install -y python3-venv
+#           python3 -m venv envmine
+#           echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+#       - name: Install Dependencies
+#         run: |
+#           pip install -r requirements.txt
+
+#       - run: pip install pyyaml requests jq
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: scan-reports
+#           path: reports/
+
+#       - name: Start Ollama
+#         run: |
+#           set -e
+#           curl -fsSL https://ollama.com/install.sh | sh
+#           nohup ollama serve > /tmp/ollama.log 2>&1 &
+#           sleep 10
+#           ollama pull "$OLLAMA_MODEL"
+
+#       - name: Run agentic analysis
+#         run: |
+#           python main.py --verbose || true
+
+#       - name: Capture All Reports
+#         id: status
+#         run: |
+#           STATUS=$(jq -r '.status' "$OUTPUT_DIR/decision.json")
+#           echo "pipeline_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output/
+
+# # ============================================================
+# # JOB 3: REMEDIATION SUGGESTIONS (ALWAYS RUNS)
+# #
+# # OUTPUT STRUCTURE (in remediation-suggestions/ folder):
+# #   remediation-suggestions/
+# #   ├── README.md                        ← overview + how to apply
+# #   ├── semgrep_suggestions.md           ← code fixes or improvements
+# #   ├── trivy_suggestions.md             ← FS + image vuln fixes or improvements
+# #   ├── tfsec_suggestions.md             ← Terraform fixes or improvements
+# #   ├── gitleaks_suggestions.md          ← secrets remediation or improvements
+# #   ├── conftest_suggestions.md          ← policy fixes or improvements
+# #   └── remediation_summary.json         ← machine-readable summary
+# #
+# # PASS MODE: Per-tool best-practice improvements (no PR)
+# # FAIL MODE: Per-tool remediation with code snippets (creates PR)
+# # ============================================================
+#   remediation-suggestions:
+#     name: 💡 Remediation Suggestions
+#     runs-on: ubuntu-latest
+#     needs: llm-agent-analysis
+#     if: always()
+
+#     outputs:
+#       suggestions_created: ${{ steps.generate.outputs.suggestions_created }}
+
+#     permissions:
+#       contents: write
+#       pull-requests: write
+
+#     steps:
+#       - uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - name: Setup Python & Venv
+#         run: |
+#           sudo apt update && sudo apt install -y python3-venv
+#           python3 -m venv envmine
+#           echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+
+#       - name: Install Dependencies
+#         run: |
+#           pip install -r requirements.txt
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - name: Install Python dependencies
+#         run: pip install pyyaml requests
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: scan-reports
+#           path: reports/
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output/
+
+#       - name: Start Ollama
+#         run: |
+#           set -e
+#           curl -fsSL https://ollama.com/install.sh | sh
+#           nohup ollama serve > /tmp/ollama.log 2>&1 &
+#           for i in $(seq 1 30); do
+#             curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
+#             sleep 2
+#           done
+#           ollama pull "$OLLAMA_MODEL"
+
+#       - name: Generate suggestions Reports
+#         id: generate
+#         env:
+#           OLLAMA_URL: "http://localhost:11434"
+#           PIPELINE_STATUS: ${{ needs.llm-agent-analysis.outputs.pipeline_status }}
+#         run: |
+#           set -e
+#           mkdir -p remediation-suggestions
+
+#           python3 << 'PYEOF'
+#           import json, os, sys, requests
+#           from pathlib import Path
+#           from datetime import datetime, timezone
+
+#           # ── CONFIG ──────────────────────────────────────────────
+#           REPORTS       = Path("reports")
+#           SUGGESTIONS   = Path("remediation-suggestions")
+#           AGENT_OUTPUT  = Path("agent_output")
+#           OLLAMA_URL    = os.getenv("OLLAMA_URL", "http://localhost:11434")
+#           OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:1.5b")
+#           PIPELINE_STATUS = os.getenv("PIPELINE_STATUS", "unknown")
+#           IS_FAIL       = (PIPELINE_STATUS == "fail")
+#           NUM_PREDICT   = int(os.getenv("OLLAMA_NUM_PREDICT", "2048"))
+#           now_utc       = datetime.now(timezone.utc)
+
+#           print(f"[INFO] Pipeline status: {PIPELINE_STATUS}")
+#           print(f"[INFO] Mode: {'REMEDIATION' if IS_FAIL else 'IMPROVEMENT'}")
+
+#           # ── LLM HELPER ─────────────────────────────────────────
+#           def llm_ask(system_prompt: str, user_prompt: str) -> str:
+#               """Ask Ollama and return the response. Returns empty string on failure."""
+#               try:
+#                   resp = requests.post(
+#                       f"{OLLAMA_URL}/api/chat",
+#                       json={
+#                           "model": OLLAMA_MODEL,
+#                           "messages": [
+#                               {"role": "system", "content": system_prompt},
+#                               {"role": "user",   "content": user_prompt},
+#                           ],
+#                           "stream": False,
+#                           "options": {
+#                               "temperature": 0.2,
+#                               "num_predict": NUM_PREDICT,
+#                           },
+#                       },
+#                       timeout=180,
+#                   )
+#                   resp.raise_for_status()
+#                   return resp.json().get("message", {}).get("content", "")
+#               except Exception as e:
+#                   print(f"[LLM Error] {e}")
+#                   return ""
+
+#           def load_json(path: Path):
+#               try:
+#                   return json.loads(path.read_text())
+#               except Exception:
+#                   return {}
+
+#           # ── TRACKING ────────────────────────────────────────────
+#           summary = {
+#               "generated_at": now_utc.isoformat(),
+#               "pipeline_status": PIPELINE_STATUS,
+#               "mode": "remediation" if IS_FAIL else "improvement",
+#               "tools": {},
+#               "total_findings": 0,
+#               "total_suggestions": 0,
+#           }
+
+#           readme = []
+#           readme.append("# 🔧 Security Suggestions\n")
+#           readme.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
+#           readme.append(f"Pipeline status: **{PIPELINE_STATUS}**\n")
+#           readme.append(f"Mode: **{'🔴 Remediation' if IS_FAIL else '🟢 Improvement'}**\n")
+#           readme.append("---\n")
+
+#           # ==========================================================
+#           # TOOL 1: SEMGREP
+#           # ==========================================================
+#           print("\n" + "="*60)
+#           print("[SEMGREP] Processing...")
+#           print("="*60)
+
+#           semgrep_data = load_json(REPORTS / "semgrep.json")
+#           semgrep_results = semgrep_data.get("results", []) if isinstance(semgrep_data, dict) else []
+
+#           sg_lines = []
+#           sg_lines.append("# 🐍 Semgrep — Application Code Analysis\n")
+#           sg_lines.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
+#           sg_lines.append(f"Mode: **{'Remediation' if IS_FAIL else 'Improvement'}**\n")
+#           sg_lines.append("---\n")
+
+#           if IS_FAIL and semgrep_results:
+#               # ── FAIL MODE: Per-finding remediation with code snippets ──
+#               print(f"[SEMGREP] {len(semgrep_results)} finding(s) — generating remediation...")
+#               for i, finding in enumerate(semgrep_results, 1):
+#                   check_id   = finding.get("check_id", "")
+#                   severity   = finding.get("extra", {}).get("severity", "UNKNOWN")
+#                   message    = finding.get("extra", {}).get("message", "")
+#                   filepath   = finding.get("path", "unknown")
+#                   start_line = finding.get("start", {}).get("line", "?")
+#                   end_line   = finding.get("end", {}).get("line", "?")
+#                   snippet    = finding.get("extra", {}).get("lines", "")
+#                   if not snippet:
+#                       snippet = finding.get("extra", {}).get("matched_code", "")
+
+#                   prompt = (
+#                       f"Semgrep finding:\n"
+#                       f"- Rule: {check_id}\n"
+#                       f"- Severity: {severity}\n"
+#                       f"- File: {filepath} (lines {start_line}-{end_line})\n"
+#                       f"- Message: {message}\n"
+#                       f"- Vulnerable code:\n```\n{snippet}\n```\n\n"
+#                       f"Tasks:\n"
+#                       f"1. Explain the vulnerability in 1-2 lines\n"
+#                       f"2. Generate the CORRECTED code that fixes this issue\n"
+#                       f"3. Show exactly which file and line numbers to replace\n"
+#                       f"4. Note any imports or dependencies needed\n\n"
+#                       f"Output the corrected code in a fenced code block."
+#                   )
+
+#                   suggestion = llm_ask(
+#                       "You are a senior application security engineer. Generate safe, "
+#                       "minimal code fixes with corrected code blocks. Never introduce new vulnerabilities.",
+#                       prompt,
+#                   )
+
+#                   sg_lines.append(f"## Finding {i}: `{check_id}` [{severity}]\n")
+#                   sg_lines.append(f"**File:** `{filepath}` (lines {start_line}-{end_line})\n")
+#                   sg_lines.append(f"**Issue:** {message[:300]}\n")
+#                   sg_lines.append(f"**Vulnerable code:**\n```\n{snippet}\n```\n")
+#                   sg_lines.append(f"### Suggested Fix\n")
+#                   if suggestion.strip():
+#                       sg_lines.append(suggestion.strip())
+#                   else:
+#                       sg_lines.append("*LLM could not generate a suggestion for this finding.*")
+#                   sg_lines.append("\n---\n")
+
+#               summary["tools"]["semgrep"] = {"findings": len(semgrep_results), "suggestions": len(semgrep_results)}
+#               summary["total_findings"] += len(semgrep_results)
+#               summary["total_suggestions"] += len(semgrep_results)
+
+#           else:
+#               # ── PASS MODE: General improvement suggestions ──
+#               print("[SEMGREP] No critical findings — generating improvement suggestions...")
+
+#               # Build context from scan results if available
+#               finding_summary = f"{len(semgrep_results)} total finding(s) found (none above threshold)." if semgrep_results else "No findings detected."
+
+#               prompt = (
+#                   f"Semgrep scan results: {finding_summary}\n\n"
+#                   f"Provide best-practice improvements for application code security:\n"
+#                   f"1. Input validation & sanitization patterns\n"
+#                   f"2. Authentication & authorization best practices\n"
+#                   f"3. Secure coding patterns (avoid hardcoded secrets, SQL injection, XSS)\n"
+#                   f"4. Recommended Semgrep custom rules to add\n"
+#                   f"5. Code review checklist for security\n\n"
+#                   f"Include example code snippets for each recommendation."
+#               )
+
+#               improvement = llm_ask(
+#                   "You are a senior application security engineer. Provide actionable "
+#                   "improvement suggestions with code examples for a Python/JS web application.",
+#                   prompt,
+#               )
+
+#               sg_lines.append("## 🟢 Improvement Suggestions\n")
+#               sg_lines.append("Pipeline passed. These are proactive hardening recommendations.\n\n")
+#               if improvement.strip():
+#                   sg_lines.append(improvement.strip())
+#               else:
+#                   sg_lines.append("*No improvement suggestions generated.*")
+#               sg_lines.append("\n")
+
+#               summary["tools"]["semgrep"] = {"findings": len(semgrep_results), "suggestions": 1}
+#               summary["total_suggestions"] += 1
+
+#           (SUGGESTIONS / "semgrep_suggestions.md").write_text("\n".join(sg_lines))
+#           readme.append(f"## 🐍 Semgrep (Application Code)\n")
+#           readme.append(f"📄 `semgrep_suggestions.md` — {len(semgrep_results)} finding(s)\n\n")
+
+#           # ==========================================================
+#           # TOOL 2: TRIVY (FS + IMAGE combined)
+#           # ==========================================================
+#           print("\n" + "="*60)
+#           print("[TRIVY] Processing...")
+#           print("="*60)
+
+#           # ── Parse Trivy FS ──
+#           trivy_fs_data = load_json(REPORTS / "trivy_fs.json")
+#           trivy_findings = []
+#           if isinstance(trivy_fs_data, dict):
+#               for result in trivy_fs_data.get("Results", []):
+#                   target = result.get("Target", "")
+#                   for misconf in result.get("Misconfigurations", []):
+#                       trivy_findings.append({
+#                           "source": "trivy_fs", "type": "misconfiguration",
+#                           "target": target,
+#                           "id": misconf.get("ID", ""),
+#                           "title": misconf.get("Title", ""),
+#                           "description": misconf.get("Description", "")[:300],
+#                           "severity": misconf.get("Severity", "UNKNOWN"),
+#                           "resolution": misconf.get("Resolution", ""),
+#                       })
+#                   for vuln in result.get("Vulnerabilities", []):
+#                       trivy_findings.append({
+#                           "source": "trivy_fs", "type": "vulnerability",
+#                           "target": target,
+#                           "id": vuln.get("VulnerabilityID", ""),
+#                           "pkg_name": vuln.get("PkgName", ""),
+#                           "installed": vuln.get("InstalledVersion", ""),
+#                           "fixed": vuln.get("FixedVersion", ""),
+#                           "severity": vuln.get("Severity", "UNKNOWN"),
+#                           "title": vuln.get("Title", ""),
+#                           "description": vuln.get("Description", "")[:300],
+#                       })
+
+#           # ── Parse Trivy Image ──
+#           trivy_img_data = load_json(REPORTS / "trivy_image.json")
+#           if isinstance(trivy_img_data, dict):
+#               for result in trivy_img_data.get("Results", []):
+#                   target = result.get("Target", "")
+#                   for vuln in result.get("Vulnerabilities", []):
+#                       trivy_findings.append({
+#                           "source": "trivy_image", "type": "vulnerability",
+#                           "target": target,
+#                           "id": vuln.get("VulnerabilityID", ""),
+#                           "pkg_name": vuln.get("PkgName", ""),
+#                           "installed": vuln.get("InstalledVersion", ""),
+#                           "fixed": vuln.get("FixedVersion", ""),
+#                           "severity": vuln.get("Severity", "UNKNOWN"),
+#                           "title": vuln.get("Title", ""),
+#                       })
+
+#           tv_lines = []
+#           tv_lines.append("# 🔍 Trivy — Vulnerability & Misconfiguration Analysis\n")
+#           tv_lines.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
+#           tv_lines.append(f"Mode: **{'Remediation' if IS_FAIL else 'Improvement'}**\n")
+#           tv_lines.append("---\n")
+
+#           if IS_FAIL and trivy_findings:
+#               print(f"[TRIVY] {len(trivy_findings)} finding(s) — generating remediation...")
+#               for i, f in enumerate(trivy_findings, 1):
+#                   if f["type"] == "misconfiguration":
+#                       prompt = (
+#                           f"Trivy {f['source']} misconfiguration:\n"
+#                           f"- ID: {f['id']}\n"
+#                           f"- Severity: {f['severity']}\n"
+#                           f"- File: {f['target']}\n"
+#                           f"- Title: {f['title']}\n"
+#                           f"- Description: {f['description']}\n"
+#                           f"- Recommended resolution: {f.get('resolution', 'N/A')}\n\n"
+#                           f"Provide:\n"
+#                           f"1. What is wrong and why it matters\n"
+#                           f"2. The corrected configuration code\n"
+#                           f"3. Exact file and what to change"
+#                       )
+#                   else:
+#                       prompt = (
+#                           f"Trivy {f['source']} vulnerability:\n"
+#                           f"- CVE: {f['id']}\n"
+#                           f"- Severity: {f['severity']}\n"
+#                           f"- Package: {f.get('pkg_name', '')} "
+#                           f"(installed: {f.get('installed', '')}, fixed: {f.get('fixed', 'N/A')})\n"
+#                           f"- File/Layer: {f['target']}\n"
+#                           f"- Title: {f.get('title', '')}\n\n"
+#                           f"Provide:\n"
+#                           f"1. What is the vulnerability and its impact\n"
+#                           f"2. Exact command or file change to fix it\n"
+#                           f"3. Any breaking changes to watch for"
+#                       )
+
+#                   suggestion = llm_ask(
+#                       "You are a cloud security engineer. Provide safe, actionable "
+#                       "remediation with exact commands or config changes.",
+#                       prompt,
+#                   )
+
+#                   source_label = "📦 Filesystem" if f["source"] == "trivy_fs" else "🐳 Container Image"
+#                   tv_lines.append(f"## Finding {i}: `{f['id']}` [{f['severity']}] — {source_label}\n")
+#                   tv_lines.append(f"**File/Layer:** `{f['target']}`\n")
+#                   if f["type"] == "vulnerability":
+#                       tv_lines.append(f"**Package:** {f.get('pkg_name', '')} "
+#                                       f"({f.get('installed', '')} → {f.get('fixed', 'N/A')})\n")
+#                   else:
+#                       tv_lines.append(f"**Title:** {f['title']}\n")
+#                   tv_lines.append(f"### Suggested Fix\n")
+#                   if suggestion.strip():
+#                       tv_lines.append(suggestion.strip())
+#                   else:
+#                       tv_lines.append("*LLM could not generate a suggestion.*")
+#                   tv_lines.append("\n---\n")
+
+#               summary["tools"]["trivy"] = {"findings": len(trivy_findings), "suggestions": len(trivy_findings)}
+#               summary["total_findings"] += len(trivy_findings)
+#               summary["total_suggestions"] += len(trivy_findings)
+
+#           else:
+#               print("[TRIVY] No critical findings — generating improvement suggestions...")
+#               finding_summary = f"{len(trivy_findings)} total finding(s) (none above threshold)." if trivy_findings else "No findings detected."
+
+#               prompt = (
+#                   f"Trivy scan results: {finding_summary}\n\n"
+#                   f"Provide best-practice improvements for:\n"
+#                   f"1. Dockerfile security (minimal base images, non-root user, multi-stage builds)\n"
+#                   f"2. Dependency management (lock files, automated updates, audit commands)\n"
+#                   f"3. Container runtime security (read-only filesystem, resource limits)\n"
+#                   f"4. Infrastructure misconfig prevention\n"
+#                   f"5. Vulnerability scanning integration into CI/CD\n\n"
+#                   f"Include example Dockerfile snippets and commands."
+#               )
+
+#               improvement = llm_ask(
+#                   "You are a container and infrastructure security expert. "
+#                   "Provide actionable hardening suggestions with code examples.",
+#                   prompt,
+#               )
+
+#               tv_lines.append("## 🟢 Improvement Suggestions\n")
+#               tv_lines.append("Pipeline passed. These are proactive hardening recommendations.\n\n")
+#               if improvement.strip():
+#                   tv_lines.append(improvement.strip())
+#               else:
+#                   tv_lines.append("*No improvement suggestions generated.*")
+#               tv_lines.append("\n")
+
+#               summary["tools"]["trivy"] = {"findings": len(trivy_findings), "suggestions": 1}
+#               summary["total_suggestions"] += 1
+
+#           (SUGGESTIONS / "trivy_suggestions.md").write_text("\n".join(tv_lines))
+#           readme.append(f"## 🔍 Trivy (Vulnerabilities & Misconfigs)\n")
+#           readme.append(f"📄 `trivy_suggestions.md` — {len(trivy_findings)} finding(s)\n\n")
+
+#           # ==========================================================
+#           # TOOL 3: TFSEC
+#           # ==========================================================
+#           print("\n" + "="*60)
+#           print("[TFSEC] Processing...")
+#           print("="*60)
+
+#           tfsec_data = load_json(REPORTS / "tfsec.json")
+#           tfsec_results = tfsec_data.get("results", []) if isinstance(tfsec_data, dict) else []
+#           # tfsec sometimes returns null for results
+#           if tfsec_results is None:
+#               tfsec_results = []
+
+#           tf_lines = []
+#           tf_lines.append("# 🏗️ tfsec — Terraform Security Analysis\n")
+#           tf_lines.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
+#           tf_lines.append(f"Mode: **{'Remediation' if IS_FAIL else 'Improvement'}**\n")
+#           tf_lines.append("---\n")
+
+#           if IS_FAIL and tfsec_results:
+#               print(f"[TFSEC] {len(tfsec_results)} finding(s) — generating remediation...")
+#               for i, finding in enumerate(tfsec_results, 1):
+#                   severity   = finding.get("severity", "UNKNOWN")
+#                   rule_id    = finding.get("rule_id", finding.get("long_id", ""))
+#                   desc       = finding.get("description", "")
+#                   filename   = finding.get("location", {}).get("filename", "unknown")
+#                   start_line = finding.get("location", {}).get("start_line", "?")
+#                   end_line   = finding.get("location", {}).get("end_line", "?")
+
+#                   prompt = (
+#                       f"tfsec finding:\n"
+#                       f"- Rule: {rule_id}\n"
+#                       f"- Severity: {severity}\n"
+#                       f"- File: {filename} (lines {start_line}-{end_line})\n"
+#                       f"- Description: {desc}\n\n"
+#                       f"Provide:\n"
+#                       f"1. What is wrong and the security impact\n"
+#                       f"2. The corrected Terraform HCL code block\n"
+#                       f"3. Exact file and line numbers to replace"
+#                   )
+
+#                   suggestion = llm_ask(
+#                       "You are a Terraform security expert. Generate safe, minimal "
+#                       "Terraform fixes. Show corrected HCL code blocks.",
+#                       prompt,
+#                   )
+
+#                   tf_lines.append(f"## Finding {i}: `{rule_id}` [{severity}]\n")
+#                   tf_lines.append(f"**File:** `{filename}` (lines {start_line}-{end_line})\n")
+#                   tf_lines.append(f"**Issue:** {desc}\n")
+#                   tf_lines.append(f"### Suggested Fix\n")
+#                   if suggestion.strip():
+#                       tf_lines.append(suggestion.strip())
+#                   else:
+#                       tf_lines.append("*LLM could not generate a suggestion.*")
+#                   tf_lines.append("\n---\n")
+
+#               summary["tools"]["tfsec"] = {"findings": len(tfsec_results), "suggestions": len(tfsec_results)}
+#               summary["total_findings"] += len(tfsec_results)
+#               summary["total_suggestions"] += len(tfsec_results)
+
+#           else:
+#               print("[TFSEC] No critical findings — generating improvement suggestions...")
+#               prompt = (
+#                   f"tfsec scan found {len(tfsec_results)} finding(s) (none above threshold).\n\n"
+#                   f"Provide Terraform security best practices:\n"
+#                   f"1. State file security (encryption, remote backend)\n"
+#                   f"2. IAM least-privilege patterns\n"
+#                   f"3. Network security (security groups, NACLs)\n"
+#                   f"4. Encryption at rest and in transit\n"
+#                   f"5. Tagging and compliance standards\n\n"
+#                   f"Include example HCL code snippets."
+#               )
+
+#               improvement = llm_ask(
+#                   "You are a Terraform security expert. Provide actionable "
+#                   "hardening suggestions with HCL code examples.",
+#                   prompt,
+#               )
+
+#               tf_lines.append("## 🟢 Improvement Suggestions\n")
+#               tf_lines.append("Pipeline passed. These are proactive Terraform hardening recommendations.\n\n")
+#               if improvement.strip():
+#                   tf_lines.append(improvement.strip())
+#               else:
+#                   tf_lines.append("*No improvement suggestions generated.*")
+#               tf_lines.append("\n")
+
+#               summary["tools"]["tfsec"] = {"findings": len(tfsec_results), "suggestions": 1}
+#               summary["total_suggestions"] += 1
+
+#           (SUGGESTIONS / "tfsec_suggestions.md").write_text("\n".join(tf_lines))
+#           readme.append(f"## 🏗️ tfsec (Terraform)\n")
+#           readme.append(f"📄 `tfsec_suggestions.md` — {len(tfsec_results)} finding(s)\n\n")
+
+#           # ==========================================================
+#           # TOOL 4: GITLEAKS
+#           # ==========================================================
+#           print("\n" + "="*60)
+#           print("[GITLEAKS] Processing...")
+#           print("="*60)
+
+#           gitleaks_data = load_json(REPORTS / "gitleaks.json")
+#           gitleaks_results = gitleaks_data if isinstance(gitleaks_data, list) else []
+
+#           gl_lines = []
+#           gl_lines.append("# 🔑 Gitleaks — Secrets Detection Analysis\n")
+#           gl_lines.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
+#           gl_lines.append(f"Mode: **{'Remediation' if IS_FAIL else 'Improvement'}**\n")
+#           gl_lines.append("---\n")
+
+#           if IS_FAIL and gitleaks_results:
+#               print(f"[GITLEAKS] {len(gitleaks_results)} finding(s) — generating remediation...")
+#               for i, finding in enumerate(gitleaks_results, 1):
+#                   rule     = finding.get("RuleID", finding.get("rule", ""))
+#                   filename = finding.get("File", finding.get("file", ""))
+#                   line     = finding.get("StartLine", finding.get("line", "?"))
+#                   # Mask the match for safety
+#                   match_preview = finding.get("Match", finding.get("match", ""))[:30] + "***"
+
+#                   prompt = (
+#                       f"Gitleaks secret detection:\n"
+#                       f"- Rule: {rule}\n"
+#                       f"- File: {filename} (line {line})\n"
+#                       f"- Match preview: {match_preview}\n\n"
+#                       f"Provide step-by-step remediation:\n"
+#                       f"1. How to rotate/revoke the exposed secret\n"
+#                       f"2. How to replace it with env vars or a secrets manager\n"
+#                       f"3. .gitignore or pre-commit hook to prevent re-commit\n"
+#                       f"4. Git history cleanup commands (BFG or git filter-branch)\n\n"
+#                       f"Include exact commands and code snippets. NEVER include the actual secret."
+#                   )
+
+#                   suggestion = llm_ask(
+#                       "You are a secrets management expert. Provide clear, actionable "
+#                       "remediation steps. NEVER include actual secrets in your response.",
+#                       prompt,
+#                   )
+
+#                   gl_lines.append(f"## Finding {i}: `{rule}` in `{filename}:{line}`\n")
+#                   gl_lines.append(f"### Suggested Fix\n")
+#                   if suggestion.strip():
+#                       gl_lines.append(suggestion.strip())
+#                   else:
+#                       gl_lines.append("*LLM could not generate a suggestion.*")
+#                   gl_lines.append("\n---\n")
+
+#               summary["tools"]["gitleaks"] = {"findings": len(gitleaks_results), "suggestions": len(gitleaks_results)}
+#               summary["total_findings"] += len(gitleaks_results)
+#               summary["total_suggestions"] += len(gitleaks_results)
+
+#           else:
+#               print("[GITLEAKS] No findings — generating improvement suggestions...")
+#               prompt = (
+#                   f"Gitleaks scan found {len(gitleaks_results)} finding(s) (none above threshold).\n\n"
+#                   f"Provide secrets management best practices:\n"
+#                   f"1. Pre-commit hooks for secret detection (with setup commands)\n"
+#                   f"2. Environment variable patterns and .env file management\n"
+#                   f"3. Secrets manager integration (AWS Secrets Manager, HashiCorp Vault)\n"
+#                   f"4. CI/CD secrets handling best practices\n"
+#                   f"5. .gitignore patterns for sensitive files\n\n"
+#                   f"Include example configs and commands."
+#               )
+
+#               improvement = llm_ask(
+#                   "You are a secrets management expert. Provide actionable "
+#                   "hardening suggestions with configuration examples.",
+#                   prompt,
+#               )
+
+#               gl_lines.append("## 🟢 Improvement Suggestions\n")
+#               gl_lines.append("Pipeline passed. These are proactive secrets management recommendations.\n\n")
+#               if improvement.strip():
+#                   gl_lines.append(improvement.strip())
+#               else:
+#                   gl_lines.append("*No improvement suggestions generated.*")
+#               gl_lines.append("\n")
+
+#               summary["tools"]["gitleaks"] = {"findings": len(gitleaks_results), "suggestions": 1}
+#               summary["total_suggestions"] += 1
+
+#           (SUGGESTIONS / "gitleaks_suggestions.md").write_text("\n".join(gl_lines))
+#           readme.append(f"## 🔑 Gitleaks (Secrets)\n")
+#           readme.append(f"📄 `gitleaks_suggestions.md` — {len(gitleaks_results)} finding(s)\n\n")
+
+#           # ==========================================================
+#           # TOOL 5: CONFTEST
+#           # ==========================================================
+#           print("\n" + "="*60)
+#           print("[CONFTEST] Processing...")
+#           print("="*60)
+
+#           conftest_data = load_json(REPORTS / "conftest.json")
+#           conftest_failures = []
+#           if isinstance(conftest_data, list):
+#               for entry in conftest_data:
+#                   if isinstance(entry, dict):
+#                       for fail in entry.get("failures", []):
+#                           conftest_failures.append({
+#                               "file": entry.get("filename", "unknown"),
+#                               "msg": fail.get("msg", "") if isinstance(fail, dict) else str(fail),
+#                           })
+
+#           ct_lines = []
+#           ct_lines.append("# 📋 Conftest — Policy Compliance Analysis\n")
+#           ct_lines.append(f"Generated: {now_utc.strftime('%Y-%m-%d %H:%M UTC')}\n")
+#           ct_lines.append(f"Mode: **{'Remediation' if IS_FAIL else 'Improvement'}**\n")
+#           ct_lines.append("---\n")
+
+#           if IS_FAIL and conftest_failures:
+#               print(f"[CONFTEST] {len(conftest_failures)} failure(s) — generating remediation...")
+#               for i, failure in enumerate(conftest_failures, 1):
+#                   filename = failure.get("file", "unknown")
+#                   msg      = failure.get("msg", "")
+
+#                   prompt = (
+#                       f"Conftest policy failure:\n"
+#                       f"- File: {filename}\n"
+#                       f"- Policy violation: {msg}\n\n"
+#                       f"Provide:\n"
+#                       f"1. What the policy requires and why\n"
+#                       f"2. The corrected YAML/HCL code that satisfies this policy\n"
+#                       f"3. Exact file to apply it to\n\n"
+#                       f"Output the corrected code in a fenced code block."
+#                   )
+
+#                   suggestion = llm_ask(
+#                       "You are a Kubernetes/Terraform policy expert. Generate minimal, "
+#                       "policy-compliant code fixes.",
+#                       prompt,
+#                   )
+
+#                   ct_lines.append(f"## Policy Failure {i}: `{filename}`\n")
+#                   ct_lines.append(f"**Violation:** {msg}\n")
+#                   ct_lines.append(f"### Suggested Fix\n")
+#                   if suggestion.strip():
+#                       ct_lines.append(suggestion.strip())
+#                   else:
+#                       ct_lines.append("*LLM could not generate a suggestion.*")
+#                   ct_lines.append("\n---\n")
+
+#               summary["tools"]["conftest"] = {"findings": len(conftest_failures), "suggestions": len(conftest_failures)}
+#               summary["total_findings"] += len(conftest_failures)
+#               summary["total_suggestions"] += len(conftest_failures)
+
+#           else:
+#               print("[CONFTEST] No failures — generating improvement suggestions...")
+#               prompt = (
+#                   f"Conftest scan found {len(conftest_failures)} policy failure(s) (none critical).\n\n"
+#                   f"Provide policy-as-code best practices:\n"
+#                   f"1. OPA/Rego policy patterns for Kubernetes security\n"
+#                   f"2. Terraform compliance policies (tagging, encryption, networking)\n"
+#                   f"3. Custom Conftest rules to add to CI/CD\n"
+#                   f"4. Policy testing and validation strategies\n"
+#                   f"5. Governance and audit trail recommendations\n\n"
+#                   f"Include example Rego policy snippets."
+#               )
+
+#               improvement = llm_ask(
+#                   "You are a policy-as-code expert. Provide actionable "
+#                   "policy improvement suggestions with Rego/YAML examples.",
+#                   prompt,
+#               )
+
+#               ct_lines.append("## 🟢 Improvement Suggestions\n")
+#               ct_lines.append("Pipeline passed. These are proactive policy hardening recommendations.\n\n")
+#               if improvement.strip():
+#                   ct_lines.append(improvement.strip())
+#               else:
+#                   ct_lines.append("*No improvement suggestions generated.*")
+#               ct_lines.append("\n")
+
+#               summary["tools"]["conftest"] = {"findings": len(conftest_failures), "suggestions": 1}
+#               summary["total_suggestions"] += 1
+
+#           (SUGGESTIONS / "conftest_suggestions.md").write_text("\n".join(ct_lines))
+#           readme.append(f"## 📋 Conftest (Policy)\n")
+#           readme.append(f"📄 `conftest_suggestions.md` — {len(conftest_failures)} failure(s)\n\n")
+
+#           # ==========================================================
+#           # INCLUDE LLM ANALYSIS FROM JOB 2 (if exists)
+#           # ==========================================================
+#           llm_reco = AGENT_OUTPUT / "llm_recommendations.md"
+#           if llm_reco.exists():
+#               content = llm_reco.read_text()
+#               (SUGGESTIONS / "llm_analysis_recommendations.md").write_text(content)
+#               readme.append("## 🤖 LLM Analysis Recommendations\n")
+#               readme.append("📄 `llm_analysis_recommendations.md` — Full AI analysis from Job 2\n\n")
+
+#           # ==========================================================
+#           # WRITE SUMMARY & README
+#           # ==========================================================
+#           readme.append("---\n")
+#           readme.append("## How to use\n\n")
+#           if IS_FAIL:
+#               readme.append("1. Review each `*_suggestions.md` file for per-tool remediation\n")
+#               readme.append("2. Copy the corrected code snippets into your source files\n")
+#               readme.append("3. Test your changes locally\n")
+#               readme.append("4. Commit and push to your branch\n")
+#               readme.append("5. Close the remediation PR once fixes are applied\n")
+#           else:
+#               readme.append("1. Review each `*_suggestions.md` file for improvement ideas\n")
+#               readme.append("2. Prioritize and implement the suggestions that fit your roadmap\n")
+#               readme.append("3. No urgent action required — these are hardening recommendations\n")
+#           readme.append("\n> ⚠️ These are AI-generated suggestions. Always review before applying.\n")
+
+#           (SUGGESTIONS / "remediation_summary.json").write_text(json.dumps(summary, indent=2))
+#           (SUGGESTIONS / "README.md").write_text("\n".join(readme))
+
+#           print(f"\n{'='*60}")
+#           print(f"✅ Generated {summary['total_suggestions']} suggestion(s) across {len(summary['tools'])} tool(s)")
+#           print(f"   Mode: {summary['mode']}")
+#           print(f"   Files created: {list(SUGGESTIONS.glob('*'))}")
+#           print(f"{'='*60}")
+
+#           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+#               fh.write(f"suggestions_created=true\n")
+
+#           PYEOF
+
+#       - name: Show generated suggestions
+#         if: always()
+#         run: |
+#           echo "=== Suggestion files ==="
+#           ls -la remediation-suggestions/ || echo "No files"
+#           echo ""
+#           echo "=== README.md ==="
+#           cat remediation-suggestions/README.md 2>/dev/null || echo "Not found"
+#           echo ""
+#           echo "=== Summary JSON ==="
+#           cat remediation-suggestions/remediation_summary.json 2>/dev/null || echo "Not found"
+
+#       - name: Upload suggestion artifacts
+#         if: always()
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: remediation-suggestions
+#           path: remediation-suggestions/
+
+#       - name: Generate unique branch name
+#         id: branch
+#         run: |
+#           BRANCH="remediation/suggestions-run-${{ github.run_number }}"
+#           echo "name=$BRANCH" >> "$GITHUB_OUTPUT"
+
+#       - name: Create suggestions PR (only if pipeline FAILED)
+#         if: >
+#           steps.generate.outputs.suggestions_created == 'true' &&
+#           needs.llm-agent-analysis.outputs.pipeline_status == 'fail'
+#         uses: peter-evans/create-pull-request@v6
+#         with:
+#           token: ${{ secrets.GITHUB_TOKEN }}
+#           branch: ${{ steps.branch.outputs.name }}
+#           base: test-v-branch
+#           delete-branch: true
+#           add-paths: remediation-suggestions/**
+#           title: "🔴 Security Remediation Suggestions (Run #${{ github.run_number }})"
+#           commit-message: "docs: add LLM-generated remediation suggestions"
+#           body: |
+#             ## 🔴 AI-Generated Remediation Suggestions
+
+#             **Run:** #${{ github.run_number }}
+#             **Trigger:** Security gate FAILED — vulnerabilities detected.
+
+#             ### 📁 Files in this PR
+
+#             | File | Tool | Contents |
+#             |------|------|----------|
+#             | `semgrep_suggestions.md` | Semgrep | App code fixes with corrected snippets |
+#             | `trivy_suggestions.md` | Trivy | Dependency & container fixes |
+#             | `tfsec_suggestions.md` | tfsec | Terraform HCL fixes |
+#             | `gitleaks_suggestions.md` | Gitleaks | Secret rotation & cleanup steps |
+#             | `conftest_suggestions.md` | Conftest | Policy-compliant code fixes |
+#             | `remediation_summary.json` | Summary | Machine-readable results |
+
+#             ### 📋 How to use
+
+#             1. Review each file in `remediation-suggestions/`
+#             2. Copy the corrected code into your source files
+#             3. Test locally
+#             4. Commit your changes
+#             5. Close this PR
+
+#             > ⚠️ **These are AI-generated suggestions. Always review before applying.**
+
+#             ---
+#             _Generated by DevSecOps Agentic AI Pipeline_
+
+# # ============================================================
+# # JOB 4: SECURITY GATE (runs AFTER suggestions)
+# # ============================================================
+#   gate-check:
+#     name: 🚦 Security Gate
+#     runs-on: ubuntu-latest
+#     needs: [llm-agent-analysis, remediation-suggestions]
+#     if: always()
+
+#     steps:
+#       - name: Download AI results
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output/
+
+#       - name: Evaluate gate
+#         run: |
+#           if [ ! -f agent_output/decision.json ]; then
+#             echo "❌ decision.json not found — failing gate"
+#             exit 1
+#           fi
+#           STATUS=$(jq -r '.status' agent_output/decision.json)
+#           echo "Final status: $STATUS"
+#           if [ "$STATUS" = "fail" ]; then
+#             echo "❌ Security gate FAILED — review remediation suggestions in the PR"
+#             exit 1
+#           fi
+#           echo "✅ Security gate PASSED"
+
+# # ============================================================
+# # JOB 5: EMAIL NOTIFICATION
+# # ============================================================
+#   email-notification:
+#     name: 📧 Gmail Notification
+#     runs-on: ubuntu-latest
+#     needs: [llm-agent-analysis, remediation-suggestions, gate-check]
+#     if: always()
+
+#     steps:
+#       - name: 📧 Prepare & Send Email
+#         uses: dawidd6/action-send-mail@v3
+#         with:
+#           server_address: smtp.gmail.com
+#           server_port: 587
+#           username: ${{ secrets.GMAIL_USERNAME }}
+#           password: ${{ secrets.GMAIL_APP_PASSWORD }}
+#           subject: "${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '🔴 [SECURITY ALERT]' || '🟢 [SECURITY OK]' }} ${{ github.repository }} - ${{ github.ref_name }}"
+#           to: ${{ secrets.NOTIFICATION_EMAIL }}
+#           from: "Agentic Pipeline DevSecOps Pipeline Vinayak<${{ secrets.GMAIL_USERNAME }}>"
+#           body: |
+#             ═══════════════════════════════════════════════════════════
+#                         DevSecOps Security Scan Report
+#             ═══════════════════════════════════════════════════════════
+
+#             Status:     ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '❌ FAILED' || '✅ PASSED' }}
+#             Repository: ${{ github.repository }}
+#             Branch:     ${{ github.ref_name }}
+#             Commit:     ${{ github.sha }}
+#             Actor:      ${{ github.actor }}
+
+#             ───────────────────────────────────────────────────────────
+#                                 SCAN RESULTS
+#             ───────────────────────────────────────────────────────────
+
+#             Total Findings: ${{ needs.llm-agent-analysis.outputs.total_findings }}
+
+#             🔴 Critical:    ${{ needs.llm-agent-analysis.outputs.critical_count }}
+#             🟠 High:        ${{ needs.llm-agent-analysis.outputs.high_count }}
+#             🟡 Medium:      ${{ needs.llm-agent-analysis.outputs.medium_count }}
+
+#             Reason: ${{ needs.llm-agent-analysis.outputs.reason }}
+
+#             ───────────────────────────────────────────────────────────
+#                             REMEDIATION SUGGESTIONS
+#             ───────────────────────────────────────────────────────────
+
+#             Suggestions Generated: ${{ needs.remediation-suggestions.outputs.suggestions_created || 'N/A' }}
+#             Gate Result:           ${{ needs.gate-check.result }}
+
+#             ${{ needs.remediation-suggestions.outputs.suggestions_created == 'true' && needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '💡 A PR with remediation suggestions has been created. Review and apply the fixes.' || '✅ Improvement suggestions available as build artifacts.' }}
+
+#             ───────────────────────────────────────────────────────────
+#                                     LINKS
+#             ───────────────────────────────────────────────────────────
+
+#             📋 View Run:    https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+#             📝 View Commit: https://github.com/${{ github.repository }}/commit/${{ github.sha }}
+
+#             ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && '⚠️  ACTION REQUIRED: Please review remediation suggestions and fix security issues before merging.' || '✅ All security checks passed.' }}
+
+#             ───────────────────────────────────────────────────────────
+#             DevSecOps Agentic AI Pipeline | Automated Security Scanning
+#           priority: ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
