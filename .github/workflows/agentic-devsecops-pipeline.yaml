@@ -225,8 +225,9 @@ jobs:
         with:
           path: |
             /usr/local/bin/ollama
+            /usr/share/ollama/.ollama/models
             ~/.ollama/models
-          key: ollama-${{ env.OLLAMA_MODEL }}-v1
+          key: ollama-${{ env.OLLAMA_MODEL }}-v2
 
       - name: Install Ollama
         if: steps.ollama-cache.outputs.cache-hit != 'true'
@@ -236,12 +237,21 @@ jobs:
       - name: Start Ollama & pull model
         run: |
           set -e
+          # Ensure model directory exists for cache restore
+          sudo mkdir -p /usr/share/ollama/.ollama/models
+          sudo chown -R $USER:$USER /usr/share/ollama/.ollama/models 2>/dev/null || true
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
             sleep 2
           done
-          ollama pull "$OLLAMA_MODEL"
+          # Pull only if model not already cached
+          if ! ollama list | grep -q "$OLLAMA_MODEL"; then
+            echo "Model not found locally, pulling..."
+            ollama pull "$OLLAMA_MODEL"
+          else
+            echo "Model already cached, skipping pull"
+          fi
 
       - name: Run agentic analysis
         run: |
@@ -373,8 +383,9 @@ jobs:
         with:
           path: |
             /usr/local/bin/ollama
+            /usr/share/ollama/.ollama/models
             ~/.ollama/models
-          key: ollama-${{ env.OLLAMA_MODEL }}-v1
+          key: ollama-${{ env.OLLAMA_MODEL }}-v2
 
       - name: Install Ollama
         if: steps.ollama-cache-remed.outputs.cache-hit != 'true'
@@ -384,12 +395,21 @@ jobs:
       - name: Start Ollama & pull model
         run: |
           set -e
+          # Ensure model directory exists for cache restore
+          sudo mkdir -p /usr/share/ollama/.ollama/models
+          sudo chown -R $USER:$USER /usr/share/ollama/.ollama/models 2>/dev/null || true
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in $(seq 1 30); do
             curl -sf http://localhost:11434/api/tags > /dev/null 2>&1 && break
             sleep 2
           done
-          ollama pull "$OLLAMA_MODEL"
+          # Pull only if model not already cached
+          if ! ollama list | grep -q "$OLLAMA_MODEL"; then
+            echo "Model not found locally, pulling..."
+            ollama pull "$OLLAMA_MODEL"
+          else
+            echo "Model already cached, skipping pull"
+          fi
 
       - name: Generate suggestions Reports
         id: generate
@@ -1172,18 +1192,6 @@ jobs:
             ───────────────────────────────────────────────────────────
             DevSecOps Agentic AI Pipeline | Automated Security Scanning
           priority: ${{ needs.llm-agent-analysis.outputs.pipeline_status == 'fail' && 'high' || 'normal' }}
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
