@@ -74,85 +74,83 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      # ── Setup Docker & AWS CLI on EC2 ──
-      - name: Setup EC2 prerequisites
+      # ── Setup + Deploy to EC2 (single SSH session) ──
+      - name: Setup & Deploy to EC2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 10m
           script: |
             set -e
 
-            if ! command -v docker &> /dev/null; then
+            echo "════════════════════════════════════════════"
+            echo "  STEP 1: Install prerequisites"
+            echo "════════════════════════════════════════════"
+
+            # Install Docker if missing
+            if ! command -v /usr/bin/docker &> /dev/null; then
               echo "📦 Installing Docker..."
               sudo apt-get update -y
               sudo apt-get install -y docker.io
               sudo systemctl enable docker
               sudo systemctl start docker
-              sudo usermod -aG docker $USER
               echo "✅ Docker installed"
             else
               echo "✅ Docker already installed"
             fi
 
+            # Ensure Docker is running
+            sudo systemctl start docker
+
+            # Install AWS CLI if missing
             if ! command -v aws &> /dev/null; then
-              echo "📦 Installing AWS CLI..."
+              echo "📦 Installing AWS CLI v2..."
               sudo apt-get install -y unzip curl
-              curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-              unzip -q awscliv2.zip
+              curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+              cd /tmp && unzip -q awscliv2.zip
               sudo ./aws/install
-              rm -rf awscliv2.zip aws/
+              rm -rf /tmp/awscliv2.zip /tmp/aws
               echo "✅ AWS CLI installed"
             else
               echo "✅ AWS CLI already installed"
             fi
 
-            sudo systemctl start docker 2>/dev/null || true
-            echo "✅ EC2 is ready"
+            echo ""
+            echo "════════════════════════════════════════════"
+            echo "  STEP 2: Login to ECR"
+            echo "════════════════════════════════════════════"
 
-      # ── Deploy to EC2 via SSH ──
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            set -e
-
-            # Use sudo docker if not in docker group yet
-            DOCKER="docker"
-            if ! docker info &> /dev/null 2>&1; then
-              DOCKER="sudo docker"
-            fi
-
-            # ECR details (hardcoded from secrets — env vars dont pass into SSH)
-            ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
-            ECR_REPO="${{ secrets.ECR_REPOSITORY }}"
-            IMAGE_TAG="${{ github.sha }}"
-            FULL_IMAGE="$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
-
-            # Login to ECR
-            echo "🔑 ECR login..."
+            # Set AWS credentials
             export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
             export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
             export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION }}"
+
+            ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
+            FULL_IMAGE="$ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}"
+
+            echo "🔑 Logging into ECR: $ECR_REGISTRY"
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
-              $DOCKER login --username AWS --password-stdin "$ECR_REGISTRY"
+              sudo /usr/bin/docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+            echo ""
+            echo "════════════════════════════════════════════"
+            echo "  STEP 3: Pull & Deploy"
+            echo "════════════════════════════════════════════"
 
             # Pull image
-            echo "📥 Pulling $FULL_IMAGE"
-            $DOCKER pull "$FULL_IMAGE"
+            echo "📥 Pulling: $FULL_IMAGE"
+            sudo /usr/bin/docker pull "$FULL_IMAGE"
 
             # Stop old container
             echo "🛑 Stopping old container..."
-            $DOCKER stop devsecops-chatbot 2>/dev/null || true
-            $DOCKER rm devsecops-chatbot 2>/dev/null || true
+            sudo /usr/bin/docker stop devsecops-chatbot 2>/dev/null || true
+            sudo /usr/bin/docker rm devsecops-chatbot 2>/dev/null || true
 
             # Run new container
             echo "🚀 Starting new container..."
-            $DOCKER run -d \
+            sudo /usr/bin/docker run -d \
               --name devsecops-chatbot \
               --restart unless-stopped \
               -p 8501:8501 \
@@ -162,20 +160,20 @@ jobs:
 
             # Verify
             sleep 5
-            if $DOCKER ps | grep -q devsecops-chatbot; then
+            if sudo /usr/bin/docker ps | grep -q devsecops-chatbot; then
               echo ""
               echo "════════════════════════════════════════════"
               echo "✅ Chatbot deployed successfully!"
               echo "🌐 http://${{ secrets.EC2_HOST }}:8501"
               echo "════════════════════════════════════════════"
             else
-              echo "❌ Container failed to start"
-              $DOCKER logs devsecops-chatbot
+              echo "❌ Container failed to start. Logs:"
+              sudo /usr/bin/docker logs devsecops-chatbot
               exit 1
             fi
 
-            # Cleanup
-            $DOCKER image prune -af --filter "until=24h" 2>/dev/null || true
+            # Cleanup old images
+            sudo /usr/bin/docker image prune -af --filter "until=24h" 2>/dev/null || true
 
       - name: Deployment summary
         run: |
