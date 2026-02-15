@@ -74,8 +74,8 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      # ── Setup + Deploy to EC2 (single SSH session) ──
-      - name: Setup & Deploy to EC2
+      # ── Install Docker & AWS CLI on EC2 ──
+      - name: Setup EC2 prerequisites
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -83,74 +83,77 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
           script: |
-            set -e
+            export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            echo "DEBUG: PATH=$PATH"
+            echo "DEBUG: whoami=$(whoami)"
+            echo "DEBUG: which docker=$(which docker 2>/dev/null || echo NOT_FOUND)"
+            echo "DEBUG: which aws=$(which aws 2>/dev/null || echo NOT_FOUND)"
 
-            echo "════════════════════════════════════════════"
-            echo "  STEP 1: Install prerequisites"
-            echo "════════════════════════════════════════════"
-
-            # Install Docker if missing
-            if ! command -v /usr/bin/docker &> /dev/null; then
+            if ! which docker > /dev/null 2>&1; then
               echo "📦 Installing Docker..."
               sudo apt-get update -y
               sudo apt-get install -y docker.io
               sudo systemctl enable docker
               sudo systemctl start docker
+              sudo usermod -aG docker $(whoami)
               echo "✅ Docker installed"
             else
-              echo "✅ Docker already installed"
+              echo "✅ Docker OK"
             fi
 
-            # Ensure Docker is running
-            sudo systemctl start docker
+            sudo systemctl start docker || true
 
-            # Install AWS CLI if missing
-            if ! command -v aws &> /dev/null; then
+            if ! which aws > /dev/null 2>&1; then
               echo "📦 Installing AWS CLI v2..."
               sudo apt-get install -y unzip curl
               curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
-              cd /tmp && unzip -q awscliv2.zip
-              sudo ./aws/install
+              cd /tmp && unzip -oq awscliv2.zip
+              sudo ./aws/install --update
               rm -rf /tmp/awscliv2.zip /tmp/aws
               echo "✅ AWS CLI installed"
             else
-              echo "✅ AWS CLI already installed"
+              echo "✅ AWS CLI OK"
             fi
 
-            echo ""
-            echo "════════════════════════════════════════════"
-            echo "  STEP 2: Login to ECR"
-            echo "════════════════════════════════════════════"
+            echo "DEBUG AFTER INSTALL:"
+            echo "  docker: $(which docker 2>/dev/null || echo NOT_FOUND)"
+            echo "  aws: $(which aws 2>/dev/null || echo NOT_FOUND)"
+            sudo docker version || echo "Docker version check failed"
+            echo "✅ EC2 prerequisites ready"
 
-            # Set AWS credentials
-            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
-            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
-            export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION }}"
+      # ── Deploy to EC2 ──
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 10m
+          script: |
+            export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+            echo "DEBUG: which docker=$(which docker 2>/dev/null || echo NOT_FOUND)"
+            echo "DEBUG: which aws=$(which aws 2>/dev/null || echo NOT_FOUND)"
 
             ECR_REGISTRY="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com"
             FULL_IMAGE="$ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}"
 
-            echo "🔑 Logging into ECR: $ECR_REGISTRY"
+            echo "🔑 ECR login..."
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION }}"
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
-              sudo /usr/bin/docker login --username AWS --password-stdin "$ECR_REGISTRY"
+              sudo docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-            echo ""
-            echo "════════════════════════════════════════════"
-            echo "  STEP 3: Pull & Deploy"
-            echo "════════════════════════════════════════════"
-
-            # Pull image
             echo "📥 Pulling: $FULL_IMAGE"
-            sudo /usr/bin/docker pull "$FULL_IMAGE"
+            sudo docker pull "$FULL_IMAGE"
 
-            # Stop old container
             echo "🛑 Stopping old container..."
-            sudo /usr/bin/docker stop devsecops-chatbot 2>/dev/null || true
-            sudo /usr/bin/docker rm devsecops-chatbot 2>/dev/null || true
+            sudo docker stop devsecops-chatbot 2>/dev/null || true
+            sudo docker rm devsecops-chatbot 2>/dev/null || true
 
-            # Run new container
             echo "🚀 Starting new container..."
-            sudo /usr/bin/docker run -d \
+            sudo docker run -d \
               --name devsecops-chatbot \
               --restart unless-stopped \
               -p 8501:8501 \
@@ -158,9 +161,8 @@ jobs:
               -e GH_PAT_TOKEN="${{ secrets.GH_PAT_TOKEN }}" \
               "$FULL_IMAGE"
 
-            # Verify
             sleep 5
-            if sudo /usr/bin/docker ps | grep -q devsecops-chatbot; then
+            if sudo docker ps | grep -q devsecops-chatbot; then
               echo ""
               echo "════════════════════════════════════════════"
               echo "✅ Chatbot deployed successfully!"
@@ -168,12 +170,11 @@ jobs:
               echo "════════════════════════════════════════════"
             else
               echo "❌ Container failed to start. Logs:"
-              sudo /usr/bin/docker logs devsecops-chatbot
+              sudo docker logs devsecops-chatbot
               exit 1
             fi
 
-            # Cleanup old images
-            sudo /usr/bin/docker image prune -af --filter "until=24h" 2>/dev/null || true
+            sudo docker image prune -af --filter "until=24h" 2>/dev/null || true
 
       - name: Deployment summary
         run: |
