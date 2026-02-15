@@ -2,8 +2,8 @@
 # Deploy DevSecOps Chatbot to AWS EC2
 #
 # PREREQUISITES:
-#   1. EC2 instance running with Docker installed
-#   2. ECR repository created (or use Docker Hub)
+#   1. EC2 instance running (Ubuntu)
+#   2. ECR repository created
 #   3. GitHub Secrets configured (see below)
 #
 # REQUIRED GITHUB SECRETS:
@@ -12,7 +12,7 @@
 #   AWS_REGION              - e.g. ap-south-1 (Mumbai)
 #   AWS_ACCOUNT_ID          - Your AWS account ID (12 digits)
 #   ECR_REPOSITORY          - ECR repo name e.g. devsecops-chatbot
-#   EC2_HOST                - EC2 public IP or hostname
+#   EC2_HOST                - EC2 Elastic IP or hostname
 #   EC2_SSH_KEY             - Private SSH key (PEM content)
 #   EC2_USER                - EC2 username (ubuntu / ec2-user)
 #   GROQ_API_KEY            - Groq API key for the chatbot
@@ -38,6 +38,23 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # ── Verify chatbot files exist ──
+      - name: Verify chatbot files
+        run: |
+          echo "=== Files in devsecops-chatbot/ ==="
+          ls -la devsecops-chatbot/
+          echo ""
+          echo "=== .streamlit/ ==="
+          ls -la devsecops-chatbot/.streamlit/ 2>/dev/null || echo "No .streamlit folder"
+          echo ""
+          for f in app.py Dockerfile requirements.txt; do
+            if [ ! -f "devsecops-chatbot/$f" ]; then
+              echo "❌ MISSING: devsecops-chatbot/$f"
+              exit 1
+            fi
+          done
+          echo "✅ All required files present"
 
       # ── Login to Amazon ECR ──
       - name: Configure AWS credentials
@@ -70,12 +87,8 @@ jobs:
 
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
-      # ── Deploy to EC2 via SSH ──
-      - name: Deploy to EC2
-        env:
-          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.sha }}
+      # ── Setup Docker & AWS CLI on EC2 (idempotent) ──
+      - name: Setup EC2 prerequisites
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -84,20 +97,85 @@ jobs:
           script: |
             set -e
 
-            # Login to ECR
+            # ── Install Docker if not present ──
+            if ! command -v docker &> /dev/null; then
+              echo "📦 Installing Docker..."
+              sudo apt-get update
+              sudo apt-get install -y docker.io
+              sudo systemctl enable docker
+              sudo systemctl start docker
+              sudo usermod -aG docker $USER
+              echo "✅ Docker installed"
+            else
+              echo "✅ Docker already installed: $(docker --version)"
+            fi
+
+            # ── Install AWS CLI if not present ──
+            if ! command -v aws &> /dev/null; then
+              echo "📦 Installing AWS CLI..."
+              sudo apt-get update
+              sudo apt-get install -y unzip curl
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip -q awscliv2.zip
+              sudo ./aws/install
+              rm -rf awscliv2.zip aws/
+              echo "✅ AWS CLI installed"
+            else
+              echo "✅ AWS CLI already installed: $(aws --version)"
+            fi
+
+            # ── Ensure Docker is running ──
+            sudo systemctl start docker 2>/dev/null || true
+
+            # ── Verify everything works ──
+            echo ""
+            echo "=== EC2 Prerequisite Check ==="
+            echo "Docker: $(docker --version 2>/dev/null || echo 'NOT FOUND')"
+            echo "AWS CLI: $(aws --version 2>/dev/null || echo 'NOT FOUND')"
+            echo "User groups: $(groups)"
+            echo "✅ EC2 is ready for deployment"
+
+      # ── Deploy to EC2 via SSH ──
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_DEFAULT_REGION
+          script: |
+            set -e
+
+            # Use sudo docker if user not yet in docker group (first run)
+            DOCKER_CMD="docker"
+            if ! docker info &> /dev/null 2>&1; then
+              DOCKER_CMD="sudo docker"
+              echo "⚠️ Using sudo for docker (first run — re-login later for non-sudo access)"
+            fi
+
+            # ── Configure AWS CLI inline ──
+            export AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}"
+            export AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+            export AWS_DEFAULT_REGION="${{ secrets.AWS_REGION }}"
+
+            # ── Login to ECR ──
+            echo "🔑 Logging into ECR..."
             aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
-              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+              $DOCKER_CMD login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
-            # Pull latest image
-            IMAGE="${{ env.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
-            docker pull "$IMAGE"
+            # ── Pull latest image ──
+            IMAGE="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}"
+            echo "📥 Pulling image: $IMAGE"
+            $DOCKER_CMD pull "$IMAGE"
 
-            # Stop old container
-            docker stop devsecops-chatbot 2>/dev/null || true
-            docker rm devsecops-chatbot 2>/dev/null || true
+            # ── Stop old container ──
+            echo "🛑 Stopping old container..."
+            $DOCKER_CMD stop devsecops-chatbot 2>/dev/null || true
+            $DOCKER_CMD rm devsecops-chatbot 2>/dev/null || true
 
-            # Run new container
-            docker run -d \
+            # ── Run new container ──
+            echo "🚀 Starting new container..."
+            $DOCKER_CMD run -d \
               --name devsecops-chatbot \
               --restart unless-stopped \
               -p 8501:8501 \
@@ -105,19 +183,22 @@ jobs:
               -e GH_PAT_TOKEN="${{ secrets.GH_PAT_TOKEN }}" \
               "$IMAGE"
 
-            # Verify it's running
+            # ── Verify it's running ──
             sleep 5
-            if docker ps | grep -q devsecops-chatbot; then
+            if $DOCKER_CMD ps | grep -q devsecops-chatbot; then
+              echo ""
+              echo "════════════════════════════════════════════"
               echo "✅ Chatbot deployed successfully!"
               echo "🌐 Access at http://${{ secrets.EC2_HOST }}:8501"
+              echo "════════════════════════════════════════════"
             else
               echo "❌ Container failed to start"
-              docker logs devsecops-chatbot
+              $DOCKER_CMD logs devsecops-chatbot
               exit 1
             fi
 
-            # Cleanup old images
-            docker image prune -af --filter "until=24h" 2>/dev/null || true
+            # ── Cleanup old images ──
+            $DOCKER_CMD image prune -af --filter "until=24h" 2>/dev/null || true
 
       - name: Deployment summary
         run: |
@@ -129,3 +210,5 @@ jobs:
           echo "| **Host** | \`${{ secrets.EC2_HOST }}:8501\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **Chatbot URL:** http://${{ secrets.EC2_HOST }}:8501" >> $GITHUB_STEP_SUMMARY
