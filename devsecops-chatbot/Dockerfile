@@ -7,7 +7,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app files
-COPY devsecops-chatbot/app.py .
+COPY App.py .
 COPY .streamlit/ .streamlit/
 
 # Expose Streamlit port
