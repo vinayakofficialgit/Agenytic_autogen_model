@@ -48,7 +48,7 @@ jobs:
           echo "=== .streamlit/ ==="
           ls -la devsecops-chatbot/.streamlit/ 2>/dev/null || echo "No .streamlit folder"
           echo ""
-          for f in app.py Dockerfile requirements.txt; do
+          for f in App.py Dockerfile Requirements.txt; do
             if [ ! -f "devsecops-chatbot/$f" ]; then
               echo "❌ MISSING: devsecops-chatbot/$f"
               exit 1
