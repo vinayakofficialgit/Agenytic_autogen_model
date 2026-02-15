@@ -154,12 +154,14 @@ jobs:
             sudo docker rm devsecops-chatbot 2>/dev/null || true
 
             echo "🚀 Starting new container..."
+
             sudo docker run -d \
               --name devsecops-chatbot \
               --restart unless-stopped \
               -p 8501:8501 \
               -e GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
               -e GH_PAT_TOKEN="${{ secrets.GH_PAT_TOKEN }}" \
+              -e GITHUB_REPOSITORY="${{ github.repository }}" \
               "$FULL_IMAGE"
 
             sleep 5
