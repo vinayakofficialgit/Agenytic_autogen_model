@@ -1,6 +1,7 @@
 # DevSecOps Agentic AI Security Pipeline
 
-An automated security scanning pipeline that combines multiple industry-standard security tools with AI-powered analysis to detect vulnerabilities, secrets, and misconfigurations across your codebase before they reach production.
+An automated security scanning pipeline that combines multiple industry-standard security tools with AI-powered analysis to detect vulnerabilities, secrets, and misconfigurations across your codebase before they reach production.vin
+
 
 ---
 
