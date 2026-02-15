@@ -326,12 +326,17 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 🔑 API Keys")
-    groq_key = st.text_input("Groq API Key", type="password", help="Get free at console.groq.com")
-    github_token = st.text_input("GitHub Token (PAT)", type="password", help="For fetching pipeline artifacts")
+    # Auto-read from environment (Docker) or manual input
+    default_groq = os.getenv("GROQ_API_KEY", "")
+    default_gh = os.getenv("GH_PAT_TOKEN", "")
+
+    groq_key = st.text_input("Groq API Key", value=default_groq, type="password", help="Get free at console.groq.com")
+    github_token = st.text_input("GitHub Token (PAT)", value=default_gh, type="password", help="For fetching pipeline artifacts")
 
     st.markdown("---")
     st.markdown("### 📦 Repository")
-    repo_full = st.text_input("Owner/Repo", value="", placeholder="e.g. vinayak/my-repo")
+    default_repo = os.getenv("GITHUB_REPOSITORY", "")
+    repo_full = st.text_input("Owner/Repo", value=default_repo, placeholder="e.g. vinayak/my-repo")
 
     st.markdown("---")
     st.markdown("### ⚙️ Settings")

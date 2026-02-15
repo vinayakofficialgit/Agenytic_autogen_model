@@ -1,0 +1,131 @@
+# ============================================================
+# Deploy DevSecOps Chatbot to AWS EC2
+#
+# PREREQUISITES:
+#   1. EC2 instance running with Docker installed
+#   2. ECR repository created (or use Docker Hub)
+#   3. GitHub Secrets configured (see below)
+#
+# REQUIRED GITHUB SECRETS:
+#   AWS_ACCESS_KEY_ID       - AWS IAM access key
+#   AWS_SECRET_ACCESS_KEY   - AWS IAM secret key
+#   AWS_REGION              - e.g. ap-south-1 (Mumbai)
+#   AWS_ACCOUNT_ID          - Your AWS account ID (12 digits)
+#   ECR_REPOSITORY          - ECR repo name e.g. devsecops-chatbot
+#   EC2_HOST                - EC2 public IP or hostname
+#   EC2_SSH_KEY             - Private SSH key (PEM content)
+#   EC2_USER                - EC2 username (ubuntu / ec2-user)
+#   GROQ_API_KEY            - Groq API key for the chatbot
+#   GH_PAT_TOKEN            - GitHub PAT for fetching artifacts
+# ============================================================
+name: 🚀 Deploy DevSecOps Chatbot
+
+on:
+  push:
+    branches: [main, test-v-branch]
+    paths:
+      - 'devsecops-chatbot/**'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: devsecops-chatbot
+  CONTAINER_NAME: devsecops-chatbot
+
+jobs:
+  build-and-deploy:
+    name: 🐳 Build & Deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Login to Amazon ECR ──
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Build & Push Docker Image ──
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd devsecops-chatbot
+
+          # Build image
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          # Push both tags
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      # ── Deploy to EC2 via SSH ──
+      - name: Deploy to EC2
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            # Login to ECR
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+
+            # Pull latest image
+            IMAGE="${{ env.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+            docker pull "$IMAGE"
+
+            # Stop old container
+            docker stop devsecops-chatbot 2>/dev/null || true
+            docker rm devsecops-chatbot 2>/dev/null || true
+
+            # Run new container
+            docker run -d \
+              --name devsecops-chatbot \
+              --restart unless-stopped \
+              -p 8501:8501 \
+              -e GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
+              -e GH_PAT_TOKEN="${{ secrets.GH_PAT_TOKEN }}" \
+              "$IMAGE"
+
+            # Verify it's running
+            sleep 5
+            if docker ps | grep -q devsecops-chatbot; then
+              echo "✅ Chatbot deployed successfully!"
+              echo "🌐 Access at http://${{ secrets.EC2_HOST }}:8501"
+            else
+              echo "❌ Container failed to start"
+              docker logs devsecops-chatbot
+              exit 1
+            fi
+
+            # Cleanup old images
+            docker image prune -af --filter "until=24h" 2>/dev/null || true
+
+      - name: Deployment summary
+        run: |
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Host** | \`${{ secrets.EC2_HOST }}:8501\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
