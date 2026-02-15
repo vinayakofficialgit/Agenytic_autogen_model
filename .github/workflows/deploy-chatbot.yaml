@@ -88,7 +88,7 @@ jobs:
 
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
-      # ── Setup Docker & AWS CLI on EC2 (idempotent) ──
+      ## ── Setup Docker & AWS CLI on EC2 (idempotent) ──
       - name: Setup EC2 prerequisites
         uses: appleboy/ssh-action@v1
         with:
