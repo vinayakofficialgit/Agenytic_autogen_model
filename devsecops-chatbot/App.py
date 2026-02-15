@@ -326,17 +326,56 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 🔑 API Keys")
-    # Auto-read from environment (Docker) or manual input
-    default_groq = os.getenv("GROQ_API_KEY", "")
-    default_gh = os.getenv("GH_PAT_TOKEN", "")
 
-    groq_key = st.text_input("Groq API Key", value=default_groq, type="password", help="Get free at console.groq.com")
-    github_token = st.text_input("GitHub Token (PAT)", value=default_gh, type="password", help="For fetching pipeline artifacts")
+    # Read from environment variables (set via Docker -e flags)
+    env_groq = os.getenv("GROQ_API_KEY", "")
+    env_gh = os.getenv("GH_PAT_TOKEN", "")
+    env_repo = os.getenv("GITHUB_REPOSITORY", "")
+
+    # Use session state to persist values across rerenders
+    if "groq_key" not in st.session_state:
+        st.session_state.groq_key = env_groq
+    if "github_token" not in st.session_state:
+        st.session_state.github_token = env_gh
+    if "repo_full" not in st.session_state:
+        st.session_state.repo_full = env_repo
+
+    groq_input = st.text_input(
+        "Groq API Key",
+        value=st.session_state.groq_key,
+        type="password",
+        help="Get free at console.groq.com",
+    )
+    gh_input = st.text_input(
+        "GitHub Token (PAT)",
+        value=st.session_state.github_token,
+        type="password",
+        help="For fetching pipeline artifacts",
+    )
 
     st.markdown("---")
     st.markdown("### 📦 Repository")
-    default_repo = os.getenv("GITHUB_REPOSITORY", "")
-    repo_full = st.text_input("Owner/Repo", value=default_repo, placeholder="e.g. vinayak/my-repo")
+    repo_input = st.text_input(
+        "Owner/Repo",
+        value=st.session_state.repo_full,
+        placeholder="e.g. vinayak/my-repo",
+    )
+
+    # Update session state with user input (or keep env var)
+    groq_key = groq_input if groq_input else env_groq
+    github_token = gh_input if gh_input else env_gh
+    repo_full = repo_input if repo_input else env_repo
+
+    st.session_state.groq_key = groq_key
+    st.session_state.github_token = github_token
+    st.session_state.repo_full = repo_full
+
+    # Show connection status
+    st.markdown("---")
+    st.markdown("### 📡 Status")
+    st.markdown(f"{'✅' if groq_key else '❌'} Groq API Key")
+    st.markdown(f"{'✅' if github_token else '❌'} GitHub Token")
+    st.markdown(f"{'✅' if repo_full else '❌'} Repository: `{repo_full}`" if repo_full else "❌ Repository")
 
     st.markdown("---")
     st.markdown("### ⚙️ Settings")
