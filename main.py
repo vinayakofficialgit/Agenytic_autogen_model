@@ -600,15 +600,24 @@ def main():
 
     # 4) Auto-remediation only when --generate-fixes is used
     try:
-        if args.generate_fixes and decision.get("status") == "fail" \
-           and cfg.get("policy", {}).get("remediation", {}).get("auto_pr", True):
+        # Always run Fixer during --generate-fixes if the pipeline failed
+        if args.generate_fixes and decision.get("status") == "fail":
             with suppress_verbose_output():
                 fix_info = Fixer(cfg, output_dir).apply(findings_grouped)
-                decision.setdefault("remediation", {})
-                if isinstance(fix_info, dict):
-                    for k, v in fix_info.items():
-                        if k != "llm_report" and (v is not None or k not in decision["remediation"]):
-                            decision["remediation"][k] = v
+
+            # Diagnostics: list how many patches were produced
+            from pathlib import Path as _P
+            _patch_dir = _P(output_dir) / "patches"
+            _patch_list = list(_patch_dir.glob("*.patch"))
+            print(f"[fixer] patches generated: {len(_patch_list)}")
+            for _p in _patch_list:
+                print(f"[fixer]  - {_p}")
+
+            decision.setdefault("remediation", {})
+            if isinstance(fix_info, dict):
+                for k, v in fix_info.items():
+                    if k != "llm_report" and (v is not None or k not in decision["remediation"]):
+                        decision["remediation"][k] = v
     except Exception:
         pass
 

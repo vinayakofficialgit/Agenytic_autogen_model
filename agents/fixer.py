@@ -63,7 +63,6 @@ except Exception:
 
 def _llm_banner() -> str:
     """Short banner for LLM artifacts."""
-    # Prefer LLM_MODEL first; OLLAMA_MODEL fallback
     model = os.getenv("LLM_MODEL") or os.getenv("OLLAMA_MODEL") or "(unset)"
     url = os.getenv("OLLAMA_URL") or (("http://" + os.getenv("OLLAMA_HOST"))
                                       if os.getenv("OLLAMA_HOST") else "(unset)")
@@ -193,7 +192,8 @@ def _make_unified_diff(old_text: str, new_text: str, repo_rel_path: str) -> str:
         new_lines,
         fromfile=f"a/{repo_rel_path}",
         tofile=f"b/{repo_rel_path}",
-        lineterm=""
+        lineterm="",
+        n=2,  # slightly more tolerant than default (3) for small context drift
     )
     return "\n".join(diff) + "\n"
 
@@ -207,10 +207,10 @@ class Fixer:
     Patch-first auto-remediation.
 
     - Dockerfile: ADD->COPY; ensure non-root USER (configurable)
-    - K8s: set runAsNonRoot, drop privileged, add default limits
+    - K8s: set runAsNonRoot, drop privileged, add default limits, set allowPrivilegeEscalation: false
     - Terraform: replace 0.0.0.0/0 with allowed CIDR
     - Semgrep quick patches:
-        * HTML script without integrity -> add integrity/crossorigin (TODO-SRI-HASH)
+        * HTML <script> without integrity -> add integrity/crossorigin (TODO-SRI-HASH)
         * Python eval(...) -> ast.literal_eval(...)
         * Python subprocess shell=True -> shell=False (adds import shlex if needed)
     - LLM: when diffs are returned, save them as patches; don't apply here
@@ -244,12 +244,13 @@ class Fixer:
         # --- Phase 0: Semgrep quick patches (code issues)
         qp_notes, qp_patches = self._apply_semgrep_quick_patches(findings)
         notes.extend(qp_notes)
-        emitted_patches.extend(qp_patches)
+        # filter out empty (skipped) entries
+        emitted_patches.extend([p for p in qp_patches if p])
 
         # --- Phase 1: Deterministic infra/config patches
         det_notes, det_patches = self._apply_deterministic_patches()
         notes.extend(det_notes)
-        emitted_patches.extend(det_patches)
+        emitted_patches.extend([p for p in det_patches if p])
 
         # --- Phase 2: LLM autofix (optional) -> save diffs as patches
         llm_autofix_enabled = (os.getenv("LLM_AUTOFIX", "").strip() == "1")
@@ -257,7 +258,7 @@ class Fixer:
             print("[fixer] LLM autofix enabled; gathering patches...")
             llm_notes, llm_patches = self._save_llm_autofix_patches(findings)
             notes.extend(llm_notes)
-            emitted_patches.extend(llm_patches)
+            emitted_patches.extend([p for p in llm_patches if p])
 
         # Optional LLM explanation (for audit)
         if self.cfg.get("llm", {}).get("enabled", False) or os.getenv("LLM_EXPLAIN", "") == "1":
@@ -339,66 +340,69 @@ class Fixer:
         items = grouped.get("semgrep", []) or []
 
         for it in items:
-            repo_rel_file = it.get("file") or ""
-            if not repo_rel_file or repo_rel_file.startswith("("):
+            reported_path = it.get("file") or ""
+            if not reported_path or reported_path.startswith("("):
                 continue
-            target = (self.repo / repo_rel_file)
-            # inside _apply_semgrep_quick_patches, right after target = self.repo / repo_rel_file
-            if (not target.exists() or not target.is_file()):
+
+            # Resolve the actual file on disk (repo root first, then APP_DIR fallbacks)
+            target = (self.repo / reported_path)
+            if not target.exists() or not target.is_file():
                 app_dir = os.getenv("APP_DIR", "").strip()
                 if app_dir:
-                    alt = self.repo / app_dir / repo_rel_file
+                    alt = self.repo / app_dir / reported_path
                     if alt.exists() and alt.is_file():
                         target = alt
                     else:
                         from pathlib import Path as _Path
-                        alt2 = self.repo / app_dir / _Path(repo_rel_file).name
+                        alt2 = self.repo / app_dir / _Path(reported_path).name
                         if alt2.exists() and alt2.is_file():
                             target = alt2
                         else:
-                            notes.append(f"Semgrep quick: file not found for patch: {repo_rel_file}")
+                            notes.append(f"Semgrep quick: file not found for patch: {reported_path}")
                             continue
+
             try:
                 original = target.read_text(encoding="utf-8", errors="ignore")
             except Exception as e:
-                notes.append(f"Semgrep quick: cannot read {repo_rel_file}: {e}")
+                notes.append(f"Semgrep quick: cannot read {reported_path}: {e}")
                 continue
 
+            repo_rel_path = str(target.relative_to(self.repo)).replace("\\", "/")
             rule = (it.get("rule_id") or "").lower()
             msg  = (it.get("message") or "").lower()
 
             # 1) HTML missing integrity
-            if repo_rel_file.lower().endswith((".html", ".htm")) and (
+            if repo_rel_path.lower().endswith((".html", ".htm")) and (
                 "missing-integrity" in rule or "integrity" in msg
             ):
                 new_text, changed = self._patch_html_add_sri(original)
                 if changed:
-                    diff = _make_unified_diff(original, new_text, repo_rel_file)
-                    patch_path = self._write_patch(repo_rel_file, diff, prefix="semgrep_html_")
+                    diff = _make_unified_diff(original, new_text, repo_rel_path)
+                    patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_html_")
                     emitted.append(patch_path)
-                    notes.append(f"Semgrep quick: added integrity placeholder to <script> in {repo_rel_file}")
+                    notes.append(f"Semgrep quick: added integrity placeholder to <script> in {repo_rel_path}")
                 continue
 
             # 2) Python eval(...) -> ast.literal_eval(...)
-            if repo_rel_file.lower().endswith(".py") and ("eval" in msg or "eval" in rule):
+            if repo_rel_path.lower().endswith(".py") and ("eval" in msg or "eval" in rule):
                 new_text, changed = self._patch_python_eval(original)
                 if changed:
-                    diff = _make_unified_diff(original, new_text, repo_rel_file)
-                    patch_path = self._write_patch(repo_rel_file, diff, prefix="semgrep_eval_")
+                    diff = _make_unified_diff(original, new_text, repo_rel_path)
+                    patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_eval_")
                     emitted.append(patch_path)
-                    notes.append(f"Semgrep quick: replaced eval(...) with ast.literal_eval(...) in {repo_rel_file}")
+                    notes.append(f"Semgrep quick: replaced eval(...) with ast.literal_eval(...) in {repo_rel_path}")
                 continue
 
             # 3) Python subprocess shell=True -> shell=False (+ import shlex if needed)
-            if repo_rel_file.lower().endswith(".py") and (
+            if repo_rel_path.lower().endswith(".py") and (
                 "subprocess" in msg or "subprocess" in rule or "shell" in msg or "shell" in rule
             ):
                 new_text, changed = self._patch_python_subprocess_shell(original)
                 if changed:
-                    diff = _make_unified_diff(original, new_text, repo_rel_file)
-                    patch_path = self._write_patch(repo_rel_file, diff, prefix="semgrep_subproc_")
+                    diff = _make_unified_diff(original, new_text, repo_rel_path)
+                    patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_subproc_")
                     emitted.append(patch_path)
-                    notes.append(f"Semgrep quick: hardened subprocess(shell) usage in {repo_rel_file}")
+                    notes.append(f"Semgrep quick: hardened subprocess(shell) usage in {repo_rel_path}")
                 continue
 
         return notes, emitted
@@ -422,6 +426,7 @@ class Fixer:
             tag = re.sub(r'>\s*$', ' integrity="sha384-TODO-SRI-HASH" crossorigin="anonymous">', tag)
             return tag
 
+        # Work with real HTML characters, not escaped entities
         new_text = re.sub(r'<script\b[^>]*>', repl, text, flags=re.I)
         return new_text, changed
 
@@ -433,7 +438,6 @@ class Fixer:
         new_text = re.sub(r'\beval\s*\(', 'ast.literal_eval(', text)
         if new_text != text:
             changed = True
-            # Ensure import ast at top if not present
             if not re.search(r'^\s*import\s+ast\b', new_text, flags=re.M):
                 new_text = "import ast\n" + new_text
         return new_text, changed
@@ -444,7 +448,6 @@ class Fixer:
         Also add 'import shlex' if missing (developers can refine args).
         """
         changed = False
-        # Replace shell=True with shell=False
         new_text = re.sub(r'shell\s*=\s*True', 'shell=False', text)
         if new_text != text:
             changed = True
@@ -497,8 +500,9 @@ class Fixer:
                         changed_any = changed_any or ch
                     if changed_any:
                         new_text = yaml.safe_dump_all(fixed_docs, sort_keys=False)
-                        diff = _make_unified_diff(original, new_text, f"k8s/{p.name}")
-                        patch_path = self._write_patch(f"k8s/{p.name}", diff, prefix="det_k8s_")
+                        rel_path = f"k8s/{p.name}"
+                        diff = _make_unified_diff(original, new_text, rel_path)
+                        patch_path = self._write_patch(rel_path, diff, prefix="det_k8s_")
                         emitted.append(patch_path)
                         notes.append(f"K8s: patch emitted for {p.name}")
                 except Exception as e:
@@ -549,7 +553,7 @@ class Fixer:
         return out
 
     def _fix_k8s_obj(self, obj: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-        """K8s: runAsNonRoot, unprivileged, default limits."""
+        """K8s: runAsNonRoot, unprivileged, default limits, disable privilege escalation."""
         if isinstance(obj, list):
             changed_any = False
             fixed_list = []
@@ -581,6 +585,10 @@ class Fixer:
                     if sc2.get("privileged") is True:
                         sc2["privileged"] = False
                         changed = True
+                    # NEW: disable privilege escalation explicitly
+                    if sc2.get("allowPrivilegeEscalation") is not False:
+                        sc2["allowPrivilegeEscalation"] = False
+                        changed = True
                     res = c.setdefault("resources", {})
                     lim = res.setdefault("limits", {})
                     if not lim:
@@ -601,6 +609,9 @@ class Fixer:
                     sc2 = c.setdefault("securityContext", {})
                     if sc2.get("privileged") is True:
                         sc2["privileged"] = False
+                        changed = True
+                    if sc2.get("allowPrivilegeEscalation") is not False:
+                        sc2["allowPrivilegeEscalation"] = False
                         changed = True
                     res = c.setdefault("resources", {})
                     lim = res.setdefault("limits", {})
@@ -696,7 +707,6 @@ class Fixer:
                 suggestions_md.append((resp or "").strip() + "\n")
 
                 if not used_fallback and ("--- " in resp) and ("+++ " in resp):
-                    # Save exactly as provided; normalization can be added if needed.
                     p = self._write_patch(f"{group}_{counter}.diff", resp, prefix="llm_")
                     emitted.append(p)
                     notes.append(f"LLM: diff saved: {Path(p).name}")
@@ -759,29 +769,22 @@ class Fixer:
     # Patch writing helper
     # ------------------------------------------------------------
 
-    # def _write_patch(self, repo_rel_path: str, patch_text: str, prefix: str = "patch_") -> str:
-    #     """
-    #     Write patch_text into agent_output/patches/<prefix><safe_name>.patch
-    #     Returns the written path as string.
-    #     """
-    #     # Derive a stable name from the path OR provided label like group_counter
-    #     safe = _safe_name(repo_rel_path)
-    #     out_path = self.patch_dir / f"{prefix}{safe}.patch"
-    #     out_path.write_text(patch_text, encoding="utf-8")
-    #     print(f"[fixer] patch written: {out_path}")
-    #     return str(out_path)
     def _write_patch(self, repo_rel_path: str, patch_text: str, prefix: str = "patch_") -> str:
-        # Ensure the patch has required headers
+        """
+        Write patch_text into agent_output/patches/<prefix><safe_name>.patch
+        Returns the written path as string.
+        """
+        # Normalize and validate
         text = patch_text.lstrip("\ufeff\r\n")  # strip BOM and stray newlines
         if not (text.startswith("--- ") and "\n+++ " in text):
-            # If we somehow got only a hunk, bail out; better to skip than write a bad patch
             print(f"[fixer] WARNING: missing headers in patch for {repo_rel_path}; skipping write")
             return ""
         safe = _safe_name(repo_rel_path or "unnamed")
         out_path = self.patch_dir / f"{prefix}{safe}.patch"
         out_path.write_text(text, encoding="utf-8", newline="\n")
         print(f"[fixer] patch written: {out_path}")
-        return str(out_path) 
+        return str(out_path)
+
 
 # -------------------------
 # Standalone helper function
