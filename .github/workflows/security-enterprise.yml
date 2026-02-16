@@ -235,14 +235,14 @@ jobs:
           name: ai-analysis-output
           path: agent_output/
 
-      # (D) Bring audit dir into workspace before PR
+      #  Bring audit dir into workspace before PR
       - name: Download Audit
         uses: actions/download-artifact@v4
         with:
           name: security-review
           path: security-review/
 
-      # (B) Bring scan reports so reports/** exists for PR add-paths
+      # Bring scan reports into workspace so reports/** exists
       - name: Download Scan Reports
         uses: actions/download-artifact@v4
         with:
@@ -270,7 +270,7 @@ jobs:
         run: ollama pull "${LLM_MODEL}"
 
       # --------------------------------------------------
-      # Generate Fixes into patches/ folder (deterministic)
+      # Generate Fixes into patches/ folder; do not fail job if policy FAIL
       # --------------------------------------------------
       - name: AI Generate Fix Patches
         run: |
@@ -278,29 +278,8 @@ jobs:
           python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
         # python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
 
-      # --------------------------------------------------
-      # Create Remediation Branch (with git identity)
-      # --------------------------------------------------
-      - name: Configure Git Identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Create Branch + Apply Patches
-        run: |
-          RUN_ID=${GITHUB_RUN_ID}
-          FIX_BRANCH="security/fix-run-${RUN_ID}"
-
-          git checkout -b "${FIX_BRANCH}"
-
-          if compgen -G "agent_output/patches/*.patch" > /dev/null; then
-            git apply agent_output/patches/*.patch
-            git add -A
-            git commit -m "AI Security Fixes (Run ${RUN_ID})"
-          else
-            echo "No patches found; skipping commit."
-          fi
-
+      # Let the action manage branch + commit entirely using add-paths
+      
       # --------------------------------------------------
       # Open Pull Request
       # --------------------------------------------------
@@ -315,17 +294,18 @@ jobs:
             ## 🔒 AI Security Fixes Generated
 
             - Model: ${{ env.LLM_MODEL }}
-            - Analysis + Fixes separated
             - Patches (if any) under `agent_output/patches/`
             - Full audit under `security-review/run-${{ github.run_id }}/`
+            - Raw reports in `reports/`
 
             **Please review before merging.**
           add-paths: |
             security-review/**
             agent_output/**
             reports/**
+          reset-branch: false  
 
-
+  
   # ------------------------------------------------------------
   # JOB 4: SECURITY GATE
   # ------------------------------------------------------------
