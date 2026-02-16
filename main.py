@@ -1,23 +1,11 @@
 # main.py
 """
-DevSecOps Agentic AI Pipeline - Dynamic Output-Specific Suggestions
+DevSecOps Agentic AI Pipeline
 
-Key Features:
-- Dynamic suggestions based on ACTUAL scan findings
-- No generic/static best practices
-- Concise, actionable remediation specific to each finding
-- File locations and exact fixes
-
-CLI (for CI phases):
-  --analysis-only       Run collection + policy + (optional) LLM; skip auto-fix
-  --generate-fixes      Run collection + policy + auto-remediation (patches/PR)
-  --model               Override LLM model (e.g., qwen2.5-coder:3b)
-  --ollama-url          Override Ollama base URL (e.g., http://127.0.0.1:11434)
-
-ENV notes:
-  - LLM_MODEL respected; no fallback to other models
-  - OLLAMA_HOST is normalized into OLLAMA_URL if the latter is unset
-  - OLLAMA_TEMPERATURE or OLLAMA_TEMP are both supported
+New:
+- Writes agent_output/targets.json with canonical affected file paths.
+- Fix phase touches ONLY those paths (Fixer allow-list).
+- Normalizes decision.status to pass/fail for CI gate.
 """
 
 import argparse
@@ -28,47 +16,12 @@ from pathlib import Path
 from datetime import datetime
 from io import StringIO
 import contextlib
+import traceback
 
 try:
     import yaml
 except Exception:
     yaml = None
-
-
-def load_env_from_file(env_file: str = ".env", override: bool = False) -> None:
-    """Load KEY=VALUE pairs from a .env file into os.environ."""
-    p = Path(env_file)
-    if not p.exists():
-        return
-    try:
-        for raw in p.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, val = line.split("=", 1)
-            key = key.strip()
-            val = val.strip().strip('"').strip("'")
-            if override or key not in os.environ:
-                os.environ[key] = val
-    except Exception:
-        pass
-
-
-@contextlib.contextmanager
-def suppress_verbose_output():
-    """Suppress stdout during LLM calls to keep output clean."""
-    if os.getenv("LLM_VERBOSE", "0") == "1":
-        yield
-    else:
-        old_stdout = sys.stdout
-        sys.stdout = StringIO()
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
-
 
 # LLM imports
 try:
@@ -83,7 +36,6 @@ except ImportError:
         assistant_factory = None
         check_ollama_health = None
         get_fallback_suggestion = None
-
 
 # Core agent imports
 try:
@@ -100,8 +52,39 @@ except Exception:
     from autogen_runtime import run_autogen_layer
 
 
+def load_env_from_file(env_file: str = ".env", override: bool = False) -> None:
+    p = Path(env_file)
+    if not p.exists():
+        return
+    try:
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if override or key not in os.environ:
+                os.environ[key] = val
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def suppress_verbose_output():
+    # Only suppress during LLM calls; core pipeline should be visible in CI.
+    if os.getenv("LLM_VERBOSE", "0") == "1":
+        yield
+    else:
+        old_stdout = sys.stdout
+        sys.stdout = StringIO()
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+
+
 def _load_cfg() -> dict:
-    """Load config from settings.yaml or use defaults."""
     default_cfg = {
         "inputs": {"reports_dir": "reports", "output_dir": "agent_output"},
         "policy": {
@@ -109,11 +92,8 @@ def _load_cfg() -> dict:
             "min_severity_to_fail": os.getenv("MIN_SEVERITY", "high"),
         },
         "llm": {
-            # Consider LLM enabled if either URL/Host is present or explicit opt-in flag
-            "enabled": bool(os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST"))
-                       or (os.getenv("LLM_ENABLED", "").strip() == "1"),
+            "enabled": bool(os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST")) or (os.getenv("LLM_ENABLED", "").strip() == "1"),
             "model": os.getenv("LLM_MODEL", "qwen2.5-coder:3b"),
-            # Accept both env names for temperature
             "temperature": float(os.getenv("OLLAMA_TEMPERATURE", os.getenv("OLLAMA_TEMP", "0.2"))),
         },
         "remediation": {
@@ -145,12 +125,80 @@ def _load_cfg() -> dict:
     return default_cfg
 
 
+def _normalize_repo_path(repo_root: Path, p: str) -> str:
+    p = (p or "").strip().replace("\\", "/")
+    if p.startswith("./"):
+        p = p[2:]
+    if not p:
+        return ""
+    try:
+        pp = Path(p)
+        if pp.is_absolute():
+            rp = str(pp.resolve()).replace("\\", "/")
+            rr = str(repo_root.resolve()).replace("\\", "/")
+            if rp.startswith(rr + "/"):
+                p = rp[len(rr) + 1 :]
+            else:
+                p = pp.name
+    except Exception:
+        pass
+    return p
+
+
+def _extract_affected_files(repo_root: Path, findings_grouped: dict) -> dict:
+    """
+    Builds a strict list of repo-relative files that findings reference.
+    Stored as agent_output/targets.json and used as allow-list by Fixer.
+    """
+    files = set()
+    by_tool = {}
+
+    def add(tool: str, path: str):
+        rp = _normalize_repo_path(repo_root, path)
+        if not rp:
+            return
+        files.add(rp)
+        by_tool.setdefault(tool, set()).add(rp)
+
+    for tool, items in (findings_grouped or {}).items():
+        if not isinstance(items, list):
+            continue
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            # Common keys across parsers
+            path = (
+                it.get("file") or it.get("path") or
+                (it.get("location") or {}).get("path") or
+                (it.get("artifact") or {}).get("path") or
+                ""
+            )
+            if path:
+                add(tool, str(path))
+
+    return {
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "files": sorted(files),
+        "by_tool": {k: sorted(v) for k, v in by_tool.items()},
+    }
+
+
+def _normalize_status(decision: dict) -> dict:
+    st = (decision.get("status") or "").lower().strip()
+    if st in ("ok", "success", "passed", "true", ""):
+        decision["status"] = "pass"
+    elif st in ("failed", "false"):
+        decision["status"] = "fail"
+    # keep pass/fail as-is, anything else treat as fail-safe
+    elif st not in ("pass", "fail"):
+        decision["status"] = "fail"
+        decision.setdefault("reason", f"Unknown status '{st}' normalized to fail")
+    return decision
+
+
 def print_banner():
-    """Print startup banner."""
-    # Normalize OLLAMA_URL if only OLLAMA_HOST provided
     if not os.getenv("OLLAMA_URL") and os.getenv("OLLAMA_HOST"):
         os.environ["OLLAMA_URL"] = f"http://{os.getenv('OLLAMA_HOST')}"
-
     print("\n" + "=" * 70)
     print("   🛡️  DevSecOps Agentic AI Security Scanner")
     print("=" * 70)
@@ -159,360 +207,7 @@ def print_banner():
     print("=" * 70 + "\n")
 
 
-def print_phase1_results(findings_grouped: dict, decision: dict):
-    """PHASE 1: Print clean scan results and decision."""
-    print("\n" + "━" * 70)
-    print("   📊  SCAN RESULTS")
-    print("━" * 70)
-
-    stats = decision.get("stats", {})
-    total = stats.get("total", 0)
-    by_sev = stats.get("by_severity", {})
-
-    print(f"\n   Total Findings: {total}")
-    print(f"   ┌{'─'*50}┐")
-    print(f"   │ 🔴 Critical: {by_sev.get('critical', 0):3d}  │  🟠 High: {by_sev.get('high', 0):3d}           │")
-    print(f"   │ 🟡 Medium:   {by_sev.get('medium', 0):3d}  │  🟢 Low:  {by_sev.get('low', 0):3d}            │")
-    print(f"   └{'─'*50}┘")
-
-    # By tool
-    by_tool = stats.get("by_tool", {})
-    if by_tool:
-        print(f"\n   By Tool:")
-        for tool, count in sorted(by_tool.items(), key=lambda x: -x[1]):
-            print(f"      • {tool}: {count}")
-
-    # Violations
-    violations = decision.get("violations", [])
-    if violations:
-        print(f"\n   ⚠️  Issues Found ({len(violations)}):")
-        for i, v in enumerate(violations[:5], 1):
-            sev = v.get("severity", "").upper()
-            sev_icon = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡" if sev == "MEDIUM" else "🟢"
-            print(f"   {i}. {sev_icon} [{sev}] {v.get('tool', '')} @ {v.get('location', '')}")
-
-    # Decision
-    status = decision.get("status", "ok")
-    print(f"\n   {'─'*50}")
-    if status == "fail":
-        print(f"   ❌ DECISION: FAIL - {decision.get('reason', '')}")
-    else:
-        print(f"   ✅ DECISION: PASS")
-    print("━" * 70)
-
-
-def generate_dynamic_suggestion(item: dict, tool: str) -> dict:
-    """
-    Generate DYNAMIC, context-specific suggestion based on actual finding.
-    Returns dict with: issue, location, quick_fix, command (if applicable)
-    """
-    suggestion = {
-        "issue": "",
-        "location": "",
-        "quick_fix": "",
-        "command": None,
-        "severity": item.get("severity", "medium").upper()
-    }
-
-    if tool == "semgrep":
-        file_path = item.get("file", "unknown")
-        line = item.get("line", "?")
-        rule_id = item.get("rule_id", "")
-        message = item.get("message", "")
-
-        suggestion["location"] = f"{file_path}:{line}"
-        suggestion["issue"] = message or f"Security issue detected by rule {rule_id}"
-
-        # Generate specific fix based on rule
-        rule_lower = (rule_id or "").lower()
-        if "password" in rule_lower or "hardcoded" in rule_lower:
-            suggestion["quick_fix"] = f"""
-   → Open {file_path} at line {line}
-   → Replace hardcoded value with: os.environ.get('SECRET_NAME')
-   → Add SECRET_NAME to your .env file"""
-        elif "sql" in rule_lower or "injection" in rule_lower:
-            suggestion["quick_fix"] = f"""
-   → Open {file_path} at line {line}
-   → Use parameterized query: cursor.execute(query, (param,))"""
-        elif "subprocess" in rule_lower or "shell" in rule_lower:
-            suggestion["quick_fix"] = f"""
-   → Open {file_path} at line {line}
-   → Set shell=False and pass args as list: subprocess.run(['cmd', 'arg1'])"""
-        else:
-            suggestion["quick_fix"] = f"""
-   → Open {file_path} at line {line}
-   → Review and fix the security issue"""
-
-    elif tool in ("trivy_fs", "trivy-fs"):
-        file_path = item.get("file", "unknown")
-        vuln_id = item.get("id", "")
-        summary = item.get("summary", "")
-
-        suggestion["location"] = file_path
-        suggestion["issue"] = summary or f"Vulnerability {vuln_id}"
-
-        if "CVE" in (vuln_id or ""):
-            suggestion["quick_fix"] = f"""
-   → Update the vulnerable package/image
-   → Check if patch is available for {vuln_id}"""
-            suggestion["command"] = "pip install --upgrade <package>  # or update base image"
-        elif "root" in (summary or "").lower() or "user" in (summary or "").lower():
-            suggestion["quick_fix"] = f"""
-   → Add to {file_path}:
-     RUN adduser --disabled-password appuser
-     USER appuser"""
-        elif "add" in (summary or "").lower():
-            suggestion["quick_fix"] = f"""
-   → In {file_path}: Replace ADD with COPY"""
-        else:
-            suggestion["quick_fix"] = f"""
-   → Review {file_path} for the misconfiguration"""
-
-    elif tool == "gitleaks":
-        file_path = item.get("file", "unknown")
-        line = item.get("line", "?")
-        rule_id = item.get("rule_id", "")
-
-        suggestion["location"] = f"{file_path}:{line}"
-        suggestion["issue"] = f"Exposed secret: {rule_id}"
-        suggestion["quick_fix"] = f"""
-   → IMMEDIATELY rotate/revoke this credential!
-   → Remove from {file_path}
-   → Use environment variable instead"""
-        suggestion["command"] = (
-            "# Remove secret from git history:\n"
-            "git filter-branch --force --index-filter "
-            "'git rm --cached --ignore-unmatch {file}'"
-        ).format(file=file_path)
-
-    elif tool == "tfsec":
-        location = item.get("location", item.get("file", "unknown"))
-        rule_id = item.get("rule_id", item.get("id", ""))
-        description = item.get("description", item.get("message", ""))
-
-        suggestion["location"] = location
-        suggestion["issue"] = description
-
-        desc_lower = (description or "").lower()
-        if "0.0.0.0" in (description or "") or "cidr" in desc_lower:
-            suggestion["quick_fix"] = f"""
-   → In {location}: Change cidr_blocks = ["0.0.0.0/0"]
-   → To: cidr_blocks = ["10.0.0.0/8"] or your VPC CIDR"""
-        elif "encrypt" in desc_lower:
-            suggestion["quick_fix"] = f"""
-   → Enable encryption in {location}"""
-        else:
-            suggestion["quick_fix"] = f"""
-   → Fix the issue in {location}"""
-
-    return suggestion
-
-
-def print_phase2_dynamic_suggestions(llm_report: dict, findings_grouped: dict, decision: dict):
-    """
-    PHASE 2: Print DYNAMIC suggestions based on actual scan output.
-    No generic advice - everything is specific to the findings.
-    """
-    print("\n" + "━" * 70)
-    print("   🔧  REMEDIATION (Specific to Your Findings)")
-    print("━" * 70)
-
-    if not llm_report and not findings_grouped:
-        print("\n   ✅ No issues to remediate!")
-        print("━" * 70)
-        return
-
-    # Check if LLM was used or fallback
-    total_findings = 0
-    llm_used = False
-
-    # Process Semgrep findings
-    semgrep_items = llm_report.get("semgrep", []) if llm_report else []
-    if not semgrep_items:
-        semgrep_items = findings_grouped.get("semgrep", []) if findings_grouped else []
-
-    if semgrep_items:
-        print(f"\n   📝 CODE ISSUES ({len(semgrep_items)} found)")
-        print("   " + "─" * 50)
-
-        for i, item in enumerate(semgrep_items, 1):
-            total_findings += 1
-            sev = (item.get("severity") or "medium").upper()
-            sev_icon = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡" if sev == "MEDIUM" else "🟢"
-
-            # Check if LLM provided suggestion
-            suggestion_text = item.get("suggestion", "")
-            used_fallback = item.get("used_fallback", True)
-
-            if suggestion_text and "[Fallback" not in suggestion_text and not used_fallback:
-                llm_used = True
-                # LLM-generated suggestion - print it directly
-                print(f"\n   {i}. {sev_icon} [{sev}] {item.get('file', '')}:{item.get('line', '')}")
-                print(f"      Rule: {item.get('rule_id', '')}")
-                print("")
-                # Clean and print LLM suggestion
-                clean_suggestion = suggestion_text.replace("[Fallback - LLM unavailable]", "").strip()
-                for line in clean_suggestion.split("\n")[:10]:  # Limit lines
-                    print(f"      {line}")
-            else:
-                # Generate dynamic suggestion
-                sugg = generate_dynamic_suggestion(item, "semgrep")
-                print(f"\n   {i}. {sev_icon} [{sev}] {sugg['location']}")
-                print(f"      Issue: {sugg['issue'][:60]}...")
-                print(f"      Fix:{sugg['quick_fix']}")
-
-    # Process Trivy findings
-    trivy_items = llm_report.get("trivy_fs", []) if llm_report else []
-    if not trivy_items:
-        trivy_items = findings_grouped.get("trivy_fs", []) if findings_grouped else []
-
-    if trivy_items:
-        print(f"\n   🐳 INFRASTRUCTURE ISSUES ({len(trivy_items)} found)")
-        print("   " + "─" * 50)
-
-        for i, item in enumerate(trivy_items, 1):
-            total_findings += 1
-            sev = (item.get("severity") or "medium").upper()
-            sev_icon = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡" if sev == "MEDIUM" else "🟢"
-
-            suggestion_text = item.get("suggestion", "")
-            used_fallback = item.get("used_fallback", True)
-
-            if suggestion_text and "[Fallback" not in suggestion_text and not used_fallback:
-                llm_used = True
-                print(f"\n   {i}. {sev_icon} [{sev}] {item.get('file', '')} ({item.get('id', '')})")
-                clean_suggestion = suggestion_text.replace("[Fallback - LLM unavailable]", "").strip()
-                for line in clean_suggestion.split("\n")[:8]:
-                    print(f"      {line}")
-            else:
-                sugg = generate_dynamic_suggestion(item, "trivy_fs")
-                print(f"\n   {i}. {sev_icon} [{sev}] {sugg['location']} ({item.get('id', '')})")
-                print(f"      Issue: {sugg['issue'][:60]}...")
-                print(f"      Fix:{sugg['quick_fix']}")
-                if sugg.get("command"):
-                    print(f"      Command: {sugg['command']}")
-
-    # Process Gitleaks findings
-    gitleaks_items = findings_grouped.get("gitleaks", []) if findings_grouped else []
-    if gitleaks_items:
-        print(f"\n   🔑 EXPOSED SECRETS ({len(gitleaks_items)} found) ⚠️ URGENT!")
-        print("   " + "─" * 50)
-
-        for i, item in enumerate(gitleaks_items[:3], 1):  # Limit to 3
-            total_findings += 1
-            sugg = generate_dynamic_suggestion(item, "gitleaks")
-            print(f"\n   {i}. 🔴 [CRITICAL] {sugg['location']}")
-            print(f"      Secret Type: {item.get('rule_id', 'unknown')}")
-            print(f"      ⚠️ ROTATE THIS CREDENTIAL IMMEDIATELY!")
-            print(f"      Fix:{sugg['quick_fix']}")
-
-    # Process tfsec findings
-    tfsec_items = findings_grouped.get("tfsec", []) if findings_grouped else []
-    if tfsec_items:
-        print(f"\n   ☁️ TERRAFORM ISSUES ({len(tfsec_items)} found)")
-        print("   " + "─" * 50)
-
-        for i, item in enumerate(tfsec_items[:3], 1):
-            total_findings += 1
-            sugg = generate_dynamic_suggestion(item, "tfsec")
-            sev = (item.get("severity") or "medium").upper()
-            sev_icon = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡"
-            print(f"\n   {i}. {sev_icon} [{sev}] {sugg['location']}")
-            print(f"      Issue: {sugg['issue'][:60]}...")
-            print(f"      Fix:{sugg['quick_fix']}")
-
-    # Summary
-    print(f"\n   " + "─" * 50)
-    if llm_used:
-        print(f"   ✨ AI-powered suggestions provided")
-    else:
-        print(f"   📋 Context-specific suggestions provided (LLM unavailable)")
-    print(f"   📊 Total issues to fix: {total_findings}")
-
-    # Priority action
-    stats = decision.get("stats", {})
-    by_sev = stats.get("by_severity", {})
-    critical = by_sev.get("critical", 0)
-    high = by_sev.get("high", 0)
-
-    if critical > 0:
-        print(f"\n   🚨 PRIORITY: Fix {critical} CRITICAL issue(s) before deployment!")
-    elif high > 0:
-        print(f"\n   ⚠️ PRIORITY: Fix {high} HIGH severity issue(s)")
-
-    print("━" * 70)
-
-
-def print_quick_actions(decision: dict, findings_grouped: dict):
-    """Print quick action commands based on actual findings."""
-    print("\n" + "━" * 70)
-    print("   ⚡ QUICK ACTIONS")
-    print("━" * 70)
-
-    actions = []
-
-    # Check what tools found issues
-    stats = decision.get("stats", {})
-    by_tool = stats.get("by_tool", {})
-
-    if by_tool.get("semgrep", 0) > 0:
-        actions.append("   # Re-run Semgrep after fixes:")
-        actions.append("   semgrep scan --config=auto .")
-
-    if by_tool.get("trivy_fs", 0) > 0 or by_tool.get("trivy-fs", 0) > 0:
-        actions.append("\n   # Update dependencies:")
-        actions.append("   pip install --upgrade -r requirements.txt")
-        actions.append("   # Or rebuild Docker image:")
-        actions.append("   docker build --no-cache -t myapp .")
-
-    if by_tool.get("gitleaks", 0) > 0:
-        actions.append("\n   # Check for secrets:")
-        actions.append("   gitleaks detect --source . --verbose")
-
-    if by_tool.get("tfsec", 0) > 0:
-        actions.append("\n   # Re-run Terraform scan:")
-        actions.append("   tfsec terraform/")
-
-    if actions:
-        for action in actions:
-            print(action)
-    else:
-        print("   ✅ No immediate actions required")
-
-    print("\n   # Re-run this pipeline after fixes:")
-    print("   python main.py --analysis-only  # or --generate-fixes")
-    print("━" * 70)
-
-
-def print_final_summary(decision: dict, output_dir: Path):
-    """Print final summary with output file locations."""
-    print("\n" + "=" * 70)
-    print("   📁  OUTPUT FILES")
-    print("=" * 70)
-
-    files = [
-        ("decision.json", "Full report"),
-        ("llm_report.json", "AI analysis"),
-        ("llm_recommendations.md", "Detailed fixes"),
-        ("pr_comment.md", "PR comment"),
-    ]
-
-    for fname, desc in files:
-        fpath = output_dir / fname
-        if fpath.exists():
-            print(f"   ✓ {fname:25s} - {desc}")
-
-    status = decision.get("status", "ok")
-    print("\n" + "=" * 70)
-    if status == "fail":
-        print("   ❌  STATUS: FAILED - Fix issues and re-run")
-    else:
-        print("   ✅  STATUS: PASSED")
-    print("=" * 70 + "\n")
-
-
 def main():
-    """Main entry point."""
     load_env_from_file(".env", override=False)
 
     parser = argparse.ArgumentParser(description="DevSecOps Agentic AI Pipeline")
@@ -521,21 +216,17 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--skip-llm", action="store_true")
 
-    # Deterministic CI phases (mutually exclusive)
     phase = parser.add_mutually_exclusive_group()
-    phase.add_argument("--analysis-only", action="store_true", help="Run collection + policy + (optional) LLM; skip auto-fix")
-    phase.add_argument("--generate-fixes", action="store_true", help="Run collection + policy + fix application")
+    phase.add_argument("--analysis-only", action="store_true")
+    phase.add_argument("--generate-fixes", action="store_true")
 
-    # Optional overrides for CI
-    parser.add_argument("--model", default=os.getenv("LLM_MODEL"), help="Override LLM model (e.g., qwen2.5-coder:3b)")
-    parser.add_argument("--ollama-url", default=None, help="Override Ollama base URL, e.g. http://127.0.0.1:11434")
+    parser.add_argument("--model", default=os.getenv("LLM_MODEL"))
+    parser.add_argument("--ollama-url", default=None)
 
     args = parser.parse_args()
-
     if args.verbose:
         os.environ["LLM_VERBOSE"] = "1"
 
-    # Apply CLI overrides early
     if args.model:
         os.environ["LLM_MODEL"] = args.model
     if args.ollama_url:
@@ -544,10 +235,10 @@ def main():
     print_banner()
 
     cfg = _load_cfg()
-    # Ensure cfg reflects CLI overrides
     if args.model:
         cfg.setdefault("llm", {})["model"] = args.model
 
+    repo_root = Path(".")
     reports_dir = Path(cfg["inputs"]["reports_dir"])
     output_dir = Path(cfg["inputs"]["output_dir"])
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -555,15 +246,15 @@ def main():
 
     # 1) Collect findings
     print("   ⏳ Scanning...")
-    findings_grouped = {}
     try:
-        with suppress_verbose_output():
-            collector = CollectorAgent(cfg, reports_dir, output_dir)
-            findings_grouped = collector.load_all()
+        collector = CollectorAgent(cfg, reports_dir, output_dir)
+        findings_grouped = collector.load_all()
     except Exception as e:
-        print(f"   ❌ Error: {e}")
+        print(f"   ❌ Collector error: {e}")
+        traceback.print_exc()
         findings_grouped = {}
 
+    # Write merged findings
     try:
         (output_dir / "merged_findings.json").write_text(
             json.dumps({"findings": findings_grouped}, ensure_ascii=False, indent=2),
@@ -572,22 +263,33 @@ def main():
     except Exception:
         pass
 
+    # NEW: write targets allow-list
+    try:
+        targets = _extract_affected_files(repo_root, findings_grouped)
+        (output_dir / "targets.json").write_text(json.dumps(targets, indent=2), encoding="utf-8")
+        print(f"   ✅ targets.json written with {len(targets.get('files', []))} file(s)")
+    except Exception as e:
+        print(f"   ⚠️ Could not write targets.json: {e}")
+
     # 2) Policy Gate
     print("   ⏳ Evaluating policy...")
-    decision = {}
     try:
-        with suppress_verbose_output():
-            decision = PolicyGate(cfg, output_dir).decide(findings_grouped)
+        decision = PolicyGate(cfg, output_dir).decide(findings_grouped)
     except Exception as e:
-        decision = {"status": "ok", "reason": f"Error: {e}"}
+        print(f"[policy] error: {e}")
+        traceback.print_exc()
+        decision = {"status": "fail", "reason": f"PolicyGate error: {e}"}
 
     if "open_pr" not in decision:
-        decision["open_pr"] = bool(decision.get("status") == "fail")
+        decision["open_pr"] = bool((decision.get("status") or "").lower() in ("fail", "failed"))
 
-    # 3) LLM Analysis (unless explicitly skipped)
+    # Normalize status to pass/fail for CI gate
+    decision = _normalize_status(decision)
+
+    # 3) LLM analysis (optional)
     llm_report = None
     if not args.skip_llm:
-        print("   ⏳ Analyzing...")
+        print("   ⏳ Analyzing (LLM layer)...")
         try:
             with suppress_verbose_output():
                 llm_report = run_autogen_layer(findings_grouped, cfg, output_dir)
@@ -595,65 +297,30 @@ def main():
                 decision.setdefault("remediation", {})
                 decision["remediation"]["llm_report"] = llm_report
                 decision["remediation"]["llm_report_path"] = str(output_dir / "llm_report.json")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[llm] error: {e}")
 
-    # 4) Auto-remediation only when --generate-fixes is used
-    try:
-        # Always run Fixer during --generate-fixes if the pipeline failed
-        if args.generate_fixes and decision.get("status") == "fail":
-            print("[main] Fixer condition met: --generate-fixes and status=fail")
-            with suppress_verbose_output():
-                fix_info = Fixer(cfg, output_dir).apply(findings_grouped)
-    
-            # Diagnostics: show how many patches we produced
-            from pathlib import Path as _P
-            _patch_dir = _P(output_dir) / "patches"
-            _patch_list = list(_patch_dir.glob("*.patch"))
-            print(f"[fixer] patches generated: {len(_patch_list)}")
-            for _p in _patch_list:
-                print(f"[fixer]  - {_p}")
-    
+    # 4) Auto-remediation only when --generate-fixes
+    if args.generate_fixes and decision.get("status") == "fail":
+        print("[main] Fixer condition met: --generate-fixes and status=fail")
+        try:
+            fix_info = Fixer(cfg, output_dir, repo_root).apply(findings_grouped)
             decision.setdefault("remediation", {})
             if isinstance(fix_info, dict):
                 for k, v in fix_info.items():
-                    if k != "llm_report" and (v is not None or k not in decision["remediation"]):
+                    if k != "llm_report":
                         decision["remediation"][k] = v
-        else:
-            print(f"[main] Skipping Fixer — args.generate_fixes={getattr(args,'generate_fixes',None)} "
-                  f"status={decision.get('status')}")
-    except Exception as e:
-        # Do not swallow unexpected errors; print them so CI logs show what happened
-        print(f"[main] Fixer block error: {e}")
-
-    # try:
-    #     # Always run Fixer during --generate-fixes if the pipeline failed
-    #     if args.generate_fixes and decision.get("status") == "fail":
-    #         with suppress_verbose_output():
-    #             fix_info = Fixer(cfg, output_dir).apply(findings_grouped)
-
-    #         # Diagnostics: list how many patches were produced
-    #         from pathlib import Path as _P
-    #         _patch_dir = _P(output_dir) / "patches"
-    #         _patch_list = list(_patch_dir.glob("*.patch"))
-    #         print(f"[fixer] patches generated: {len(_patch_list)}")
-    #         for _p in _patch_list:
-    #             print(f"[fixer]  - {_p}")
-
-    #         decision.setdefault("remediation", {})
-    #         if isinstance(fix_info, dict):
-    #             for k, v in fix_info.items():
-    #                 if k != "llm_report" and (v is not None or k not in decision["remediation"]):
-    #                     decision["remediation"][k] = v
-    # except Exception:
-    #     pass
+        except Exception as e:
+            print(f"[main] Fixer error: {e}")
+            traceback.print_exc()
+    else:
+        print(f"[main] Skipping Fixer — generate_fixes={args.generate_fixes} status={decision.get('status')}")
 
     # 5) Reporting
     try:
-        with suppress_verbose_output():
-            Reporter(cfg, output_dir).emit(findings_grouped, decision)
-    except Exception:
-        pass
+        Reporter(cfg, output_dir).emit(findings_grouped, decision)
+    except Exception as e:
+        print(f"[reporter] error: {e}")
 
     # 6) Write decision
     try:
@@ -662,32 +329,16 @@ def main():
     except Exception:
         pass
 
-    # GitHub output (for workflow step outputs)
+    # GitHub output
     if args.outputs_env:
         try:
             with open(args.outputs_env, "a", encoding="utf-8") as f:
-                f.write(f"pipeline_status={decision.get('status','ok')}\n")
+                f.write(f"pipeline_status={decision.get('status','fail')}\n")
                 f.write(f"open_pr={'true' if decision.get('open_pr') else 'false'}\n")
         except Exception:
             pass
 
-    # ═══════════════════════════════════════════════════════════════
-    # DYNAMIC OUTPUT - Based on actual findings
-    # ═══════════════════════════════════════════════════════════════
-
-    # Phase 1: Scan Results
-    print_phase1_results(findings_grouped, decision)
-
-    # Phase 2: Dynamic Suggestions (specific to findings)
-    print_phase2_dynamic_suggestions(llm_report, findings_grouped, decision)
-
-    # Phase 3: Quick Actions (based on what was found)
-    print_quick_actions(decision, findings_grouped)
-
-    # Final Summary
-    print_final_summary(decision, output_dir)
-
-    # Exit non-zero on fail (CI can decide to continue or stop)
+    # Exit non-zero on fail
     return 1 if decision.get("status") == "fail" else 0
 
 
