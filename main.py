@@ -66,10 +66,13 @@ def suppress_verbose_output():
 # LLM imports
 try:
     from agents.llm_bridge import assistant_factory, check_ollama_health, get_fallback_suggestion
-except Exception:
+except ImportError:
     try:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent / "agents"))
         from llm_bridge import assistant_factory, check_ollama_health, get_fallback_suggestion
-    except Exception:
+    except ImportError:
         assistant_factory = None
         check_ollama_health = None
         get_fallback_suggestion = None
