@@ -20,7 +20,7 @@ env:
   OLLAMA_NUM_CTX: ${{ secrets.OLLAMA_NUM_CTX }}
   OLLAMA_NUM_PREDICT: ${{ secrets.OLLAMA_NUM_PREDICT }}
   OLLAMA_TEMPERATURE: ${{ secrets.OLLAMA_TEMPERATURE }}
-  MIN_SEVERITY: "high"
+  MIN_SEVERITY: "severity"
   LLM_AUTOFIX_TOOLS: ${{ secrets.LLM_AUTOFIX_TOOLS }}
 
 jobs:
@@ -218,7 +218,7 @@ jobs:
           name: scan-reports
           path: reports/
 
-      # ── Cache Ollama model only (binary installed fresh each time) ──
+      # ── Cache Ollama model only
       - name: Cache Ollama model
         id: ollama-cache
         uses: actions/cache@v4
