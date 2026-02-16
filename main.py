@@ -100,7 +100,7 @@ def _load_cfg() -> dict:
         },
         "llm": {
             "enabled": bool(os.getenv("OLLAMA_URL")) or (os.getenv("LLM_ENABLED", "").strip() == "1"),
-            "model": os.getenv("OLLAMA_MODEL", "llama3:latest"),
+            "model": os.getenv("OLLAMA_MODEL", "qwen2.5-coder:3b"),
             "temperature": float(os.getenv("OLLAMA_TEMPERATURE", "0.2")),
         },
         "remediation": {
