@@ -67,7 +67,7 @@ jobs:
       - name: Setup EC2 prerequisites
         uses: appleboy/ssh-action@v1
         with:
-          host: $EC2_HOST                              #${{ secrets.EC2_HOST }}
+          host: ${{ env.EC2_HOST }}                            #${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
@@ -114,7 +114,7 @@ jobs:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1
         with:
-          host: $EC2_HOST                  #${{ secrets.EC2_HOST }}
+          host: ${{ env.EC2_HOST }}                 #${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
@@ -157,7 +157,7 @@ jobs:
               echo ""
               echo "════════════════════════════════════════════"
               echo "✅ Chatbot deployed successfully!"
-              echo "🌐 http://$EC2_HOST:8501"
+              echo "🌐 http://${{ env.EC2_HOST }}:8501"
               echo "════════════════════════════════════════════"
             else
               echo "❌ Container failed to start. Logs:"
@@ -174,8 +174,8 @@ jobs:
           echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Image** | \`${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Host** | \`$EC2_HOST:8501\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Host** | \`${{ env.EC2_HOST }}:8501\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🌐 **Chatbot URL:** http://$EC2_HOST:8501" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **Chatbot URL:** http://${{ env.EC2_HOST }}:8501" >> $GITHUB_STEP_SUMMARY
