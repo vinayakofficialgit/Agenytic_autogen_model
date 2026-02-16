@@ -193,7 +193,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --analysis-only --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
+          python main.py --analysis-only --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
 
       - name: Persist Analysis Output
         run: |
@@ -275,7 +275,8 @@ jobs:
       - name: AI Generate Fix Patches
         run: |
           mkdir -p agent_output/patches
-          python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
+          python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
+        # python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
 
       # --------------------------------------------------
       # Create Remediation Branch (with git identity)

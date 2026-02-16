@@ -410,7 +410,7 @@
 # ) -> Dict[str, Any]:
 #     """Check Ollama server health and model availability."""
 #     base_url = (base_url or os.getenv("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
-#     model = model or os.getenv("OLLAMA_MODEL", "llama3:latest")
+#     model = model or os.getenv("LLM_MODEL", "llama3:latest")
     
 #     result = {
 #         "healthy": False,
@@ -475,7 +475,7 @@
 # ):
 #     """Create an Ollama-backed assistant with quiet error handling."""
 #     base_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-#     model = os.getenv("OLLAMA_MODEL", "llama3:latest")
+#     model = os.getenv("LLM_MODEL", "llama3:latest")
     
 #     connect_t = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
 #     read_t = float(os.getenv("LLM_READ_TIMEOUT", "600"))
@@ -627,7 +627,7 @@
 # ) -> str:
 #     """Simple wrapper for single-turn Ollama chat."""
 #     base_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-#     model = model or os.getenv("OLLAMA_MODEL", "llama3:latest")
+#     model = model or os.getenv("LLM_MODEL", "llama3:latest")
 #     num_ctx = num_ctx or int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 #     num_predict = num_predict or int(os.getenv("OLLAMA_NUM_PREDICT", "2048"))
     
@@ -676,7 +676,7 @@
     
 #     print(f"\nConfiguration:")
 #     print(f"  OLLAMA_URL: {os.getenv('OLLAMA_URL', 'http://localhost:11434')}")
-#     print(f"  OLLAMA_MODEL: {os.getenv('OLLAMA_MODEL', 'llama3:latest')}")
+#     print(f"  LLM_MODEL: {os.getenv('LLM_MODEL', 'llama3:latest')}")
     
 #     print(f"\nHealth Check:")
 #     health = check_ollama_health()
@@ -915,7 +915,7 @@ def check_ollama_health(
 ) -> Dict[str, Any]:
     """Check Ollama server health."""
     base_url = (base_url or os.getenv("OLLAMA_URL", "http://localhost:11434")).rstrip("/")
-    model = model or os.getenv("OLLAMA_MODEL", "llama3:latest")
+    model = model or os.getenv("LLM_MODEL", "llama3:latest")
     
     result = {
         "healthy": False,
@@ -973,7 +973,7 @@ def assistant_factory(
 ):
     """Create Ollama-backed assistant with quiet error handling."""
     base_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "llama3:latest")
+    model = os.getenv("LLM_MODEL", "llama3:latest")
     
     connect_t = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
     read_t = float(os.getenv("LLM_READ_TIMEOUT", "600"))
@@ -1119,7 +1119,7 @@ def ollama_chat(
 ) -> str:
     """Simple Ollama chat wrapper."""
     base_url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-    model = model or os.getenv("OLLAMA_MODEL", "llama3:latest")
+    model = model or os.getenv("LLM_MODEL", "llama3:latest")
     num_ctx = num_ctx or int(os.getenv("OLLAMA_NUM_CTX", "8192"))
     num_predict = num_predict or int(os.getenv("OLLAMA_NUM_PREDICT", "2048"))
     
