@@ -299,16 +299,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"  
       
       # Tiny Normalization (LF endings):
-      
       - name: Normalize patch line-endings (LF)
         if: ${{ hashFiles('agent_output/patches/*.patch') != '' }}
         run: |
           sed -i 's/\r$//' agent_output/patches/*.patch || true
-	  
+            
       # ------------------------------------------------------------
       # APPLY PATCHES SAFELY (inserted here)
       # ------------------------------------------------------------
-      
       - name: Apply Patches (safely)
         run: |
           set -e
