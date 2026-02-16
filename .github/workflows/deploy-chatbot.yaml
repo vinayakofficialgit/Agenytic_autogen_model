@@ -12,7 +12,7 @@ on:
 env:
   IMAGE_NAME: devsecops-chatbot
   CONTAINER_NAME: devsecops-chatbot
-  EC2_HOST: EC2_HOST
+  EC2_HOST: "54.82.106.240"
   
 
 jobs:
