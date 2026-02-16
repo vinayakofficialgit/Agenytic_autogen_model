@@ -1,18 +1,4 @@
-# ============================================================
-# Deploy DevSecOps Chatbot to AWS EC2
-#
-# REQUIRED GITHUB SECRETS:
-#   AWS_ACCESS_KEY_ID       - AWS IAM access key
-#   AWS_SECRET_ACCESS_KEY   - AWS IAM secret key
-#   AWS_REGION              - e.g. ap-south-1
-#   AWS_ACCOUNT_ID          - Your 12-digit AWS account ID
-#   ECR_REPOSITORY          - ECR repo name e.g. devsecops-chatbot
-#   EC2_HOST                - EC2 Elastic IP
-#   EC2_SSH_KEY             - Private SSH key (PEM content)
-#   EC2_USER                - EC2 username (ubuntu / ec2-user)
-#   GROQ_API_KEY            - Groq API key for the chatbot
-#   GH_PAT_TOKEN            - GitHub PAT for fetching artifacts
-# ============================================================
+
 name: 🚀 Deploy DevSecOps Chatbot
 
 on:
@@ -26,6 +12,8 @@ on:
 env:
   IMAGE_NAME: devsecops-chatbot
   CONTAINER_NAME: devsecops-chatbot
+  EC2_HOST: EC2_HOST
+  
 
 jobs:
   build-and-deploy:
@@ -79,7 +67,7 @@ jobs:
       - name: Setup EC2 prerequisites
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_HOST }}
+          host: $EC2_HOST                              #${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
@@ -126,7 +114,7 @@ jobs:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_HOST }}
+          host: $EC2_HOST                  #${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 10m
@@ -169,7 +157,7 @@ jobs:
               echo ""
               echo "════════════════════════════════════════════"
               echo "✅ Chatbot deployed successfully!"
-              echo "🌐 http://${{ secrets.EC2_HOST }}:8501"
+              echo "🌐 http://$EC2_HOST:8501"
               echo "════════════════════════════════════════════"
             else
               echo "❌ Container failed to start. Logs:"
@@ -186,8 +174,8 @@ jobs:
           echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| **Image** | \`${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Host** | \`${{ secrets.EC2_HOST }}:8501\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Host** | \`$EC2_HOST:8501\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🌐 **Chatbot URL:** http://${{ secrets.EC2_HOST }}:8501" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **Chatbot URL:** http://$EC2_HOST:8501" >> $GITHUB_STEP_SUMMARY
