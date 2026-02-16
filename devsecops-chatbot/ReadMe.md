@@ -26,18 +26,16 @@ You already have this. Make sure it has `repo` and `actions:read` permissions.
 cd devsecops-chatbot
 pip install -r requirements.txt
 streamlit run app.py
+
 ```
 
-### 4. Deploy to Streamlit Cloud (free)
+### 4. Deploy to Streamlit Cloud
 1. Push this folder to your GitHub repo (e.g., in a `chatbot/` directory)
 2. Go to [share.streamlit.io](https://share.streamlit.io)
 3. Connect your GitHub repo
 4. Set the main file path to `chatbot/app.py`
 5. Add secrets in Streamlit Cloud settings:
    ```toml
-   # .streamlit/secrets.toml (or add in Streamlit Cloud UI)
-   GROQ_API_KEY = "gsk_your_key_here"
-   GITHUB_TOKEN = "ghp_your_token_here"
    ```
 
 ## Architecture
