@@ -277,6 +277,14 @@ jobs:
           mkdir -p agent_output/patches
           python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
 
+      - name: List generated patches
+        run: |
+          ls -la agent_output/patches || true
+          echo "---- remediation_changes.txt ----"
+          test -f agent_output/remediation_changes.txt && sed -n '1,120p' agent_output/remediation_changes.txt || echo "(no remediation_changes.txt)"
+          echo "---- decision.json .remediation.files ----"
+          test -f agent_output/decision.json && jq -r '.remediation.files // empty' agent_output/decision.json || true
+
       #------------------------------------------------------------
       # one‑shot diagnostic step to print the first 20 lines of every patch
       #------------------------------------------------------------

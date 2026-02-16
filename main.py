@@ -602,24 +602,51 @@ def main():
     try:
         # Always run Fixer during --generate-fixes if the pipeline failed
         if args.generate_fixes and decision.get("status") == "fail":
+            print("[main] Fixer condition met: --generate-fixes and status=fail")
             with suppress_verbose_output():
                 fix_info = Fixer(cfg, output_dir).apply(findings_grouped)
-
-            # Diagnostics: list how many patches were produced
+    
+            # Diagnostics: show how many patches we produced
             from pathlib import Path as _P
             _patch_dir = _P(output_dir) / "patches"
             _patch_list = list(_patch_dir.glob("*.patch"))
             print(f"[fixer] patches generated: {len(_patch_list)}")
             for _p in _patch_list:
                 print(f"[fixer]  - {_p}")
-
+    
             decision.setdefault("remediation", {})
             if isinstance(fix_info, dict):
                 for k, v in fix_info.items():
                     if k != "llm_report" and (v is not None or k not in decision["remediation"]):
                         decision["remediation"][k] = v
-    except Exception:
-        pass
+        else:
+            print(f"[main] Skipping Fixer — args.generate_fixes={getattr(args,'generate_fixes',None)} "
+                  f"status={decision.get('status')}")
+    except Exception as e:
+        # Do not swallow unexpected errors; print them so CI logs show what happened
+        print(f"[main] Fixer block error: {e}")
+
+    # try:
+    #     # Always run Fixer during --generate-fixes if the pipeline failed
+    #     if args.generate_fixes and decision.get("status") == "fail":
+    #         with suppress_verbose_output():
+    #             fix_info = Fixer(cfg, output_dir).apply(findings_grouped)
+
+    #         # Diagnostics: list how many patches were produced
+    #         from pathlib import Path as _P
+    #         _patch_dir = _P(output_dir) / "patches"
+    #         _patch_list = list(_patch_dir.glob("*.patch"))
+    #         print(f"[fixer] patches generated: {len(_patch_list)}")
+    #         for _p in _patch_list:
+    #             print(f"[fixer]  - {_p}")
+
+    #         decision.setdefault("remediation", {})
+    #         if isinstance(fix_info, dict):
+    #             for k, v in fix_info.items():
+    #                 if k != "llm_report" and (v is not None or k not in decision["remediation"]):
+    #                     decision["remediation"][k] = v
+    # except Exception:
+    #     pass
 
     # 5) Reporting
     try:
