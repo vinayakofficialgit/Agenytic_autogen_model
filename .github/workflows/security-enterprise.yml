@@ -278,8 +278,35 @@ jobs:
           python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
         # python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
 
-      # Let the action manage branch + commit entirely using add-paths
+      # ------------------------------------------------------------
+      # APPLY PATCHES SAFELY (inserted here)
+      # ------------------------------------------------------------
+      - name: Apply Patches (safely)
+        run: |
+          set -e
+          if compgen -G "agent_output/patches/*.patch" > /dev/null; then
+            for p in agent_output/patches/*.patch; do
+              echo ">>> Checking $p"
+              if git apply --check "$p"; then
+                echo "Applying $p"
+                git apply "$p"
+              else
+                echo "Skipping $p (already applied or conflicts)"
+              fi
+            done
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "AI Security Fixes (Patches)"
+            else
+              echo "No staged changes after applying patches."
+            fi
+          else
+            echo "No patches found."
+          fi
       
+      
+      # Let the action manage branch + commit entirely using add-paths
+
       # --------------------------------------------------
       # Open Pull Request
       # --------------------------------------------------
@@ -303,7 +330,8 @@ jobs:
             security-review/**
             agent_output/**
             reports/**
-          reset-branch: false  
+          reset-branch: false
+          reset-branch
 
   
   # ------------------------------------------------------------
