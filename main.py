@@ -103,7 +103,7 @@ def _load_cfg() -> dict:
         },
         "llm": {
             "enabled": bool(os.getenv("OLLAMA_URL")) or (os.getenv("LLM_ENABLED", "").strip() == "1"),
-            "model": os.getenv("OLLAMA_MODEL", "qwen2.5-coder:3b"),
+            "model": os.getenv("LLM_MODEL", "qwen2.5-coder:3b"),
             "temperature": float(os.getenv("OLLAMA_TEMPERATURE", "0.2")),
         },
         "remediation": {
@@ -141,7 +141,7 @@ def print_banner():
     print("   🛡️  DevSecOps Agentic AI Security Scanner")
     print("=" * 70)
     print(f"   📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"   🤖 LLM: {os.getenv('OLLAMA_MODEL', 'llama3:latest')} @ {os.getenv('OLLAMA_URL', 'localhost:11434')}")
+    print(f"   🤖 LLM: {os.getenv('LLM_MODEL', 'qwen2.5-coder:3b')} @ {os.getenv('OLLAMA_URL', 'localhost:11434')}")
     print("=" * 70 + "\n")
 
 
