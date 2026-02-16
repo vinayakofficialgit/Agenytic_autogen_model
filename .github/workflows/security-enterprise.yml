@@ -278,6 +278,28 @@ jobs:
           python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
         # python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
 
+      
+      #------------------------------------------------------------
+      # one‑shot diagnostic step to print the first 20 lines of every patch
+      #------------------------------------------------------------
+      - name: Inspect generated patches (first 20 lines)
+        if: ${{ hashFiles('agent_output/patches/*.patch') != '' }}
+        run: |
+          for p in agent_output/patches/*.patch; do
+            echo "---- $p (head) ----"
+            sed -n '1,20p' "$p"
+            echo
+          done
+
+      #------------------------------------------------------------
+      # Author Identity for Commits
+      #------------------------------------------------------------
+      - name: Configure Git Identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"  
+
+
       # ------------------------------------------------------------
       # APPLY PATCHES SAFELY (inserted here)
       # ------------------------------------------------------------

@@ -343,9 +343,21 @@ class Fixer:
             if not repo_rel_file or repo_rel_file.startswith("("):
                 continue
             target = (self.repo / repo_rel_file)
-            if not target.exists() or not target.is_file():
-                continue
-
+            # inside _apply_semgrep_quick_patches, right after target = self.repo / repo_rel_file
+            if (not target.exists() or not target.is_file()):
+                app_dir = os.getenv("APP_DIR", "").strip()
+                if app_dir:
+                    alt = self.repo / app_dir / repo_rel_file
+                    if alt.exists() and alt.is_file():
+                        target = alt
+                    else:
+                        from pathlib import Path as _Path
+                        alt2 = self.repo / app_dir / _Path(repo_rel_file).name
+                        if alt2.exists() and alt2.is_file():
+                            target = alt2
+                        else:
+                            notes.append(f"Semgrep quick: file not found for patch: {repo_rel_file}")
+                            continue
             try:
                 original = target.read_text(encoding="utf-8", errors="ignore")
             except Exception as e:
@@ -747,18 +759,29 @@ class Fixer:
     # Patch writing helper
     # ------------------------------------------------------------
 
+    # def _write_patch(self, repo_rel_path: str, patch_text: str, prefix: str = "patch_") -> str:
+    #     """
+    #     Write patch_text into agent_output/patches/<prefix><safe_name>.patch
+    #     Returns the written path as string.
+    #     """
+    #     # Derive a stable name from the path OR provided label like group_counter
+    #     safe = _safe_name(repo_rel_path)
+    #     out_path = self.patch_dir / f"{prefix}{safe}.patch"
+    #     out_path.write_text(patch_text, encoding="utf-8")
+    #     print(f"[fixer] patch written: {out_path}")
+    #     return str(out_path)
     def _write_patch(self, repo_rel_path: str, patch_text: str, prefix: str = "patch_") -> str:
-        """
-        Write patch_text into agent_output/patches/<prefix><safe_name>.patch
-        Returns the written path as string.
-        """
-        # Derive a stable name from the path OR provided label like group_counter
-        safe = _safe_name(repo_rel_path)
+        # Ensure the patch has required headers
+        text = patch_text.lstrip("\ufeff\r\n")  # strip BOM and stray newlines
+        if not (text.startswith("--- ") and "\n+++ " in text):
+            # If we somehow got only a hunk, bail out; better to skip than write a bad patch
+            print(f"[fixer] WARNING: missing headers in patch for {repo_rel_path}; skipping write")
+            return ""
+        safe = _safe_name(repo_rel_path or "unnamed")
         out_path = self.patch_dir / f"{prefix}{safe}.patch"
-        out_path.write_text(patch_text, encoding="utf-8")
+        out_path.write_text(text, encoding="utf-8", newline="\n")
         print(f"[fixer] patch written: {out_path}")
-        return str(out_path)
-
+        return str(out_path) 
 
 # -------------------------
 # Standalone helper function
