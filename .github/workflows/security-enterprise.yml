@@ -242,6 +242,13 @@ jobs:
           name: security-review
           path: security-review/
 
+      # (B) Bring scan reports so reports/** exists for PR add-paths
+      - name: Download Scan Reports
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-reports
+          path: reports/    
+
       - name: Install Python
         uses: actions/setup-python@v5
         with:
