@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 # ─── PAGE CONFIG ──────────────────────────────────────────────
 st.set_page_config(
-    page_title="DevSecOps AI Assistant",
+    page_title="DevSecOps AI chatbot",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
