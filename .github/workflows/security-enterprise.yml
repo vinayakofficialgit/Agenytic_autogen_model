@@ -247,7 +247,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: scan-reports
-          path: reports/    
+          path: reports/
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -277,7 +277,6 @@ jobs:
           mkdir -p agent_output/patches
           python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
 
-      
       #------------------------------------------------------------
       # one‑shot diagnostic step to print the first 20 lines of every patch
       #------------------------------------------------------------
@@ -296,16 +295,16 @@ jobs:
       - name: Configure Git Identity
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"  
-      
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       # Tiny Normalization (LF endings):
       - name: Normalize patch line-endings (LF)
         if: ${{ hashFiles('agent_output/patches/*.patch') != '' }}
         run: |
           sed -i 's/\r$//' agent_output/patches/*.patch || true
-            
+
       # ------------------------------------------------------------
-      # APPLY PATCHES SAFELY (inserted here)
+      # APPLY PATCHES SAFELY (strict -> 3-way -> reject)
       # ------------------------------------------------------------
       - name: Apply Patches (safely)
         run: |
@@ -313,20 +312,18 @@ jobs:
           if compgen -G "agent_output/patches/*.patch" > /dev/null; then
             for p in agent_output/patches/*.patch; do
               echo ">>> Checking $p"
-      
-              # Try exact apply first, then 3-way merge, then reject fallback
               git apply --check "$p" \
                 || git apply --3way --whitespace=nowarn "$p" \
                 || git apply --reject --whitespace=nowarn "$p" \
                 || true
             done
-      
+
             # Show .rej files if any were generated
             if compgen -G "*.rej" > /dev/null; then
               echo "Patch rejects found:"
               find . -name "*.rej" -print
             fi
-      
+
             git add -A
             if ! git diff --cached --quiet; then
               git commit -m "AI Security Fixes (Patches)"
@@ -336,8 +333,6 @@ jobs:
           else
             echo "No patches found."
           fi
-
-      # Let the action manage branch + commit entirely using add-paths
 
       # --------------------------------------------------
       # Open Pull Request
@@ -362,10 +357,8 @@ jobs:
             security-review/**
             agent_output/**
             reports/**
-          # reset-branch: false
-          # reset-branch-on-update: false
 
-  
+
   # ------------------------------------------------------------
   # JOB 4: SECURITY GATE
   # ------------------------------------------------------------

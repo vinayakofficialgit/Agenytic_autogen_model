@@ -16,15 +16,10 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 import re
 import yaml
-import shutil
-from datetime import datetime
 import os
 import subprocess
 import tempfile
 import json
-import difflib
-# import tempfile
-# import subprocess
 
 # Robust imports: work whether llm_bridge/policy_gate are in agents/ or at repo root
 try:
@@ -50,10 +45,10 @@ except Exception:
 
 # Optional input policy-gate
 try:
-    from agents.input_policy_gate import InputPolicyGate, gated_chat_completion
+    from agents.input_policy_gate import InputPolicyGate, gated_chat_completion  # type: ignore
 except Exception:
     try:
-        from input_policy_gate import InputPolicyGate, gated_chat_completion
+        from input_policy_gate import InputPolicyGate, gated_chat_completion  # type: ignore
     except Exception:
         InputPolicyGate = None
         gated_chat_completion = None
@@ -100,48 +95,6 @@ def _truncate_any(val: Any, limit: int = 1200) -> str:
     return s if len(s) <= limit else (s[:limit] + "\n... [truncated] ...")
 
 
-def _build_semgrep_prompt(item: Dict[str, Any]) -> str:
-    """Prompt to ask LLM for semgrep-based patch."""
-    return (
-        "You are a senior application security engineer. Be precise and minimal.\n"
-        "Return a valid unified diff (git-apply friendly) when possible.\n\n"
-        f"Semgrep finding (severity: {item.get('severity','')})\n"
-        f"- rule_id: {item.get('rule_id','')}\n"
-        f"- message: {item.get('message','')}\n"
-        f"- file: {item.get('file','')}\n"
-        f"- line: {item.get('line','')}\n\n"
-        "Code context (may be truncated):\n"
-        "```python\n"
-        f"{_truncate_any(item.get('snippet',''))}\n"
-        "```\n\n"
-        "Tasks:\n"
-        "1) Explain risk in 1–2 lines.\n"
-        "2) Provide a minimal unified diff for the file.\n"
-        "3) List any follow-up (tests/config)."
-    )
-
-
-def _build_trivy_fs_prompt(item: Dict[str, Any]) -> str:
-    """Prompt for trivy filesystem."""
-    return (
-        "You are a cloud security engineer. Prefer secure defaults and minimal changes.\n"
-        "Return a valid unified diff when the target is text-based.\n\n"
-        "Trivy-FS finding:\n"
-        f"- id: {item.get('id','')}\n"
-        f"- severity: {item.get('severity','')}\n"
-        f"- file: {item.get('file','')}\n"
-        f"- summary: {item.get('summary','')}\n\n"
-        "Relevant content (truncated):\n"
-        "```\n"
-        f"{_truncate_any(item.get('snippet',''))}\n"
-        "```\n\n"
-        "Tasks:\n"
-        "1) Identify insecure setting.\n"
-        "2) Provide a minimal unified diff.\n"
-        "3) Note policy implications briefly."
-    )
-
-
 def _get_fallback_for_item(item: Dict[str, Any], tool_group: str) -> str:
     """Fallback text via llm_bridge.get_fallback_suggestion."""
     if get_fallback_suggestion is None:
@@ -168,65 +121,50 @@ def _get_fallback_for_item(item: Dict[str, Any], tool_group: str) -> str:
         )
 
 
-def _parse_diff_changed_files(patch_text: str) -> List[str]:
-    """Collect target file paths from '+++ ' lines in unified diff."""
-    files: List[str] = []
-    for line in patch_text.splitlines():
-        if line.startswith("+++ "):
-            part = line[4:].strip()
-            if part.startswith("a/") or part.startswith("b/"):
-                part = part[2:]
-            if part != "/dev/null" and part not in files:
-                files.append(part)
-    return files
-
-
 def _safe_name(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", path)
 
 
-import tempfile
-import subprocess
-
-def _make_unified_diff_git(old_text: str, new_text: str, repo_rel_path: str) -> str:
+def _strip_diff_preamble(diff: str) -> str:
     """
-    Use git's diff engine to produce a robust unified diff with correct headers.
+    Git diffs may include a preamble (e.g., 'diff --git', 'index ...').
+    For 'git apply', we prefer to start at the first '--- ' header.
+    """
+    if not diff:
+        return diff
+    m = re.search(r"(?m)^---\s+", diff)
+    if m:
+        return diff[m.start():]
+    return diff
+
+
+def _make_unified_diff_git(old_text: str, new_text: str, repo_rel_path: str, context: int = 2) -> str:
+    """
+    Use git's diff engine to produce robust unified diffs.
+    We label the synthetic files as a/<repo_rel_path> and b/<repo_rel_path>.
     """
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         a = td_path / "a.txt"
         b = td_path / "b.txt"
-        a.write_text(old_text, encoding="utf-8", newline="\n")
-        b.write_text(new_text, encoding="utf-8", newline="\n")
-        # --label controls the filenames that appear in --- / +++ headers
+        # Force LF to keep patch portable
+        a.write_text(old_text or "", encoding="utf-8", newline="\n")
+        b.write_text(new_text or "", encoding="utf-8", newline="\n")
+
         cmd = [
-            "git", "diff", "--no-index", "--unified=2", "--no-color",
+            "git", "diff", "--no-index", f"--unified={context}", "--no-color",
             f"--label=a/{repo_rel_path}", f"--label=b/{repo_rel_path}",
             str(a), str(b)
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
-        # git diff exits 1 when there are differences; that's expected
-        diff = res.stdout
+        # Note: git diff returns exit code 1 when files differ; that's expected.
+        diff = res.stdout or ""
+        diff = _strip_diff_preamble(diff)
         if not diff.strip():
             return ""
-        # Ensure trailing newline
         if not diff.endswith("\n"):
             diff += "\n"
         return diff
-    
-def _make_unified_diff(old_text: str, new_text: str, repo_rel_path: str) -> str:
-    """Create git-apply friendly unified diff."""
-    old_lines = (old_text or "").splitlines(keepends=True)
-    new_lines = (new_text or "").splitlines(keepends=True)
-    diff = difflib.unified_diff(
-        old_lines,
-        new_lines,
-        fromfile=f"a/{repo_rel_path}",
-        tofile=f"b/{repo_rel_path}",
-        lineterm="",
-        n=2,  # slightly more tolerant than default (3) for small context drift
-    )
-    return "\n".join(diff) + "\n"
 
 
 # ------------------------------------------------------------
@@ -238,12 +176,12 @@ class Fixer:
     Patch-first auto-remediation.
 
     - Dockerfile: ADD->COPY; ensure non-root USER (configurable)
-    - K8s: set runAsNonRoot, drop privileged, add default limits, set allowPrivilegeEscalation: false
+    - K8s: runAsNonRoot, unprivileged, default limits, allowPrivilegeEscalation: false
     - Terraform: replace 0.0.0.0/0 with allowed CIDR
     - Semgrep quick patches:
         * HTML <script> without integrity -> add integrity/crossorigin (TODO-SRI-HASH)
         * Python eval(...) -> ast.literal_eval(...)
-        * Python subprocess shell=True -> shell=False (adds import shlex if needed)
+        * Python subprocess shell=True -> shell=False (+ import shlex)
     - LLM: when diffs are returned, save them as patches; don't apply here
     """
 
@@ -252,50 +190,37 @@ class Fixer:
         self.out = Path(output_dir)
         self.repo = Path(repo_root) if repo_root else Path(".")
         self.defaults = (self.cfg.get("remediation") or {}).get("defaults", {})
-        # Defaults
         self.docker_nonroot_user = self.defaults.get("docker_nonroot_user", "appuser")
         self.k8s_default_cpu_limit = self.defaults.get("k8s_default_cpu_limit", "250m")
         self.k8s_default_mem_limit = self.defaults.get("k8s_default_mem_limit", "256Mi")
         self.terraform_allowed_cidr = self.defaults.get("terraform_allowed_cidr", "10.0.0.0/24")
-        # Patch dir
         self.patch_dir = self.out / "patches"
         self.patch_dir.mkdir(parents=True, exist_ok=True)
 
     def apply(self, findings: Any) -> Dict[str, Any]:
-        """
-        Produce patches but do not modify working files in-place.
-        Returns metadata for audit.
-        """
         emitted_patches: List[str] = []
         notes: List[str] = []
         llm_report_path: Optional[str] = None
 
         print("[fixer] Starting remediation (patch-first)...")
 
-        # --- Phase 0: Semgrep quick patches (code issues)
         qp_notes, qp_patches = self._apply_semgrep_quick_patches(findings)
         notes.extend(qp_notes)
-        # filter out empty (skipped) entries
         emitted_patches.extend([p for p in qp_patches if p])
 
-        # --- Phase 1: Deterministic infra/config patches
         det_notes, det_patches = self._apply_deterministic_patches()
         notes.extend(det_notes)
         emitted_patches.extend([p for p in det_patches if p])
 
-        # --- Phase 2: LLM autofix (optional) -> save diffs as patches
-        llm_autofix_enabled = (os.getenv("LLM_AUTOFIX", "").strip() == "1")
-        if llm_autofix_enabled:
+        if (os.getenv("LLM_AUTOFIX", "").strip() == "1"):
             print("[fixer] LLM autofix enabled; gathering patches...")
             llm_notes, llm_patches = self._save_llm_autofix_patches(findings)
             notes.extend(llm_notes)
             emitted_patches.extend([p for p in llm_patches if p])
 
-        # Optional LLM explanation (for audit)
         if self.cfg.get("llm", {}).get("enabled", False) or os.getenv("LLM_EXPLAIN", "") == "1":
             llm_report_path = self._maybe_generate_llm_report(emitted_patches, notes, findings)
 
-        # Audit list
         self.out.mkdir(parents=True, exist_ok=True)
         try:
             (self.out / "remediation_changes.txt").write_text(
@@ -310,7 +235,7 @@ class Fixer:
         print(f"[fixer] Completed. Patches generated: {len(emitted_patches)}")
         return {
             "changed": bool(emitted_patches),
-            "files": emitted_patches,  # list of patch paths for clarity
+            "files": emitted_patches,
             "notes": notes,
             "llm_report": llm_report_path,
             "llm_report_path": llm_report_path,
@@ -321,7 +246,6 @@ class Fixer:
     # ------------------------------------------------------------
 
     def _normalize_findings_grouped(self, findings: Any) -> Dict[str, List[Dict[str, Any]]]:
-        """Normalize into groups."""
         if isinstance(findings, dict) and any(
             k in findings for k in ("semgrep", "trivy_fs", "trivy_image", "tfsec", "gitleaks", "conftest", "zap")
         ):
@@ -330,7 +254,6 @@ class Fixer:
                 grouped.setdefault(k, [])
             return grouped
 
-        # else try to coerce a flat list
         grouped: Dict[str, List[Dict[str, Any]]] = {k: [] for k in
             ("semgrep", "trivy_fs", "trivy_image", "tfsec", "gitleaks", "conftest", "zap")}
         if isinstance(findings, list):
@@ -375,7 +298,7 @@ class Fixer:
             if not reported_path or reported_path.startswith("("):
                 continue
 
-            # Resolve the actual file on disk (repo root first, then APP_DIR fallbacks)
+            # Resolve path (repo root -> APP_DIR/<path> -> APP_DIR/<basename>)
             target = (self.repo / reported_path)
             if not target.exists() or not target.is_file():
                 app_dir = os.getenv("APP_DIR", "").strip()
@@ -402,38 +325,44 @@ class Fixer:
             rule = (it.get("rule_id") or "").lower()
             msg  = (it.get("message") or "").lower()
 
-            # 1) HTML missing integrity
+            # HTML SRI
             if repo_rel_path.lower().endswith((".html", ".htm")) and (
                 "missing-integrity" in rule or "integrity" in msg
             ):
                 new_text, changed = self._patch_html_add_sri(original)
                 if changed:
-                    diff = _make_unified_diff_git(original, new_text, repo_rel_path)
-                    patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_html_")
-                    emitted.append(patch_path)
-                    notes.append(f"Semgrep quick: added integrity placeholder to <script> in {repo_rel_path}")
+                    diff = _make_unified_diff_git(original, new_text, repo_rel_path, context=2)
+                    if diff:
+                        p = self._write_patch(repo_rel_path, diff, prefix="semgrep_html_")
+                        if p:
+                            emitted.append(p)
+                            notes.append(f"Semgrep quick: added integrity placeholder to <script> in {repo_rel_path}")
                 continue
 
-            # 2) Python eval(...) -> ast.literal_eval(...)
+            # Python eval -> ast.literal_eval
             if repo_rel_path.lower().endswith(".py") and ("eval" in msg or "eval" in rule):
                 new_text, changed = self._patch_python_eval(original)
                 if changed:
-                    diff = _make_unified_diff_git(original, new_text, repo_rel_path)
-                    patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_eval_")
-                    emitted.append(patch_path)
-                    notes.append(f"Semgrep quick: replaced eval(...) with ast.literal_eval(...) in {repo_rel_path}")
+                    diff = _make_unified_diff_git(original, new_text, repo_rel_path, context=2)
+                    if diff:
+                        p = self._write_patch(repo_rel_path, diff, prefix="semgrep_eval_")
+                        if p:
+                            emitted.append(p)
+                            notes.append(f"Semgrep quick: replaced eval(...) with ast.literal_eval(...) in {repo_rel_path}")
                 continue
 
-            # 3) Python subprocess shell=True -> shell=False (+ import shlex if needed)
+            # Python subprocess shell=True -> shell=False (+ import shlex)
             if repo_rel_path.lower().endswith(".py") and (
                 "subprocess" in msg or "subprocess" in rule or "shell" in msg or "shell" in rule
             ):
                 new_text, changed = self._patch_python_subprocess_shell(original)
                 if changed:
-                    diff = _make_unified_diff_git(original, new_text, repo_rel_path)
-                    patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_subproc_")
-                    emitted.append(patch_path)
-                    notes.append(f"Semgrep quick: hardened subprocess(shell) usage in {repo_rel_path}")
+                    diff = _make_unified_diff_git(original, new_text, repo_rel_path, context=2)
+                    if diff:
+                        p = self._write_patch(repo_rel_path, diff, prefix="semgrep_subproc_")
+                        if p:
+                            emitted.append(p)
+                            notes.append(f"Semgrep quick: hardened subprocess(shell) usage in {repo_rel_path}")
                 continue
 
         return notes, emitted
@@ -454,10 +383,8 @@ class Fixer:
                 return tag  # already has integrity
             changed = True
             # Insert attributes before closing '>'
-            tag = re.sub(r'>\s*$', ' integrity="sha384-TODO-SRI-HASH" crossorigin="anonymous">', tag)
-            return tag
+            return re.sub(r'>\s*$', ' integrity="sha384-TODO-SRI-HASH" crossorigin="anonymous">', tag)
 
-        # Work with real HTML characters, not escaped entities
         new_text = re.sub(r'<script\b[^>]*>', repl, text, flags=re.I)
         return new_text, changed
 
@@ -504,10 +431,12 @@ class Fixer:
                 txt = dockerfile.read_text(encoding="utf-8")
                 new_txt = self._fix_dockerfile_text(txt, notes)
                 if new_txt != txt:
-                    diff = _make_unified_diff(txt, new_txt, "app/Dockerfile")
-                    p = self._write_patch("app/Dockerfile", diff, prefix="det_docker_")
-                    emitted.append(p)
-                    notes.append("Dockerfile: patch emitted (ADD->COPY / non-root USER)")
+                    diff = _make_unified_diff_git(txt, new_txt, "app/Dockerfile", context=2)
+                    if diff:
+                        p = self._write_patch("app/Dockerfile", diff, prefix="det_docker_")
+                        if p:
+                            emitted.append(p)
+                            notes.append("Dockerfile: patch emitted (ADD->COPY / non-root USER)")
             except Exception as e:
                 notes.append(f"Error building Dockerfile patch: {e}")
 
@@ -517,9 +446,13 @@ class Fixer:
             for p in sorted(list(kdir.glob("*.yaml")) + list(kdir.glob("*.yml"))):
                 try:
                     original = p.read_text(encoding="utf-8")
-                    docs = list(yaml.safe_load_all(original))
+                    # Trim trailing spaces/normalize EOLs to reduce spurious diff noise
+                    original_clean = "\n".join([ln.rstrip() for ln in original.replace("\r\n", "\n").splitlines()]) + "\n"
+
+                    docs = list(yaml.safe_load_all(original_clean))
                     if not docs:
                         continue
+
                     changed_any = False
                     fixed_docs: List[Any] = []
                     for d in docs:
@@ -529,13 +462,18 @@ class Fixer:
                         fixed, ch = self._fix_k8s_obj(d)
                         fixed_docs.append(fixed)
                         changed_any = changed_any or ch
+
                     if changed_any:
                         new_text = yaml.safe_dump_all(fixed_docs, sort_keys=False)
+                        new_clean = "\n".join([ln.rstrip() for ln in new_text.replace("\r\n", "\n").splitlines()]) + "\n"
+
                         rel_path = f"k8s/{p.name}"
-                        diff = _make_unified_diff(original, new_text, rel_path)
-                        patch_path = self._write_patch(rel_path, diff, prefix="det_k8s_")
-                        emitted.append(patch_path)
-                        notes.append(f"K8s: patch emitted for {p.name}")
+                        diff = _make_unified_diff_git(original_clean, new_clean, rel_path, context=2)
+                        if diff:
+                            pp = self._write_patch(rel_path, diff, prefix="det_k8s_")
+                            if pp:
+                                emitted.append(pp)
+                                notes.append(f"K8s: patch emitted for {p.name}")
                 except Exception as e:
                     notes.append(f"Error building K8s patch for {p.name}: {e}")
 
@@ -548,10 +486,12 @@ class Fixer:
                     new_tf = self._fix_tf_text(orig, notes)
                     if new_tf != orig:
                         rel = str(p.relative_to(self.repo)).replace("\\", "/")
-                        diff = _make_unified_diff(orig, new_tf, rel)
-                        path = self._write_patch(rel, diff, prefix="det_tf_")
-                        emitted.append(path)
-                        notes.append(f"Terraform: patch emitted for {rel}")
+                        diff = _make_unified_diff_git(orig, new_tf, rel, context=2)
+                        if diff:
+                            path = self._write_patch(rel, diff, prefix="det_tf_")
+                            if path:
+                                emitted.append(path)
+                                notes.append(f"Terraform: patch emitted for {rel}")
                 except Exception as e:
                     notes.append(f"Error building Terraform patch for {p}: {e}")
 
@@ -606,20 +546,16 @@ class Fixer:
                 tpl = spec.setdefault("template", {}).setdefault("spec", {})
                 sc = tpl.setdefault("securityContext", {})
                 if sc.get("runAsNonRoot") is not True:
-                    sc["runAsNonRoot"] = True
-                    changed = True
+                    sc["runAsNonRoot"] = True; changed = True
                 containers = tpl.get("containers") or []
                 for c in containers:
                     if not isinstance(c, dict):
                         continue
                     sc2 = c.setdefault("securityContext", {})
                     if sc2.get("privileged") is True:
-                        sc2["privileged"] = False
-                        changed = True
-                    # NEW: disable privilege escalation explicitly
+                        sc2["privileged"] = False; changed = True
                     if sc2.get("allowPrivilegeEscalation") is not False:
-                        sc2["allowPrivilegeEscalation"] = False
-                        changed = True
+                        sc2["allowPrivilegeEscalation"] = False; changed = True
                     res = c.setdefault("resources", {})
                     lim = res.setdefault("limits", {})
                     if not lim:
@@ -631,19 +567,16 @@ class Fixer:
                 tpl = d.setdefault("spec", {})
                 sc = tpl.setdefault("securityContext", {})
                 if sc.get("runAsNonRoot") is not True:
-                    sc["runAsNonRoot"] = True
-                    changed = True
+                    sc["runAsNonRoot"] = True; changed = True
                 containers = tpl.get("containers") or []
                 for c in containers:
                     if not isinstance(c, dict):
                         continue
                     sc2 = c.setdefault("securityContext", {})
                     if sc2.get("privileged") is True:
-                        sc2["privileged"] = False
-                        changed = True
+                        sc2["privileged"] = False; changed = True
                     if sc2.get("allowPrivilegeEscalation") is not False:
-                        sc2["allowPrivilegeEscalation"] = False
-                        changed = True
+                        sc2["allowPrivilegeEscalation"] = False; changed = True
                     res = c.setdefault("resources", {})
                     lim = res.setdefault("limits", {})
                     if not lim:
@@ -678,17 +611,34 @@ class Fixer:
     # ------------------------------------------------------------
 
     def _llm_propose_patch_for_item(self, item: Dict[str, Any], tool_group: str, temperature: float = 0.2) -> Tuple[str, bool]:
-        """Request LLM suggestion; return (text, used_fallback?)."""
         if assistant_factory is None:
             fallback = _get_fallback_for_item(item, tool_group)
             return f"[Fallback - LLM unavailable]\n\n{fallback}" if fallback else "[LLM unavailable]", True
 
         if tool_group == "semgrep":
-            user = _build_semgrep_prompt(item)
+            user = (
+                "You are a senior application security engineer. Be precise and minimal.\n"
+                "Return a valid unified diff (git-apply friendly) when possible.\n\n"
+                f"Semgrep finding (severity: {item.get('severity','')})\n"
+                f"- rule_id: {item.get('rule_id','')}\n"
+                f"- message: {item.get('message','')}\n"
+                f"- file: {item.get('file','')}\n"
+                f"- line: {item.get('line','')}\n\n"
+                "Code context:\n```python\n" + _truncate_any(item.get('snippet','')) + "\n```"
+            )
             sys_msg = "You are a senior AppSec engineer. Produce safe, minimal patches."
             name = "semgrep_fixer"
         elif tool_group == "trivy_fs":
-            user = _build_trivy_fs_prompt(item)
+            user = (
+                "You are a cloud security engineer. Prefer secure defaults and minimal changes.\n"
+                "Return a valid unified diff when the target is text-based.\n\n"
+                "Trivy-FS finding:\n"
+                f"- id: {item.get('id','')}\n"
+                f"- severity: {item.get('severity','')}\n"
+                f"- file: {item.get('file','')}\n"
+                f"- summary: {item.get('summary','')}\n\n"
+                "Relevant content:\n```\n" + _truncate_any(item.get('snippet','')) + "\n```"
+            )
             sys_msg = "You are a cloud security engineer. Suggest secure config changes."
             name = "trivy_fs_fixer"
         else:
@@ -710,9 +660,7 @@ class Fixer:
             return f"[Fallback - Error: {e}]\n\n{fallback}" if fallback else f"[LLM error: {e}]", True
 
     def _save_llm_autofix_patches(self, findings: Any) -> Tuple[List[str], List[str]]:
-        """
-        Save LLM-returned unified diffs as .patch files (do not apply).
-        """
+        """Save LLM-returned unified diffs as .patch files (do not apply)."""
         notes: List[str] = []
         emitted: List[str] = []
 
@@ -739,12 +687,12 @@ class Fixer:
 
                 if not used_fallback and ("--- " in resp) and ("+++ " in resp):
                     p = self._write_patch(f"{group}_{counter}.diff", resp, prefix="llm_")
-                    emitted.append(p)
-                    notes.append(f"LLM: diff saved: {Path(p).name}")
+                    if p:
+                        emitted.append(p)
+                        notes.append(f"LLM: diff saved: {Path(p).name}")
                 else:
                     notes.append(f"LLM: suggestion provided (no diff) for {group} at {item.get('file')}")
 
-        # Write suggestions markdown
         self.out.mkdir(parents=True, exist_ok=True)
         try:
             (self.out / "llm_autofix_suggestions.md").write_text("\n".join(suggestions_md), encoding="utf-8")
@@ -760,13 +708,7 @@ class Fixer:
     # Optional LLM explanation for audit
     # ------------------------------------------------------------
 
-    def _maybe_generate_llm_report(
-        self,
-        emitted_patches: List[str],
-        notes: List[str],
-        findings: Any,
-    ) -> Optional[str]:
-        """Generate a short narrative of what patches do."""
+    def _maybe_generate_llm_report(self, emitted_patches: List[str], notes: List[str], findings: Any) -> Optional[str]:
         system_msg = (
             "You are a DevSecOps assistant. Explain the emitted patches crisply and accurately. "
             "Avoid hallucinations; only use given context."
@@ -779,13 +721,7 @@ class Fixer:
             f"Notes:\n{chr(10).join(notes) if notes else '(none)'}\n\n"
             f"Optional findings context (truncated):\n{_truncate_any(findings)}"
         )
-
-        text = _llm_ask(
-            name="remediation_reporter",
-            system=system_msg,
-            user=context,
-            temperature=0.2,
-        )
+        text = _llm_ask(name="remediation_reporter", system=system_msg, user=context, temperature=0.2)
         if text:
             self.out.mkdir(parents=True, exist_ok=True)
             md_path = self.out / "remediation_explained.md"
@@ -805,11 +741,15 @@ class Fixer:
         Write patch_text into agent_output/patches/<prefix><safe_name>.patch
         Returns the written path as string.
         """
-        # Normalize and validate
-        text = patch_text.lstrip("\ufeff\r\n")  # strip BOM and stray newlines
+        # Normalize: strip BOM/newlines and drop any preamble before first '--- '
+        text = (patch_text or "").lstrip("\ufeff\r\n")
+        text = _strip_diff_preamble(text)
+
+        # Final guard: must have proper headers now
         if not (text.startswith("--- ") and "\n+++ " in text):
             print(f"[fixer] WARNING: missing headers in patch for {repo_rel_path}; skipping write")
             return ""
+
         safe = _safe_name(repo_rel_path or "unnamed")
         out_path = self.patch_dir / f"{prefix}{safe}.patch"
         out_path.write_text(text, encoding="utf-8", newline="\n")
