@@ -1,12 +1,23 @@
 # agents/fixer.py
 """
-Enhanced Fixer (Patch-first, Targeted Remediation)
+Patch-first Fixer (targeted, CI-safe)
 
-What’s new:
-- Strict allow-list targeting: touches only files recorded during analysis (agent_output/targets.json)
-- Robust finding field extraction (semgrep variations)
-- Canonical path normalization (./, absolute paths, windows slashes)
-- Deterministic infra patches still patch-first but only if file is allowed
+Fixes included:
+- Deterministic patches:
+  - Dockerfile: ADD->COPY, enforce non-root USER
+  - K8s YAML: runAsNonRoot, privileged=false, allowPrivilegeEscalation=false, default limits
+  - Terraform: replace 0.0.0.0/0 and ::/0 with allowed CIDR
+- Semgrep quick patches (deterministic):
+  - HTML <script> missing integrity -> add placeholder SRI + crossorigin
+  - Python eval(...) -> ast.literal_eval(...)
+  - subprocess(... shell=True) -> shell=False (+ import shlex)
+- Targeted-only mode:
+  - If targets list is provided, ONLY those exact files are changed/patch-generated.
+  - This prevents ambiguity and prevents touching unrelated files.
+
+Most important bugfix:
+- Robust diff extraction for LLM output (handles code fences / extra prose).
+- Patch writer only writes true unified diffs (--- / +++).
 """
 
 from __future__ import annotations
@@ -14,61 +25,76 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional, Set
 import re
-import yaml
 import os
 import subprocess
 import tempfile
 import json
 
-# Robust imports
+import yaml  # required dependency in your workflow
+
+
+# LLM bridge (optional)
 try:
-    from agents.llm_bridge import (
-        assistant_factory,
-        ollama_chat,
-        get_fallback_suggestion,
-        check_ollama_health,
-    )
+    from agents.llm_bridge import assistant_factory, get_fallback_suggestion
 except Exception:
     try:
-        from llm_bridge import (
-            assistant_factory,
-            ollama_chat,
-            get_fallback_suggestion,
-            check_ollama_health,
-        )
+        from llm_bridge import assistant_factory, get_fallback_suggestion
     except Exception:
         assistant_factory = None
-        ollama_chat = None
         get_fallback_suggestion = None
-        check_ollama_health = None
-
-
-def _llm_banner() -> str:
-    model = os.getenv("LLM_MODEL") or os.getenv("OLLAMA_MODEL") or "(unset)"
-    url = os.getenv("OLLAMA_URL") or (("http://" + os.getenv("OLLAMA_HOST")) if os.getenv("OLLAMA_HOST") else "(unset)")
-    mode = os.getenv("LLM_MODE", "ollama")
-    return f"> LLM mode: {mode} | Model: {model} | URL: {url}\n\n"
-
-
-def _truncate_any(val: Any, limit: int = 1200) -> str:
-    if isinstance(val, str):
-        s = val
-    else:
-        try:
-            s = json.dumps(val, ensure_ascii=False)
-        except Exception:
-            s = str(val)
-    return s if len(s) <= limit else (s[:limit] + "\n... [truncated] ...")
 
 
 def _safe_name(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", path)
 
 
+def _norm(p: str) -> str:
+    if not p:
+        return ""
+    s = p.replace("\\", "/").strip()
+    while s.startswith("./"):
+        s = s[2:]
+    return s
+
+
+def _extract_first_unified_diff(text: str) -> str:
+    """
+    Extract a valid unified diff from arbitrary model output.
+    Supports:
+      - prose before diff
+      - ```diff code fences
+      - diff --git blocks
+    Returns empty string if no diff found.
+    """
+    if not text:
+        return ""
+
+    t = text.replace("\r\n", "\n")
+
+    # Remove common fences but keep content
+    t = re.sub(r"```diff\s*\n", "", t, flags=re.I)
+    t = re.sub(r"```patch\s*\n", "", t, flags=re.I)
+    t = re.sub(r"```\s*\n", "", t)
+
+    # Prefer start at first '--- ' header
+    m = re.search(r"(?m)^---\s+", t)
+    if not m:
+        return ""
+
+    diff = t[m.start():]
+
+    # If there's trailing fence markers, drop them
+    diff = re.split(r"(?m)^```$", diff)[0].strip("\n") + "\n"
+
+    # Must include both headers
+    if not (diff.startswith("--- ") and "\n+++ " in diff):
+        return ""
+    return diff
+
+
 def _make_unified_diff_git(old_text: str, new_text: str, repo_rel_path: str, context: int = 2) -> str:
     """
-    Produce a robust unified diff using git diff --no-index.
-    Keep diff headers (diff --git / index) to help git apply --3way.
+    Use git diff --no-index to produce robust unified diffs.
     """
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
@@ -83,34 +109,24 @@ def _make_unified_diff_git(old_text: str, new_text: str, repo_rel_path: str, con
             str(a), str(b)
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
-        diff = res.stdout or ""
-        if not diff.strip():
-            return ""
-        if not diff.endswith("\n"):
-            diff += "\n"
+        out = res.stdout or ""
+        diff = _extract_first_unified_diff(out)
         return diff
 
 
 class Fixer:
-    """
-    Patch-first auto-remediation with strict targeting.
-
-    If targets are provided (or targets.json exists), only those files are modified.
-    """
-
     def __init__(
         self,
         config: Dict[str, Any],
         output_dir: Path,
         repo_root: Optional[Path] = None,
-        allowed_targets: Optional[Set[str]] = None,
-        targets_file: Optional[Path] = None,
+        targets: Optional[List[str]] = None,
     ):
         self.cfg = config or {}
         self.out = Path(output_dir)
         self.repo = Path(repo_root) if repo_root else Path(".")
-        self.defaults = (self.cfg.get("remediation") or {}).get("defaults", {})
 
+        self.defaults = (self.cfg.get("remediation") or {}).get("defaults", {})
         self.docker_nonroot_user = self.defaults.get("docker_nonroot_user", "appuser")
         self.k8s_default_cpu_limit = self.defaults.get("k8s_default_cpu_limit", "250m")
         self.k8s_default_mem_limit = self.defaults.get("k8s_default_mem_limit", "256Mi")
@@ -119,94 +135,67 @@ class Fixer:
         self.patch_dir = self.out / "patches"
         self.patch_dir.mkdir(parents=True, exist_ok=True)
 
-        # Load allow-list targets
-        self.allowed_targets: Optional[Set[str]] = set(allowed_targets) if allowed_targets else None
-        if self.allowed_targets is None:
-            tf = targets_file or (self.out / "targets.json")
-            self.allowed_targets = self._load_targets(tf)
+        self.targeted_only = bool((self.cfg.get("remediation") or {}).get("targeted_only", True))
 
-        # If file missing, treat as no restrictions (fallback)
-        if self.allowed_targets is not None and len(self.allowed_targets) == 0:
-            self.allowed_targets = None  # “flexible” fallback
+        # Normalize targets to repo-relative
+        self.targets: Set[str] = set(_norm(t) for t in (targets or []) if t)
+        if self.targets:
+            print(f"[fixer] Targeting: restricted to {len(self.targets)} recorded file(s)")
+        else:
+            print("[fixer] Targeting: no targets provided; will patch based on findings (broader)")
 
-    # -------------------------
-    # Targeting / path helpers
-    # -------------------------
-
-    def _load_targets(self, path: Path) -> Optional[Set[str]]:
-        try:
-            if not path.exists():
-                return set()  # signal "no targets file"
-            data = json.loads(path.read_text(encoding="utf-8"))
-            files = data.get("files") or []
-            out: Set[str] = set()
-            for f in files:
-                norm = self._normalize_repo_path(str(f))
-                if norm:
-                    out.add(norm)
-            return out
-        except Exception:
-            return set()
-
-    def _normalize_repo_path(self, p: str) -> str:
-        p = (p or "").strip().replace("\\", "/")
-        p = re.sub(r"^\./", "", p)
-        if not p:
-            return ""
-
-        # If absolute, try to make it relative to repo root
-        try:
-            pp = Path(p)
-            if pp.is_absolute():
-                rp = str(pp.resolve()).replace("\\", "/")
-                rr = str(self.repo.resolve()).replace("\\", "/")
-                if rp.startswith(rr + "/"):
-                    p = rp[len(rr) + 1 :]
-                else:
-                    # last resort: keep basename only
-                    p = pp.name
-        except Exception:
-            pass
-
-        return p
-
-    def _is_allowed(self, repo_rel_path: str) -> bool:
-        if self.allowed_targets is None:
+    def _is_target(self, repo_rel: str) -> bool:
+        if not self.targeted_only:
             return True
-        repo_rel_path = self._normalize_repo_path(repo_rel_path)
-        return repo_rel_path in self.allowed_targets
+        if not self.targets:
+            return True
+        rr = _norm(repo_rel)
+        return rr in self.targets
 
-    def _resolve_target_file(self, reported_path: str) -> Optional[Path]:
-        rp = self._normalize_repo_path(reported_path)
-        if not rp:
-            return None
+    def _write_patch(self, repo_rel_path: str, patch_text: str, prefix: str = "patch_") -> str:
+        diff = _extract_first_unified_diff(patch_text)
+        if not diff:
+            print(f"[fixer] WARNING: missing unified headers in patch for {repo_rel_path}; skipping write")
+            return ""
+        safe = _safe_name(repo_rel_path or "unnamed")
+        out_path = self.patch_dir / f"{prefix}{safe}.patch"
+        out_path.write_text(diff, encoding="utf-8", newline="\n")
+        print(f"[fixer] patch written: {out_path}")
+        return str(out_path)
 
-        # 1) direct repo-relative
-        t = self.repo / rp
-        if t.exists() and t.is_file():
-            return t
+    def apply(self, findings: Any) -> Dict[str, Any]:
+        emitted: List[str] = []
+        notes: List[str] = []
 
-        # 2) app_dir prefix fallback
-        app_dir = os.getenv("APP_DIR", "").strip()
-        if app_dir:
-            alt = self.repo / app_dir / rp
-            if alt.exists() and alt.is_file():
-                return alt
+        print("[fixer] Starting remediation (patch-first).")
 
-            alt2 = self.repo / app_dir / Path(rp).name
-            if alt2.exists() and alt2.is_file():
-                return alt2
+        # 1) Semgrep quick patches for targeted files
+        qp_notes, qp_patches = self._apply_semgrep_quick_patches(findings)
+        notes.extend(qp_notes)
+        emitted.extend([p for p in qp_patches if p])
 
-        # 3) basename search in repo (avoid huge scan: shallow)
-        # Only if allow-list exists: safe and deterministic
-        if self.allowed_targets is not None:
-            base = Path(rp).name
-            for allowed in self.allowed_targets:
-                if Path(allowed).name == base:
-                    cand = self.repo / allowed
-                    if cand.exists() and cand.is_file():
-                        return cand
-        return None
+        # 2) Deterministic infra patches, but only if target matches
+        det_notes, det_patches = self._apply_deterministic_patches()
+        notes.extend(det_notes)
+        emitted.extend([p for p in det_patches if p])
+
+        # 3) Optional LLM-based diffs (enabled via env)
+        if os.getenv("LLM_AUTOFIX", "").strip() == "1":
+            llm_notes, llm_patches = self._save_llm_autofix_patches(findings)
+            notes.extend(llm_notes)
+            emitted.extend([p for p in llm_patches if p])
+
+        # write summary
+        self.out.mkdir(parents=True, exist_ok=True)
+        (self.out / "remediation_changes.txt").write_text(
+            "PATCHES EMITTED:\n" +
+            "\n".join(emitted if emitted else ["(none)"]) +
+            "\n\nNOTES:\n" + "\n".join(notes if notes else ["(none)"]),
+            encoding="utf-8"
+        )
+
+        print(f"[fixer] Completed. Patches generated: {len(emitted)}")
+        return {"changed": bool(emitted), "files": emitted, "notes": notes}
 
     # -------------------------
     # Findings normalization
@@ -214,129 +203,56 @@ class Fixer:
 
     def _normalize_findings_grouped(self, findings: Any) -> Dict[str, List[Dict[str, Any]]]:
         if isinstance(findings, dict):
-            grouped = {k: list(v) for k, v in findings.items() if isinstance(v, list)}
+            grouped = {}
+            for k, v in findings.items():
+                if isinstance(v, list):
+                    grouped[k] = v
             for k in ("semgrep", "trivy_fs", "trivy_image", "tfsec", "gitleaks", "conftest", "zap"):
                 grouped.setdefault(k, [])
             return grouped
 
-        grouped: Dict[str, List[Dict[str, Any]]] = {k: [] for k in
-            ("semgrep", "trivy_fs", "trivy_image", "tfsec", "gitleaks", "conftest", "zap")}
-
+        grouped = {k: [] for k in ("semgrep", "trivy_fs", "trivy_image", "tfsec", "gitleaks", "conftest", "zap")}
         if isinstance(findings, list):
             for f in findings:
+                if not isinstance(f, dict):
+                    continue
                 tool = (f.get("tool") or f.get("source") or "").lower()
-                if tool == "semgrep" or ("check_id" in f or "rule_id" in f):
-                    grouped["semgrep"].append(f)
-                elif tool in ("trivy-fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
-                    grouped["trivy_fs"].append(f)
-                else:
-                    grouped["conftest"].append(f)
+                if tool == "semgrep" or ("rule_id" in f and "file" in f):
+                    grouped["semgrep"].append({
+                        "file": f.get("file") or f.get("path") or "(unknown)",
+                        "line": f.get("line") or (f.get("location") or {}).get("line"),
+                        "severity": f.get("severity") or "low",
+                        "rule_id": f.get("rule_id") or f.get("id") or "",
+                        "message": f.get("message") or f.get("title") or "",
+                        "snippet": f.get("snippet") or f.get("code") or "",
+                    })
         return grouped
 
-    def _semgrep_get(self, it: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Extract semgrep fields robustly from a finding dict.
-        Supports common shapes from semgrep JSON parsers.
-        """
-        def dig(d: Any, keys: List[str]) -> Any:
-            cur = d
-            for k in keys:
-                if not isinstance(cur, dict) or k not in cur:
-                    return None
-                cur = cur[k]
-            return cur
-
-        path = (
-            it.get("file") or it.get("path") or
-            dig(it, ["location", "path"]) or
-            dig(it, ["extra", "path"]) or
-            dig(it, ["extra", "metadata", "path"]) or
-            ""
-        )
-
-        line = (
-            it.get("line") or
-            dig(it, ["start", "line"]) or
-            dig(it, ["location", "line"]) or
-            dig(it, ["extra", "lines"]) or
-            ""
-        )
-
-        rule_id = it.get("rule_id") or it.get("check_id") or it.get("id") or ""
-        message = (
-            it.get("message") or it.get("title") or
-            dig(it, ["extra", "message"]) or
-            dig(it, ["extra", "metadata", "message"]) or
-            ""
-        )
-        severity = (it.get("severity") or dig(it, ["extra", "severity"]) or "low")
-        snippet = it.get("snippet") or it.get("code") or dig(it, ["extra", "lines"]) or ""
-
-        return {
-            "file": str(path),
-            "line": line,
-            "rule_id": str(rule_id),
-            "message": str(message),
-            "severity": str(severity),
-            "snippet": str(snippet),
-        }
-
     # -------------------------
-    # Main apply
+    # Semgrep quick patches (deterministic)
     # -------------------------
 
-    def apply(self, findings: Any) -> Dict[str, Any]:
-        emitted_patches: List[str] = []
-        notes: List[str] = []
-        llm_report_path: Optional[str] = None
+    def _resolve_repo_path(self, reported_path: str) -> Optional[Path]:
+        """
+        Resolve reported file path:
+          - as-is (repo root)
+          - under APP_DIR
+        """
+        reported = _norm(reported_path)
+        if not reported or reported.startswith("("):
+            return None
 
-        print("[fixer] Starting remediation (patch-first)...")
-        if self.allowed_targets is None:
-            print("[fixer] Targeting: unrestricted (no targets.json or empty targets)")
-        else:
-            print(f"[fixer] Targeting: restricted to {len(self.allowed_targets)} recorded file(s)")
+        p1 = self.repo / reported
+        if p1.exists() and p1.is_file():
+            return p1
 
-        qp_notes, qp_patches = self._apply_semgrep_quick_patches(findings)
-        notes.extend(qp_notes)
-        emitted_patches.extend([p for p in qp_patches if p])
+        app_dir = os.getenv("APP_DIR", "").strip()
+        if app_dir:
+            p2 = self.repo / app_dir / reported
+            if p2.exists() and p2.is_file():
+                return p2
 
-        det_notes, det_patches = self._apply_deterministic_patches()
-        notes.extend(det_notes)
-        emitted_patches.extend([p for p in det_patches if p])
-
-        # Optional LLM
-        if (os.getenv("LLM_AUTOFIX", "").strip() == "1"):
-            print("[fixer] LLM autofix enabled; gathering patches...")
-            llm_notes, llm_patches = self._save_llm_autofix_patches(findings)
-            notes.extend(llm_notes)
-            emitted_patches.extend([p for p in llm_patches if p])
-
-        if self.cfg.get("llm", {}).get("enabled", False) or os.getenv("LLM_EXPLAIN", "") == "1":
-            llm_report_path = self._maybe_generate_llm_report(emitted_patches, notes, findings)
-
-        # Write audit summary
-        try:
-            (self.out / "remediation_changes.txt").write_text(
-                "PATCHES EMITTED:\n" +
-                "\n".join(emitted_patches if emitted_patches else ["(none)"]) +
-                "\n\nNOTES:\n" + "\n".join(notes if notes else ["(none)"]),
-                encoding="utf-8"
-            )
-        except Exception as e:
-            print(f"[fixer] Error writing remediation_changes.txt: {e}")
-
-        print(f"[fixer] Completed. Patches generated: {len(emitted_patches)}")
-        return {
-            "changed": bool(emitted_patches),
-            "files": emitted_patches,
-            "notes": notes,
-            "llm_report": llm_report_path,
-            "llm_report_path": llm_report_path,
-        }
-
-    # ------------------------------------------------------------
-    # Semgrep quick patches (strict targeting)
-    # ------------------------------------------------------------
+        return None
 
     def _apply_semgrep_quick_patches(self, findings: Any) -> Tuple[List[str], List[str]]:
         notes: List[str] = []
@@ -344,65 +260,60 @@ class Fixer:
         grouped = self._normalize_findings_grouped(findings)
         items = grouped.get("semgrep", []) or []
 
-        for raw in items:
-            it = self._semgrep_get(raw)
+        for it in items:
             reported_path = it.get("file") or ""
-            if not reported_path:
-                notes.append("Semgrep quick: missing file path in finding")
-                continue
-
-            target = self._resolve_target_file(reported_path)
+            target = self._resolve_repo_path(reported_path)
             if not target:
-                notes.append(f"Semgrep quick: file not found for patch: {reported_path}")
+                notes.append(f"Semgrep quick: file not found: {reported_path}")
                 continue
 
-            repo_rel_path = str(target.relative_to(self.repo)).replace("\\", "/")
-
-            # Enforce allow-list
-            if not self._is_allowed(repo_rel_path):
-                notes.append(f"Semgrep quick: SKIP (not in targets) {repo_rel_path}")
+            repo_rel = _norm(str(target.relative_to(self.repo)))
+            if not self._is_target(repo_rel):
                 continue
 
             try:
                 original = target.read_text(encoding="utf-8", errors="ignore")
             except Exception as e:
-                notes.append(f"Semgrep quick: cannot read {repo_rel_path}: {e}")
+                notes.append(f"Semgrep quick: cannot read {repo_rel}: {e}")
                 continue
 
             rule = (it.get("rule_id") or "").lower()
-            msg  = (it.get("message") or "").lower()
+            msg = (it.get("message") or "").lower()
 
             # HTML SRI
-            if repo_rel_path.lower().endswith((".html", ".htm")) and ("integrity" in msg or "integrity" in rule):
+            if repo_rel.lower().endswith((".html", ".htm")) and ("integrity" in msg or "integrity" in rule):
                 new_text, changed = self._patch_html_add_sri(original)
                 if changed:
-                    diff = _make_unified_diff_git(original, new_text, repo_rel_path, context=2)
-                    p = self._write_patch(repo_rel_path, diff, prefix="semgrep_html_")
-                    if p:
-                        emitted.append(p)
-                        notes.append(f"Semgrep quick: added integrity placeholder in {repo_rel_path}")
+                    diff = _make_unified_diff_git(original, new_text, repo_rel, context=2)
+                    if diff:
+                        p = self._write_patch(repo_rel, diff, prefix="semgrep_html_")
+                        if p:
+                            emitted.append(p)
+                            notes.append(f"Semgrep quick: added integrity placeholder to <script> in {repo_rel}")
                 continue
 
-            # Python eval -> ast.literal_eval
-            if repo_rel_path.lower().endswith(".py") and ("eval" in msg or "eval" in rule):
+            # Python eval
+            if repo_rel.lower().endswith(".py") and ("eval" in msg or "eval" in rule):
                 new_text, changed = self._patch_python_eval(original)
                 if changed:
-                    diff = _make_unified_diff_git(original, new_text, repo_rel_path, context=2)
-                    p = self._write_patch(repo_rel_path, diff, prefix="semgrep_eval_")
-                    if p:
-                        emitted.append(p)
-                        notes.append(f"Semgrep quick: replaced eval(...) in {repo_rel_path}")
+                    diff = _make_unified_diff_git(original, new_text, repo_rel, context=2)
+                    if diff:
+                        p = self._write_patch(repo_rel, diff, prefix="semgrep_eval_")
+                        if p:
+                            emitted.append(p)
+                            notes.append(f"Semgrep quick: replaced eval(...) with ast.literal_eval(...) in {repo_rel}")
                 continue
 
-            # Python subprocess shell=True -> shell=False
-            if repo_rel_path.lower().endswith(".py") and ("subprocess" in msg or "subprocess" in rule or "shell" in msg or "shell" in rule):
+            # subprocess shell=True
+            if repo_rel.lower().endswith(".py") and ("subprocess" in msg or "shell" in msg or "subprocess" in rule or "shell" in rule):
                 new_text, changed = self._patch_python_subprocess_shell(original)
                 if changed:
-                    diff = _make_unified_diff_git(original, new_text, repo_rel_path, context=2)
-                    p = self._write_patch(repo_rel_path, diff, prefix="semgrep_subproc_")
-                    if p:
-                        emitted.append(p)
-                        notes.append(f"Semgrep quick: hardened subprocess usage in {repo_rel_path}")
+                    diff = _make_unified_diff_git(original, new_text, repo_rel, context=2)
+                    if diff:
+                        p = self._write_patch(repo_rel, diff, prefix="semgrep_subproc_")
+                        if p:
+                            emitted.append(p)
+                            notes.append(f"Semgrep quick: hardened subprocess(shell) usage in {repo_rel}")
                 continue
 
         return notes, emitted
@@ -422,67 +333,67 @@ class Fixer:
         return new_text, changed
 
     def _patch_python_eval(self, text: str) -> Tuple[str, bool]:
-        changed = False
         new_text = re.sub(r'\beval\s*\(', 'ast.literal_eval(', text)
         if new_text != text:
-            changed = True
             if not re.search(r'^\s*import\s+ast\b', new_text, flags=re.M):
                 new_text = "import ast\n" + new_text
-        return new_text, changed
+            return new_text, True
+        return text, False
 
     def _patch_python_subprocess_shell(self, text: str) -> Tuple[str, bool]:
-        changed = False
         new_text = re.sub(r'shell\s*=\s*True', 'shell=False', text)
         if new_text != text:
-            changed = True
             if not re.search(r'^\s*import\s+shlex\b', new_text, flags=re.M):
                 new_text = "import shlex\n" + new_text
-        return new_text, changed
+            return new_text, True
+        return text, False
 
-    # ------------------------------------------------------------
-    # Deterministic infra patches (only if target is allowed)
-    # ------------------------------------------------------------
+    # -------------------------
+    # Deterministic infra patches (targeted)
+    # -------------------------
 
     def _apply_deterministic_patches(self) -> Tuple[List[str], List[str]]:
         notes: List[str] = []
         emitted: List[str] = []
 
-        # Dockerfile candidates
-        candidates: List[Path] = [self.repo / "app" / "Dockerfile"]
+        # Dockerfile candidates: app/Dockerfile and APP_DIR/Dockerfile
+        docker_candidates: List[Tuple[str, Path]] = []
+        docker_candidates.append(("app/Dockerfile", self.repo / "app" / "Dockerfile"))
+
         app_dir = os.getenv("APP_DIR", "").strip()
         if app_dir:
-            candidates.append(self.repo / app_dir / "Dockerfile")
+            docker_candidates.append((f"{app_dir}/Dockerfile", self.repo / app_dir / "Dockerfile"))
 
-        for dockerfile in candidates:
-            if not dockerfile.exists():
+        for rel, p in docker_candidates:
+            if not p.exists():
                 continue
-            rel_path = str(dockerfile.relative_to(self.repo)).replace("\\", "/")
-            if not self._is_allowed(rel_path):
-                notes.append(f"Dockerfile: SKIP (not in targets) {rel_path}")
+            reln = _norm(rel)
+            if not self._is_target(reln):
                 continue
             try:
-                txt = dockerfile.read_text(encoding="utf-8")
+                txt = p.read_text(encoding="utf-8", errors="ignore")
                 new_txt = self._fix_dockerfile_text(txt, notes)
                 if new_txt != txt:
-                    diff = _make_unified_diff_git(txt, new_txt, rel_path, context=2)
-                    p = self._write_patch(rel_path, diff, prefix="det_docker_")
-                    if p:
-                        emitted.append(p)
-                        notes.append(f"Dockerfile: patch emitted for {rel_path}")
+                    diff = _make_unified_diff_git(txt, new_txt, reln, context=2)
+                    if diff:
+                        outp = self._write_patch(reln, diff, prefix="det_docker_")
+                        if outp:
+                            emitted.append(outp)
+                            notes.append(f"Dockerfile: patch emitted for {reln}")
             except Exception as e:
-                notes.append(f"Error building Dockerfile patch for {rel_path}: {e}")
+                notes.append(f"Error building Dockerfile patch for {reln}: {e}")
 
-        # Kubernetes
+        # K8s
         kdir = self.repo / "k8s"
         if kdir.exists():
-            for p in sorted(list(kdir.glob("*.yaml")) + list(kdir.glob("*.yml"))):
-                rel_path = f"k8s/{p.name}"
-                if not self._is_allowed(rel_path):
-                    notes.append(f"K8s: SKIP (not in targets) {rel_path}")
+            for yf in sorted(list(kdir.glob("*.yaml")) + list(kdir.glob("*.yml"))):
+                rel = _norm(f"k8s/{yf.name}")
+                if not self._is_target(rel):
                     continue
                 try:
-                    original = p.read_text(encoding="utf-8")
-                    original_clean = "\n".join([ln.rstrip() for ln in original.replace("\r\n", "\n").splitlines()]) + "\n"
+                    original = yf.read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n")
+                    original_clean = "\n".join([ln.rstrip() for ln in original.splitlines()]) + "\n"
+
                     docs = list(yaml.safe_load_all(original_clean))
                     if not docs:
                         continue
@@ -500,31 +411,32 @@ class Fixer:
                     if changed_any:
                         new_text = yaml.safe_dump_all(fixed_docs, sort_keys=False)
                         new_clean = "\n".join([ln.rstrip() for ln in new_text.replace("\r\n", "\n").splitlines()]) + "\n"
-                        diff = _make_unified_diff_git(original_clean, new_clean, rel_path, context=2)
-                        pp = self._write_patch(rel_path, diff, prefix="det_k8s_")
-                        if pp:
-                            emitted.append(pp)
-                            notes.append(f"K8s: patch emitted for {rel_path}")
+                        diff = _make_unified_diff_git(original_clean, new_clean, rel, context=2)
+                        if diff:
+                            outp = self._write_patch(rel, diff, prefix="det_k8s_")
+                            if outp:
+                                emitted.append(outp)
+                                notes.append(f"K8s: patch emitted for {rel}")
                 except Exception as e:
-                    notes.append(f"Error building K8s patch for {rel_path}: {e}")
+                    notes.append(f"Error building K8s patch for {rel}: {e}")
 
         # Terraform
         tdir = self.repo / "terraform"
         if tdir.exists():
-            for p in sorted(tdir.rglob("*.tf")):
-                rel = str(p.relative_to(self.repo)).replace("\\", "/")
-                if not self._is_allowed(rel):
-                    notes.append(f"Terraform: SKIP (not in targets) {rel}")
+            for tf in sorted(tdir.rglob("*.tf")):
+                rel = _norm(str(tf.relative_to(self.repo)))
+                if not self._is_target(rel):
                     continue
                 try:
-                    orig = p.read_text(encoding="utf-8")
+                    orig = tf.read_text(encoding="utf-8", errors="ignore")
                     new_tf = self._fix_tf_text(orig, notes)
                     if new_tf != orig:
                         diff = _make_unified_diff_git(orig, new_tf, rel, context=2)
-                        path = self._write_patch(rel, diff, prefix="det_tf_")
-                        if path:
-                            emitted.append(path)
-                            notes.append(f"Terraform: patch emitted for {rel}")
+                        if diff:
+                            outp = self._write_patch(rel, diff, prefix="det_tf_")
+                            if outp:
+                                emitted.append(outp)
+                                notes.append(f"Terraform: patch emitted for {rel}")
                 except Exception as e:
                     notes.append(f"Error building Terraform patch for {rel}: {e}")
 
@@ -543,7 +455,8 @@ class Fixer:
             user = self.docker_nonroot_user
             block = (
                 "\n# Security: create non-root user and switch\n"
-                f"RUN (adduser --disabled-password --gecos '' {user}) || (adduser -D {user}) || (useradd -m {user} || true)\n"
+                f"RUN (adduser --disabled-password --gecos '' {user}) || (adduser -D {user}) || "
+                f"(useradd -m {user} || true)\n"
                 f"USER {user}\n"
             )
             m = re.search(r"(?im)^(\s*)(CMD|ENTRYPOINT)\b", out)
@@ -555,18 +468,6 @@ class Fixer:
         return out
 
     def _fix_k8s_obj(self, obj: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-        if isinstance(obj, list):
-            changed_any = False
-            fixed_list = []
-            for item in obj:
-                if isinstance(item, dict):
-                    fixed_item, ch = self._fix_k8s_obj(item)
-                    fixed_list.append(fixed_item)
-                    changed_any = changed_any or ch
-                else:
-                    fixed_list.append(item)
-            return fixed_list, changed_any
-
         changed = False
         d = obj
         try:
@@ -576,16 +477,20 @@ class Fixer:
                 tpl = spec.setdefault("template", {}).setdefault("spec", {})
                 sc = tpl.setdefault("securityContext", {})
                 if sc.get("runAsNonRoot") is not True:
-                    sc["runAsNonRoot"] = True; changed = True
+                    sc["runAsNonRoot"] = True
+                    changed = True
+
                 containers = tpl.get("containers") or []
                 for c in containers:
                     if not isinstance(c, dict):
                         continue
                     sc2 = c.setdefault("securityContext", {})
                     if sc2.get("privileged") is True:
-                        sc2["privileged"] = False; changed = True
+                        sc2["privileged"] = False
+                        changed = True
                     if sc2.get("allowPrivilegeEscalation") is not False:
-                        sc2["allowPrivilegeEscalation"] = False; changed = True
+                        sc2["allowPrivilegeEscalation"] = False
+                        changed = True
                     res = c.setdefault("resources", {})
                     lim = res.setdefault("limits", {})
                     if not lim:
@@ -594,29 +499,31 @@ class Fixer:
                         changed = True
 
             elif kind == "Pod":
-                tpl = d.setdefault("spec", {})
-                sc = tpl.setdefault("securityContext", {})
+                spec = d.setdefault("spec", {})
+                sc = spec.setdefault("securityContext", {})
                 if sc.get("runAsNonRoot") is not True:
-                    sc["runAsNonRoot"] = True; changed = True
-                containers = tpl.get("containers") or []
+                    sc["runAsNonRoot"] = True
+                    changed = True
+
+                containers = spec.get("containers") or []
                 for c in containers:
                     if not isinstance(c, dict):
                         continue
                     sc2 = c.setdefault("securityContext", {})
                     if sc2.get("privileged") is True:
-                        sc2["privileged"] = False; changed = True
+                        sc2["privileged"] = False
+                        changed = True
                     if sc2.get("allowPrivilegeEscalation") is not False:
-                        sc2["allowPrivilegeEscalation"] = False; changed = True
+                        sc2["allowPrivilegeEscalation"] = False
+                        changed = True
                     res = c.setdefault("resources", {})
                     lim = res.setdefault("limits", {})
                     if not lim:
                         lim["cpu"] = self.k8s_default_cpu_limit
                         lim["memory"] = self.k8s_default_mem_limit
                         changed = True
-
         except Exception as e:
             print(f"[fixer] Warning: error fixing K8s object: {e}")
-            return d, changed
 
         return d, changed
 
@@ -635,57 +542,71 @@ class Fixer:
             notes.append("Terraform: replaced world-open CIDR with allowed CIDR")
         return n2
 
-    # ------------------------------------------------------------
-    # Optional LLM explanation for audit (unchanged)
-    # ------------------------------------------------------------
+    # -------------------------
+    # Optional LLM patching (targeted)
+    # -------------------------
 
-    def _maybe_generate_llm_report(self, emitted_patches: List[str], notes: List[str], findings: Any) -> Optional[str]:
+    def _llm_fallback(self, item: Dict[str, Any], tool_group: str) -> str:
+        if get_fallback_suggestion is None:
+            return "[No fallback available - llm_bridge not loaded]"
+        if tool_group == "semgrep":
+            return get_fallback_suggestion(
+                tool="semgrep",
+                rule_id=item.get("rule_id", ""),
+                severity=item.get("severity", ""),
+                message=item.get("message", ""),
+            )
+        return get_fallback_suggestion(tool=tool_group, severity=item.get("severity", ""), message=str(item)[:200])
+
+    def _save_llm_autofix_patches(self, findings: Any) -> Tuple[List[str], List[str]]:
+        notes: List[str] = []
+        emitted: List[str] = []
+
+        grouped = self._normalize_findings_grouped(findings)
+        items = grouped.get("semgrep", []) or []
+
         if assistant_factory is None:
-            return None
+            notes.append("LLM_AUTOFIX enabled but assistant_factory unavailable; skipping.")
+            return notes, emitted
 
-        system_msg = (
-            "You are a DevSecOps assistant. Explain the emitted patches crisply and accurately. "
-            "Avoid hallucinations; only use given context."
-        )
-        context = (
-            "Summarize the following patches to be applied. "
-            "Explain WHY each change improves security or reliability, and mention trade-offs if any. "
-            "Keep it under 250 words.\n\n"
-            f"Patches emitted:\n{chr(10).join(emitted_patches) if emitted_patches else '(none)'}\n\n"
-            f"Notes:\n{chr(10).join(notes) if notes else '(none)'}\n\n"
-            f"Optional findings context (truncated):\n{_truncate_any(findings)}"
-        )
+        temperature = float(os.getenv("OLLAMA_TEMP", os.getenv("OLLAMA_TEMPERATURE", "0.2")))
 
-        try:
-            agent = assistant_factory(name="remediation_reporter", system_message=system_msg, temperature=0.2)
-            messages = [{"role": "system", "content": agent.system_message}, {"role": "user", "content": context}]
-            text = agent.chat_completion_fn(messages)
-        except Exception:
-            return None
+        for idx, it in enumerate(items, 1):
+            reported_path = it.get("file") or ""
+            target = self._resolve_repo_path(reported_path)
+            if not target:
+                continue
+            repo_rel = _norm(str(target.relative_to(self.repo)))
+            if not self._is_target(repo_rel):
+                continue
 
-        if text:
-            md_path = self.out / "remediation_explained.md"
+            sys_msg = "You are a senior AppSec engineer. Return ONLY a unified diff (---/+++). No prose."
+            user = (
+                f"Fix the vulnerability with minimal safe changes.\n"
+                f"File: {repo_rel}\n"
+                f"Rule: {it.get('rule_id','')}\n"
+                f"Message: {it.get('message','')}\n"
+                f"Line: {it.get('line','')}\n\n"
+                f"Snippet:\n{it.get('snippet','')}\n"
+            )
+
             try:
-                md_path.write_text(_llm_banner() + text.strip(), encoding="utf-8")
-                return str(md_path)
-            except Exception:
-                return None
-        return None
+                agent = assistant_factory(name="semgrep_fixer", system_message=sys_msg, temperature=temperature)
+                resp = agent.chat_completion_fn([
+                    {"role": "system", "content": agent.system_message},
+                    {"role": "user", "content": user},
+                ])
+            except Exception as e:
+                notes.append(f"LLM: error for {repo_rel}: {e}")
+                resp = self._llm_fallback(it, "semgrep")
 
-    # ------------------------------------------------------------
-    # Patch writing helper
-    # ------------------------------------------------------------
+            diff = _extract_first_unified_diff(resp or "")
+            if diff:
+                p = self._write_patch(repo_rel, diff, prefix="llm_")
+                if p:
+                    emitted.append(p)
+                    notes.append(f"LLM: diff saved for {repo_rel}")
+            else:
+                notes.append(f"LLM: no diff returned for {repo_rel} (fallback or invalid format)")
 
-    def _write_patch(self, repo_rel_path: str, patch_text: str, prefix: str = "patch_") -> str:
-        text = (patch_text or "").lstrip("\ufeff\r\n")
-
-        # Must contain unified headers somewhere
-        if not (re.search(r"(?m)^---\s+", text) and re.search(r"(?m)^\+\+\+\s+", text)):
-            print(f"[fixer] WARNING: missing unified headers in patch for {repo_rel_path}; skipping write")
-            return ""
-
-        safe = _safe_name(repo_rel_path or "unnamed")
-        out_path = self.patch_dir / f"{prefix}{safe}.patch"
-        out_path.write_text(text, encoding="utf-8", newline="\n")
-        print(f"[fixer] patch written: {out_path}")
-        return str(out_path)
+        return notes, emitted

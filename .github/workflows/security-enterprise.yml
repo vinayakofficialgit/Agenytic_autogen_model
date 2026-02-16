@@ -24,11 +24,9 @@ env:
   OLLAMA_NUM_PREDICT: 1024
   OLLAMA_TEMP: 0.1
   MIN_SEVERITY: low
+  TRIVY_CACHE_DIR: ~/.cache/trivy
 
 jobs:
-  # ------------------------------------------------------------
-  # JOB 1: SECURITY SCAN
-  # ------------------------------------------------------------
   security-scan:
     name: "🔍 Security Scan"
     runs-on: ubuntu-latest
@@ -37,28 +35,51 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
+      - name: Setup Python (pip cache)
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+
+      - name: Cache Semgrep
+        uses: actions/cache@v4
+        with:
+          path: ~/.semgrep
+          key: semgrep-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            semgrep-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TRIVY_CACHE_DIR }}
+          key: trivy-${{ runner.os }}-${{ hashFiles(format('{0}/package-lock.json', env.APP_DIR)) }}
+          restore-keys: |
+            trivy-${{ runner.os }}-
+
       - name: Create reports directory
         run: mkdir -p "${REPORTS_DIR}"
 
-      # -------------------------
+      - name: Install baseline tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
       # Semgrep
-      # -------------------------
       - name: Install Semgrep
-        run: python3 -m pip install semgrep
+        run: python -m pip install -U semgrep
 
       - name: Run Semgrep JSON scan
         run: |
-          set -o pipefail
           semgrep --config=auto --json > "${REPORTS_DIR}/semgrep.json" || echo '{}' > "${REPORTS_DIR}/semgrep.json"
 
       - name: Run Semgrep SARIF scan
         run: |
-          set -o pipefail
           semgrep --config=auto --sarif > "${REPORTS_DIR}/semgrep.sarif" || echo '{}' > "${REPORTS_DIR}/semgrep.sarif"
 
-      # -------------------------
-      # Trivy FS
-      # -------------------------
+      # Trivy
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
@@ -67,84 +88,55 @@ jobs:
 
       - name: Run Trivy FS Scan
         run: |
-          set -o pipefail
-          trivy fs --format json --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
+          trivy fs --cache-dir "${TRIVY_CACHE_DIR}" --format json --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
           || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
 
-      # -------------------------
-      # Trivy Image (conditional)
-      # -------------------------
       - name: Run Trivy Image Scan
         run: |
-          set -o pipefail
           if [ -f "${APP_DIR}/Dockerfile" ]; then
             docker build -t app-scan "${APP_DIR}"
-            trivy image --format json --output "${REPORTS_DIR}/trivy_image.json" app-scan \
+            trivy image --cache-dir "${TRIVY_CACHE_DIR}" --format json --output "${REPORTS_DIR}/trivy_image.json" app-scan \
             || echo '{}' > "${REPORTS_DIR}/trivy_image.json"
           else
             echo '{}' > "${REPORTS_DIR}/trivy_image.json"
           fi
 
-      # -------------------------
       # Gitleaks
-      # -------------------------
       - name: Install Gitleaks
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
           VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
           curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" | tar -xz
           sudo mv gitleaks /usr/local/bin/
-          gitleaks version
 
-      - name: Run Gitleaks (keep report even when leaks found)
+      - name: Run Gitleaks
         run: |
-          set -o pipefail
-          # IMPORTANT: don't overwrite report on exit code != 0
           gitleaks detect --source . --no-git --report-format json \
             --report-path "${REPORTS_DIR}/gitleaks.json" \
-            || true
-          # Ensure file exists
-          test -f "${REPORTS_DIR}/gitleaks.json" || echo '[]' > "${REPORTS_DIR}/gitleaks.json"
+          || echo '[]' > "${REPORTS_DIR}/gitleaks.json"
 
-      # -------------------------
-      # Conftest (guarded)
-      # -------------------------
+      # Conftest
       - name: Install Conftest
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl
           VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
           curl -sL "https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz" | tar -xz
           sudo mv conftest /usr/local/bin/
-          conftest --version
 
       - name: Run Conftest (only if policy dirs exist)
         run: |
-          set -o pipefail
           targets=""
           for d in k8s terraform policy; do
             [ -d "$d" ] && targets="$targets $d"
           done
-
           if [ -n "$targets" ]; then
-            # Capture stderr so rego parse errors are visible in artifacts
-            conftest test $targets --output json > "${REPORTS_DIR}/conftest.json" 2> "${REPORTS_DIR}/conftest.err" || true
-            test -s "${REPORTS_DIR}/conftest.json" || echo '[]' > "${REPORTS_DIR}/conftest.json"
+            conftest test $targets --output json > "${REPORTS_DIR}/conftest.json" || echo '[]' > "${REPORTS_DIR}/conftest.json"
           else
             echo '[]' > "${REPORTS_DIR}/conftest.json"
-            echo "No policy targets found." > "${REPORTS_DIR}/conftest.err"
           fi
 
-      # -------------------------
-      # Diagnostics + Publishing
-      # -------------------------
       - name: Show Reports
         run: |
           echo "Reports generated:"
-          ls -la "${REPORTS_DIR}"
-          echo "Report sizes:"
-          wc -c "${REPORTS_DIR}"/* || true
+          ls -la reports/
 
       - name: Upload Semgrep SARIF to Code Scanning
         uses: github/codeql-action/upload-sarif@v4
@@ -158,9 +150,6 @@ jobs:
           path: reports/
           retention-days: 7
 
-  # ------------------------------------------------------------
-  # JOB 2: AI ANALYSIS (NO PATCHING)
-  # ------------------------------------------------------------
   ai-analysis:
     name: "🤖 AI Analysis"
     runs-on: ubuntu-latest
@@ -178,17 +167,19 @@ jobs:
           name: scan-reports
           path: reports/
 
-      - name: Setup Python
+      - name: Setup Python (pip cache)
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
 
       - name: Install Python Dependencies
-        run: pip install pyyaml requests
+        run: pip install -U pyyaml requests
 
       - name: Install Ollama
         run: |
-          set -o pipefail
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in {1..30}; do
@@ -201,16 +192,8 @@ jobs:
       - name: Run AI Security Analysis
         continue-on-error: true
         run: |
-          set -o pipefail
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --analysis-only --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose \
-            2>&1 | tee "${OUTPUT_DIR}/analysis.log" || true
-
-      - name: Show Ollama log (debug)
-        if: always()
-        run: |
-          echo "---- /tmp/ollama.log ----"
-          tail -n 200 /tmp/ollama.log || true
+          python main.py --analysis-only --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
 
       - name: Persist Analysis Output
         run: |
@@ -230,13 +213,14 @@ jobs:
           name: security-review
           path: security-review/
 
-  # ------------------------------------------------------------
-  # JOB 3: AI FIX GENERATION
-  # ------------------------------------------------------------
   ai-fix-generation:
     name: "🔧 AI Fix Generation"
     runs-on: ubuntu-latest
     needs: ai-analysis
+
+    env:
+      # enable optional LLM patch diffs
+      LLM_AUTOFIX: "1"
 
     steps:
       - name: Checkout Repo
@@ -262,17 +246,19 @@ jobs:
           name: scan-reports
           path: reports/
 
-      - name: Setup Python
+      - name: Setup Python (pip cache)
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
 
       - name: Install Dependencies
-        run: pip install requests pyyaml jq
+        run: pip install -U requests pyyaml
 
       - name: Install Ollama
         run: |
-          set -o pipefail
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
           for i in {1..30}; do
@@ -282,33 +268,19 @@ jobs:
       - name: Pull Qwen Model
         run: ollama pull "${LLM_MODEL}"
 
-      - name: Ensure targets.json exists (strict allow-list)
+      - name: AI Generate Fix Patches (targeted)
         run: |
-          set -e
-          test -f agent_output/targets.json
-          echo "targets.json:"
-          sed -n '1,160p' agent_output/targets.json
-
-      - name: AI Generate Fix Patches
-        run: |
-          set -o pipefail
           mkdir -p agent_output/patches
-          python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose \
-            2>&1 | tee "${OUTPUT_DIR}/fix.log" || true
-
-      - name: Show Ollama log (debug)
-        if: always()
-        run: |
-          echo "---- /tmp/ollama.log ----"
-          tail -n 200 /tmp/ollama.log || true
+          # targets.json is already in agent_output/ from ai-analysis artifact
+          python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose --targets-path agent_output/targets.json || true
 
       - name: List generated patches
         run: |
           ls -la agent_output/patches || true
+          echo "---- targets.json ----"
+          test -f agent_output/targets.json && cat agent_output/targets.json || true
           echo "---- remediation_changes.txt ----"
-          test -f agent_output/remediation_changes.txt && sed -n '1,160p' agent_output/remediation_changes.txt || echo "(no remediation_changes.txt)"
-          echo "---- decision.json .remediation.files ----"
-          test -f agent_output/decision.json && jq -r '.remediation.files // empty' agent_output/decision.json || true
+          test -f agent_output/remediation_changes.txt && sed -n '1,200p' agent_output/remediation_changes.txt || echo "(no remediation_changes.txt)"
 
       - name: Inspect generated patches (first 40 lines)
         if: ${{ hashFiles('agent_output/patches/*.patch') != '' }}
@@ -366,10 +338,10 @@ jobs:
             ## 🔒 AI Security Fixes Generated
 
             - Model: ${{ env.LLM_MODEL }}
-            - Strict target allow-list: `agent_output/targets.json`
-            - Patches (if any): `agent_output/patches/`
-            - Full audit: `security-review/run-${{ github.run_id }}/`
-            - Raw reports: `reports/`
+            - Targets recorded in `agent_output/targets.json`
+            - Patches under `agent_output/patches/`
+            - Full audit under `security-review/run-${{ github.run_id }}/`
+            - Raw reports in `reports/`
 
             **Please review before merging.**
           add-paths: |
@@ -377,9 +349,6 @@ jobs:
             agent_output/**
             reports/**
 
-  # ------------------------------------------------------------
-  # JOB 4: SECURITY GATE
-  # ------------------------------------------------------------
   security-gate:
     name: "🚦 Security Gate"
     runs-on: ubuntu-latest
