@@ -18,7 +18,9 @@ env:
   APP_DIR: Order-app-main
   PYTHON_VERSION: 3.12
   LLM_MODEL: "qwen2.5-coder:3b"
-  OLLAMA_URL: "http://localhost:11434"
+  # Normalize Ollama networking for CI
+  OLLAMA_URL: "http://127.0.0.1:11434"
+  OLLAMA_HOST: "127.0.0.1:11434"
   OLLAMA_NUM_CTX: 4096
   OLLAMA_NUM_PREDICT: 1024
   OLLAMA_TEMP: 0.1
@@ -99,7 +101,7 @@ jobs:
           || echo '[]' > "${REPORTS_DIR}/gitleaks.json"
 
       # -------------------------
-      # Conftest (error-tolerant)
+      # Conftest (guarded)
       # -------------------------
       - name: Install Conftest
         run: |
@@ -108,18 +110,31 @@ jobs:
             | tar -xz
           sudo mv conftest /usr/local/bin/
 
-      - name: Run Conftest
+      - name: Run Conftest (only if policy dirs exist)
         run: |
-          conftest test k8s terraform policy --output json > "${REPORTS_DIR}/conftest.json" \
-          || echo '[]' > "${REPORTS_DIR}/conftest.json"
+          targets=""
+          for d in k8s terraform policy; do
+            [ -d "$d" ] && targets="$targets $d"
+          done
+          if [ -n "$targets" ]; then
+            conftest test $targets --output json > "${REPORTS_DIR}/conftest.json" || echo '[]' > "${REPORTS_DIR}/conftest.json"
+          else
+            echo '[]' > "${REPORTS_DIR}/conftest.json"
+          fi
 
       # -------------------------
-      # Diagnostics
+      # Diagnostics + Publishing
       # -------------------------
       - name: Show Reports
         run: |
           echo "Reports generated:"
           ls -la reports/
+
+      # (G) Publish SARIF to GitHub Code Scanning
+      - name: Upload Semgrep SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/semgrep.sarif
 
       - name: Upload scan reports
         uses: actions/upload-artifact@v4
@@ -129,9 +144,9 @@ jobs:
           retention-days: 7
 
 
-# ------------------------------------------------------------
-# JOB 2: AI ANALYSIS (NO PATCHING)
-# ------------------------------------------------------------
+  # ------------------------------------------------------------
+  # JOB 2: AI ANALYSIS (NO PATCHING)
+  # ------------------------------------------------------------
   ai-analysis:
     name: "🤖 AI Analysis"
     runs-on: ubuntu-latest
@@ -158,34 +173,33 @@ jobs:
         run: pip install pyyaml requests
 
       # --------------------------------------------------
-      # Install Ollama + Pull Qwen model
+      # Install Ollama + Pull Qwen model (with health wait)
       # --------------------------------------------------
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
-          sleep 5
+          for i in {1..30}; do
+            curl -sSf http://${{ env.OLLAMA_HOST }}/api/tags && break || sleep 2
+          done
 
       - name: Pull Qwen Model
-        run: |
-          ollama pull "${LLM_MODEL}"
+        run: ollama pull "${LLM_MODEL}"
 
       # --------------------------------------------------
-      # AI Analysis (NO FIXES)
+      # AI Analysis (deterministic, no fixes)
       # --------------------------------------------------
       - name: Run AI Security Analysis
-        continue-on-error: true  # Add this to allow pipeline to continue even if analysis finds issues
+        continue-on-error: true
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --mode real --verbose
-          
-          ##-- python main.py --analysis-only --model "${LLM_MODEL}"
+          python main.py --analysis-only --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
 
       - name: Persist Analysis Output
         run: |
           RUN_ID=${GITHUB_RUN_ID}
           mkdir -p "${AUDIT_DIR}/run-${RUN_ID}"
-          cp -r agent_output/* "${AUDIT_DIR}/run-${RUN_ID}/"
+          cp -r agent_output/* "${AUDIT_DIR}/run-${RUN_ID}/" || true
 
       - name: Upload Analysis Artifacts
         uses: actions/upload-artifact@v4
@@ -193,10 +207,17 @@ jobs:
           name: ai-analysis-output
           path: agent_output/
 
+      # (D) Upload the audit folder (to pull into PR later)
+      - name: Upload Audit (security-review)
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-review
+          path: security-review/
 
-# ------------------------------------------------------------
-# JOB 3: AI FIX GENERATION
-# ------------------------------------------------------------
+
+  # ------------------------------------------------------------
+  # JOB 3: AI FIX GENERATION
+  # ------------------------------------------------------------
   ai-fix-generation:
     name: "🔧 AI Fix Generation"
     runs-on: ubuntu-latest
@@ -214,6 +235,13 @@ jobs:
           name: ai-analysis-output
           path: agent_output/
 
+      # (D) Bring audit dir into workspace before PR
+      - name: Download Audit
+        uses: actions/download-artifact@v4
+        with:
+          name: security-review
+          path: security-review/
+
       - name: Install Python
         uses: actions/setup-python@v5
         with:
@@ -222,29 +250,34 @@ jobs:
       - name: Install Dependencies
         run: pip install requests pyyaml
 
-      # Install Ollama for fix generation
+      # Install Ollama for fix generation (with health wait)
       - name: Install Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           nohup ollama serve > /tmp/ollama.log 2>&1 &
-          sleep 5
+          for i in {1..30}; do
+            curl -sSf http://${{ env.OLLAMA_HOST }}/api/tags && break || sleep 2
+          done
 
       - name: Pull Qwen Model
         run: ollama pull "${LLM_MODEL}"
 
       # --------------------------------------------------
-      # Generate Fixes into patches/ folder
+      # Generate Fixes into patches/ folder (deterministic)
       # --------------------------------------------------
       - name: AI Generate Fix Patches
         run: |
           mkdir -p agent_output/patches
-          python main.py --mode real --verbose
-
-          ## -- python main.py --generate-fixes --model "${LLM_MODEL}"
+          python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose
 
       # --------------------------------------------------
-      # Create Remediation Branch
+      # Create Remediation Branch (with git identity)
       # --------------------------------------------------
+      - name: Configure Git Identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Create Branch + Apply Patches
         run: |
           RUN_ID=${GITHUB_RUN_ID}
@@ -253,11 +286,12 @@ jobs:
           git checkout -b "${FIX_BRANCH}"
 
           if compgen -G "agent_output/patches/*.patch" > /dev/null; then
-            git apply agent_output/patches/*.patch || true
+            git apply agent_output/patches/*.patch
+            git add -A
+            git commit -m "AI Security Fixes (Run ${RUN_ID})"
+          else
+            echo "No patches found; skipping commit."
           fi
-
-          git add .
-          git commit -m "AI Security Fixes (Run ${RUN_ID})" || true
 
       # --------------------------------------------------
       # Open Pull Request
@@ -272,22 +306,21 @@ jobs:
           body: |
             ## 🔒 AI Security Fixes Generated
 
-            - Model: qwen2.5-coder:3b  
-            - Analysis + Fixes separated  
-            - Patches generated safely under `agent_output/patches/`  
-            - Full audit available under `security-review/run-${{ github.run_id }}/`  
+            - Model: ${{ env.LLM_MODEL }}
+            - Analysis + Fixes separated
+            - Patches (if any) under `agent_output/patches/`
+            - Full audit under `security-review/run-${{ github.run_id }}/`
 
             **Please review before merging.**
-
           add-paths: |
             security-review/**
             agent_output/**
             reports/**
 
 
-# ------------------------------------------------------------
-# JOB 4: SECURITY GATE
-# ------------------------------------------------------------
+  # ------------------------------------------------------------
+  # JOB 4: SECURITY GATE
+  # ------------------------------------------------------------
   security-gate:
     name: "🚦 Security Gate"
     runs-on: ubuntu-latest
@@ -300,25 +333,22 @@ jobs:
           name: ai-analysis-output
           path: agent_output/
 
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
       - name: Evaluate Security Decision
         run: |
           STATUS="pass"
           if [ -f agent_output/decision.json ]; then
             STATUS=$(jq -r '.status' agent_output/decision.json)
           fi
-
           echo "Final status: $STATUS"
 
-          
           if [ "$STATUS" != "pass" ]; then
-            echo "⚠️ Security findings detected — Proceeding anyway"
-          else
-            echo "✅ Security gate PASSED"
+            echo "❌ Security gate FAILED — Review PR"
+            exit 1
           fi
-          
-          # if [ "$STATUS" != "pass" ]; then
-          #   echo "❌ Security gate FAILED — Review PR"
-          #   exit 1
-          # fi
 
           echo "✅ Security gate PASSED"
