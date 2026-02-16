@@ -600,7 +600,7 @@ def main():
 
     # 4) Auto-remediation only when --generate-fixes is used
     try:
-        if args.generate-fixes and decision.get("status") == "fail" \
+        if args.generate_fixes and decision.get("status") == "fail" \
            and cfg.get("policy", {}).get("remediation", {}).get("auto_pr", True):
             with suppress_verbose_output():
                 fix_info = Fixer(cfg, output_dir).apply(findings_grouped)
