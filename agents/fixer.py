@@ -23,6 +23,8 @@ import subprocess
 import tempfile
 import json
 import difflib
+# import tempfile
+# import subprocess
 
 # Robust imports: work whether llm_bridge/policy_gate are in agents/ or at repo root
 try:
@@ -183,6 +185,35 @@ def _safe_name(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", path)
 
 
+import tempfile
+import subprocess
+
+def _make_unified_diff_git(old_text: str, new_text: str, repo_rel_path: str) -> str:
+    """
+    Use git's diff engine to produce a robust unified diff with correct headers.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        a = td_path / "a.txt"
+        b = td_path / "b.txt"
+        a.write_text(old_text, encoding="utf-8", newline="\n")
+        b.write_text(new_text, encoding="utf-8", newline="\n")
+        # --label controls the filenames that appear in --- / +++ headers
+        cmd = [
+            "git", "diff", "--no-index", "--unified=2", "--no-color",
+            f"--label=a/{repo_rel_path}", f"--label=b/{repo_rel_path}",
+            str(a), str(b)
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        # git diff exits 1 when there are differences; that's expected
+        diff = res.stdout
+        if not diff.strip():
+            return ""
+        # Ensure trailing newline
+        if not diff.endswith("\n"):
+            diff += "\n"
+        return diff
+    
 def _make_unified_diff(old_text: str, new_text: str, repo_rel_path: str) -> str:
     """Create git-apply friendly unified diff."""
     old_lines = (old_text or "").splitlines(keepends=True)
@@ -377,7 +408,7 @@ class Fixer:
             ):
                 new_text, changed = self._patch_html_add_sri(original)
                 if changed:
-                    diff = _make_unified_diff(original, new_text, repo_rel_path)
+                    diff = _make_unified_diff_git(original, new_text, repo_rel_path)
                     patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_html_")
                     emitted.append(patch_path)
                     notes.append(f"Semgrep quick: added integrity placeholder to <script> in {repo_rel_path}")
@@ -387,7 +418,7 @@ class Fixer:
             if repo_rel_path.lower().endswith(".py") and ("eval" in msg or "eval" in rule):
                 new_text, changed = self._patch_python_eval(original)
                 if changed:
-                    diff = _make_unified_diff(original, new_text, repo_rel_path)
+                    diff = _make_unified_diff_git(original, new_text, repo_rel_path)
                     patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_eval_")
                     emitted.append(patch_path)
                     notes.append(f"Semgrep quick: replaced eval(...) with ast.literal_eval(...) in {repo_rel_path}")
@@ -399,7 +430,7 @@ class Fixer:
             ):
                 new_text, changed = self._patch_python_subprocess_shell(original)
                 if changed:
-                    diff = _make_unified_diff(original, new_text, repo_rel_path)
+                    diff = _make_unified_diff_git(original, new_text, repo_rel_path)
                     patch_path = self._write_patch(repo_rel_path, diff, prefix="semgrep_subproc_")
                     emitted.append(patch_path)
                     notes.append(f"Semgrep quick: hardened subprocess(shell) usage in {repo_rel_path}")
