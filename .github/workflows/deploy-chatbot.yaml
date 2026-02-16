@@ -1,5 +1,5 @@
 
-name: 🚀 Deploy DevSecOps Chatbot
+name:  Deploy DevSecOps Chatbot
 
 on:
   push:
