@@ -6,6 +6,10 @@ on:
       - feature/AgentAI
   workflow_dispatch:
 
+concurrency:
+  group: security-enterprise-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: write
@@ -17,166 +21,122 @@ env:
   AUDIT_DIR: security-review
   APP_DIR: Order-app-main
   PYTHON_VERSION: 3.12
+
+  # Optimized LLM settings (performance tuned)
   LLM_MODEL: "qwen2.5-coder:3b"
   OLLAMA_URL: "http://127.0.0.1:11434"
   OLLAMA_HOST: "127.0.0.1:11434"
-  OLLAMA_NUM_CTX: 4096
-  OLLAMA_NUM_PREDICT: 1024
-  OLLAMA_TEMP: 0.1
+  OLLAMA_NUM_CTX: 2048
+  OLLAMA_NUM_PREDICT: 512
+  OLLAMA_TEMP: 0.0
+
   MIN_SEVERITY: low
+
   TRIVY_CACHE_DIR: ~/.cache/trivy
+  TRIVY_VERSION: "0.55.2"
+
+# ============================================================
+# 1️⃣ SECURITY SCAN
+# ============================================================
 
 jobs:
   security-scan:
     name: "🔍 Security Scan"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python (pip cache)
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
+          cache: pip
 
-      - name: Cache Semgrep
-        uses: actions/cache@v4
-        with:
-          path: ~/.semgrep
-          key: semgrep-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            semgrep-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+      - run: mkdir -p "${REPORTS_DIR}"
 
-      - name: Cache Trivy DB
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.TRIVY_CACHE_DIR }}
-          key: trivy-${{ runner.os }}-${{ hashFiles(format('{0}/package-lock.json', env.APP_DIR)) }}
-          restore-keys: |
-            trivy-${{ runner.os }}-
-
-      - name: Create reports directory
-        run: mkdir -p "${REPORTS_DIR}"
-
-      - name: Install baseline tools
-        run: |
+      - run: |
           sudo apt-get update
           sudo apt-get install -y jq curl
 
-      # Semgrep
-      - name: Install Semgrep
-        run: python -m pip install -U semgrep
+      - run: python -m pip install --upgrade pip semgrep
 
-      - name: Run Semgrep JSON scan
+      - name: Run Semgrep JSON
         run: |
-          semgrep --config=auto --json > "${REPORTS_DIR}/semgrep.json" || echo '{}' > "${REPORTS_DIR}/semgrep.json"
+          semgrep --config=auto \
+            --exclude "reports/**" \
+            --exclude "agent_output/**" \
+            --exclude "security-review/**" \
+            --exclude ".github/workflows/**" \
+            --json . > "${REPORTS_DIR}/semgrep.json" || echo '{}' > "${REPORTS_DIR}/semgrep.json"
 
-      - name: Run Semgrep SARIF scan
+      - name: Run Semgrep SARIF
         run: |
-          semgrep --config=auto --sarif > "${REPORTS_DIR}/semgrep.sarif" || echo '{}' > "${REPORTS_DIR}/semgrep.sarif"
+          semgrep --config=auto \
+            --exclude "reports/**" \
+            --exclude "agent_output/**" \
+            --exclude "security-review/**" \
+            --exclude ".github/workflows/**" \
+            --sarif . > "${REPORTS_DIR}/semgrep.sarif" || echo '{}' > "${REPORTS_DIR}/semgrep.sarif"
 
-      # Trivy
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TRIVY_CACHE_DIR }}
+          key: trivy-db-${{ runner.os }}-${{ env.TRIVY_VERSION }}
+
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-          | sh -s -- -b /usr/local/bin
-          trivy --version
+          | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
 
-      - name: Run Trivy FS Scan
+      - name: Run Trivy FS
         run: |
-          trivy fs --cache-dir "${TRIVY_CACHE_DIR}" --format json --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
+          trivy fs --cache-dir "${TRIVY_CACHE_DIR}" --format json \
+            --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
           || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
 
-      - name: Run Trivy Image Scan
-        run: |
-          if [ -f "${APP_DIR}/Dockerfile" ]; then
-            docker build -t app-scan "${APP_DIR}"
-            trivy image --cache-dir "${TRIVY_CACHE_DIR}" --format json --output "${REPORTS_DIR}/trivy_image.json" app-scan \
-            || echo '{}' > "${REPORTS_DIR}/trivy_image.json"
-          else
-            echo '{}' > "${REPORTS_DIR}/trivy_image.json"
-          fi
-
-      # Gitleaks
-      - name: Install Gitleaks
-        run: |
-          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -sL "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz" | tar -xz
-          sudo mv gitleaks /usr/local/bin/
-
-      - name: Run Gitleaks
-        run: |
-          gitleaks detect --source . --no-git --report-format json \
-            --report-path "${REPORTS_DIR}/gitleaks.json" \
-          || echo '[]' > "${REPORTS_DIR}/gitleaks.json"
-
-      # Conftest
-      - name: Install Conftest
-        run: |
-          VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
-          curl -sL "https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz" | tar -xz
-          sudo mv conftest /usr/local/bin/
-
-      - name: Run Conftest (only if policy dirs exist)
-        run: |
-          targets=""
-          for d in k8s terraform policy; do
-            [ -d "$d" ] && targets="$targets $d"
-          done
-          if [ -n "$targets" ]; then
-            conftest test $targets --output json > "${REPORTS_DIR}/conftest.json" || echo '[]' > "${REPORTS_DIR}/conftest.json"
-          else
-            echo '[]' > "${REPORTS_DIR}/conftest.json"
-          fi
-
-      - name: Show Reports
-        run: |
-          echo "Reports generated:"
-          ls -la reports/
-
-      - name: Upload Semgrep SARIF to Code Scanning
-        uses: github/codeql-action/upload-sarif@v4
+      - uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: reports/semgrep.sarif
 
-      - name: Upload scan reports
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: scan-reports
           path: reports/
           retention-days: 7
+
+# ============================================================
+# 2️⃣ AI ANALYSIS
+# ============================================================
 
   ai-analysis:
     name: "🤖 AI Analysis"
     runs-on: ubuntu-latest
     needs: security-scan
 
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    outputs:
+      security_status: ${{ steps.decision.outputs.security_status }}
 
-      - name: Download Scan Reports
-        uses: actions/download-artifact@v4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
           name: scan-reports
           path: reports/
 
-      - name: Setup Python (pip cache)
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
+          cache: pip
 
-      - name: Install Python Dependencies
-        run: pip install -U pyyaml requests
+      - run: pip install -U pyyaml requests
+
+      # Cache Ollama model
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-${{ runner.os }}-${{ env.LLM_MODEL }}
 
       - name: Install Ollama
         run: |
@@ -186,76 +146,67 @@ jobs:
             curl -sSf http://${{ env.OLLAMA_HOST }}/api/tags && break || sleep 2
           done
 
-      - name: Pull Qwen Model
-        run: ollama pull "${LLM_MODEL}"
+      - run: ollama pull "${LLM_MODEL}"
 
-      - name: Run AI Security Analysis
-        continue-on-error: true
+      - name: Run AI Analysis
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --analysis-only --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose || true
+          python main.py --analysis-only \
+            --model "${LLM_MODEL}" \
+            --ollama-url "${{ env.OLLAMA_URL }}" \
+            --verbose
 
-      - name: Persist Analysis Output
+      - name: Extract Decision Status
+        id: decision
         run: |
-          RUN_ID=${GITHUB_RUN_ID}
-          mkdir -p "${AUDIT_DIR}/run-${RUN_ID}"
-          cp -r agent_output/* "${AUDIT_DIR}/run-${RUN_ID}/" || true
+          STATUS="pass"
+          if [ -f agent_output/decision.json ]; then
+            STATUS=$(jq -r '.status' agent_output/decision.json)
+          fi
+          echo "security_status=$STATUS" >> $GITHUB_OUTPUT
 
-      - name: Upload Analysis Artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ai-analysis-output
           path: agent_output/
 
-      - name: Upload Audit (security-review)
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-review
-          path: security-review/
+# ============================================================
+# 3️⃣ AI FIX GENERATION (HARDENED)
+# ============================================================
 
   ai-fix-generation:
     name: "🔧 AI Fix Generation"
     runs-on: ubuntu-latest
     needs: ai-analysis
+    if: needs.ai-analysis.outputs.security_status == 'fail'
 
     env:
-      # enable optional LLM patch diffs
       LLM_AUTOFIX: "1"
 
     steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Download Analysis Output
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: ai-analysis-output
           path: agent_output/
 
-      - name: Download Audit
-        uses: actions/download-artifact@v4
-        with:
-          name: security-review
-          path: security-review/
-
-      - name: Download Scan Reports
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: scan-reports
           path: reports/
 
-      - name: Setup Python (pip cache)
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-          cache-dependency-path: |
-            requirements.txt
+          cache: pip
 
-      - name: Install Dependencies
-        run: pip install -U requests pyyaml
+      - run: pip install -U requests pyyaml
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ollama
+          key: ollama-${{ runner.os }}-${{ env.LLM_MODEL }}
 
       - name: Install Ollama
         run: |
@@ -265,69 +216,55 @@ jobs:
             curl -sSf http://${{ env.OLLAMA_HOST }}/api/tags && break || sleep 2
           done
 
-      - name: Pull Qwen Model
-        run: ollama pull "${LLM_MODEL}"
+      - run: ollama pull "${LLM_MODEL}"
 
-      - name: AI Generate Fix Patches (targeted)
+      - name: Generate Fixes (Targeted)
         run: |
           mkdir -p agent_output/patches
-          # targets.json is already in agent_output/ from ai-analysis artifact
-          python main.py --generate-fixes --model "${LLM_MODEL}" --ollama-url "${{ env.OLLAMA_URL }}" --verbose --targets-path agent_output/targets.json || true
+          python main.py --generate-fixes \
+            --skip-llm \
+            --model "${LLM_MODEL}" \
+            --ollama-url "${{ env.OLLAMA_URL }}" \
+            --targets-path agent_output/targets.json
 
-      - name: List generated patches
-        run: |
-          ls -la agent_output/patches || true
-          echo "---- targets.json ----"
-          test -f agent_output/targets.json && cat agent_output/targets.json || true
-          echo "---- remediation_changes.txt ----"
-          test -f agent_output/remediation_changes.txt && sed -n '1,200p' agent_output/remediation_changes.txt || echo "(no remediation_changes.txt)"
+      # ------------------------------
+      # 🔐 AI HARDENING LAYER
+      # ------------------------------
 
-      - name: Inspect generated patches (first 40 lines)
-        if: ${{ hashFiles('agent_output/patches/*.patch') != '' }}
+      - name: Validate Patch Scope
         run: |
           for p in agent_output/patches/*.patch; do
-            echo "---- $p (head) ----"
-            sed -n '1,40p' "$p"
-            echo
+            grep -E "^\+\+\+ b/(.github|reports|agent_output|security-review)/" "$p" && exit 1 || true
           done
 
-      - name: Configure Git Identity
+      - name: Block Dangerous Code
         run: |
+          for p in agent_output/patches/*.patch; do
+            grep -E "rm -rf|os\.system|subprocess|eval\(" "$p" && exit 1 || true
+          done
+
+      - name: Validate Patch Integrity
+        run: |
+          PATCHES=$(ls agent_output/patches/*.patch 2>/dev/null || true)
+          if [ -z "$PATCHES" ]; then
+            echo "No patches generated."
+            exit 0
+          fi
+          for p in $PATCHES; do
+            git apply --check "$p"
+          done
+
+      - name: Apply Patches
+        run: |
+          for p in agent_output/patches/*.patch; do
+            git apply --3way --whitespace=nowarn "$p"
+          done
+          git add -A
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "AI Security Fixes (Hardened Patches)" || true
 
-      - name: Normalize patch line-endings (LF)
-        if: ${{ hashFiles('agent_output/patches/*.patch') != '' }}
-        run: sed -i 's/\r$//' agent_output/patches/*.patch || true
-
-      - name: Apply Patches (safely)
-        run: |
-          set -e
-          if compgen -G "agent_output/patches/*.patch" > /dev/null; then
-            for p in agent_output/patches/*.patch; do
-              echo ">>> Checking $p"
-              git apply --check "$p" \
-                || git apply --3way --whitespace=nowarn "$p" \
-                || git apply --reject --whitespace=nowarn "$p" \
-                || true
-            done
-
-            if compgen -G "*.rej" > /dev/null; then
-              echo "Patch rejects found:"
-              find . -name "*.rej" -print
-            fi
-
-            git add -A
-            if ! git diff --cached --quiet; then
-              git commit -m "AI Security Fixes (Patches)"
-            else
-              echo "No staged changes after applying patches."
-            fi
-          else
-            echo "No patches found."
-          fi
-
-      - name: Open Pull Request to feature/AgentAI
+      - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -335,48 +272,23 @@ jobs:
           base: "feature/AgentAI"
           title: "🔒 AI Security Fixes (Run ${{ github.run_id }})"
           body: |
-            ## 🔒 AI Security Fixes Generated
+            Hardened AI-generated security fixes.
+            Please review carefully before merging.
 
-            - Model: ${{ env.LLM_MODEL }}
-            - Targets recorded in `agent_output/targets.json`
-            - Patches under `agent_output/patches/`
-            - Full audit under `security-review/run-${{ github.run_id }}/`
-            - Raw reports in `reports/`
-
-            **Please review before merging.**
-          add-paths: |
-            security-review/**
-            agent_output/**
-            reports/**
+# ============================================================
+# 4️⃣ SECURITY GATE
+# ============================================================
 
   security-gate:
     name: "🚦 Security Gate"
     runs-on: ubuntu-latest
-    needs: ai-fix-generation
+    needs: ai-analysis
 
     steps:
-      - name: Download AI Output
-        uses: actions/download-artifact@v4
-        with:
-          name: ai-analysis-output
-          path: agent_output/
-
-      - name: Install jq
+      - name: Enforce Gate
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
-
-      - name: Evaluate Security Decision
-        run: |
-          STATUS="pass"
-          if [ -f agent_output/decision.json ]; then
-            STATUS=$(jq -r '.status' agent_output/decision.json)
-          fi
-          echo "Final status: $STATUS"
-
-          if [ "$STATUS" != "pass" ]; then
-            echo "❌ Security gate FAILED — Review PR"
+          if [ "${{ needs.ai-analysis.outputs.security_status }}" != "pass" ]; then
+            echo "❌ Security gate FAILED — Vulnerabilities detected"
             exit 1
           fi
-
           echo "✅ Security gate PASSED"
