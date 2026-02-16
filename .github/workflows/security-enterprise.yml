@@ -176,7 +176,9 @@ jobs:
       - name: Run AI Security Analysis
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --analysis-only --model "${LLM_MODEL}"
+          python main.py --mode real --verbose
+          
+          ##-- python main.py --analysis-only --model "${LLM_MODEL}"
 
       - name: Persist Analysis Output
         run: |
@@ -235,7 +237,9 @@ jobs:
       - name: AI Generate Fix Patches
         run: |
           mkdir -p agent_output/patches
-          python main.py --generate-fixes --model "${LLM_MODEL}"
+          python main.py --mode real --verbose
+
+          ## -- python main.py --generate-fixes --model "${LLM_MODEL}"
 
       # --------------------------------------------------
       # Create Remediation Branch
