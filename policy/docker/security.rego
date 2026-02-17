@@ -128,7 +128,7 @@ msg := sprintf("Do not use upgrade commands in Dockerfile RUN: %s", [val])
 
 deny contains msg if {
 inst := input[_]
-cmd(inst) == "add"
+cmd(inst) == "ADD"
 msg := sprintf("Use COPY instead of ADD: %s", [concat(" ", inst.Value)])
 }
 
