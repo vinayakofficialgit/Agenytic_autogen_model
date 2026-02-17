@@ -17,7 +17,8 @@ import os
 import json
 import sys
 from pathlib import Path
-from datetime import datetime
+# from datetime import datetime
+from datetime import datetime, UTC
 from io import StringIO
 import contextlib
 
@@ -219,7 +220,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n🛡️ Enterprise DevSecOps Agentic Pipeline")
-    print(f"📅 {datetime.utcnow().isoformat()}Z\n")
+    print(f"📅 {datetime.now(UTC).isoformat()}\n")
 
     # ------------------------------------------------------------
     # 1️⃣ Collect

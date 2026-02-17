@@ -20,18 +20,24 @@ env:
   OUTPUT_DIR: agent_output
   APP_DIR: Order-app-main
   PYTHON_VERSION: 3.12
+
   LLM_MODEL: "qwen2.5-coder:3b"
   OLLAMA_HOST: "127.0.0.1:11434"
+
   MIN_SEVERITY: low
+
+  TRIVY_CACHE_DIR: ~/.cache/trivy
+  TRIVY_VERSION: "0.55.2"
 
 jobs:
 
-# ==========================================================
+# ============================================================
 # 1️⃣ SECURITY SCAN
-# ==========================================================
+# ============================================================
 
   security-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -39,8 +45,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-      - run: mkdir -p reports
+      - run: mkdir -p "${REPORTS_DIR}"
 
       - run: |
           sudo apt-get update
@@ -48,28 +55,35 @@ jobs:
 
       - run: python -m pip install --upgrade pip semgrep
 
-      - name: Run Semgrep
+      - name: Run Semgrep JSON
         run: |
-          semgrep --config=auto --json . > reports/semgrep.json || echo '{}' > reports/semgrep.json
+          semgrep --config=auto --json . > "${REPORTS_DIR}/semgrep.json" \
+          || echo '{}' > "${REPORTS_DIR}/semgrep.json"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.TRIVY_CACHE_DIR }}
+          key: trivy-db-${{ runner.os }}-${{ env.TRIVY_VERSION }}
 
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-          | sh -s -- -b /usr/local/bin
+          | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
 
-      - name: Run Trivy
+      - name: Run Trivy FS
         run: |
-          trivy fs --format json --output reports/trivy_fs.json "${APP_DIR}" \
-          || echo '{}' > reports/trivy_fs.json
+          trivy fs --cache-dir "${TRIVY_CACHE_DIR}" --format json \
+            --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
+          || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
 
       - uses: actions/upload-artifact@v4
         with:
           name: scan-reports
           path: reports/
 
-# ==========================================================
-# 2️⃣ AI ANALYSIS (NEVER FAILS)
-# ==========================================================
+# ============================================================
+# 2️⃣ AI ANALYSIS
+# ============================================================
 
   ai-analysis:
     runs-on: ubuntu-latest
@@ -89,29 +103,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - run: pip install -U pyyaml requests
 
-      - name: Install Ollama
+      - name: Run AI Analysis (Never fail job here)
         run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          nohup ollama serve > /tmp/ollama.log 2>&1 &
-          sleep 5
-          ollama pull "${LLM_MODEL}"
+          mkdir -p "${OUTPUT_DIR}"
+          python main.py --analysis-only || true
 
-      - name: Run AI Analysis (Never Fail Job)
-        run: |
-          mkdir -p agent_output
-          set +e
-          python main.py --analysis-only
-          EXIT_CODE=$?
-          echo "Pipeline exit code: $EXIT_CODE"
-          set -e
-
-      - name: Show Decision
-        run: cat agent_output/decision.json || echo "No decision file"
-
-      - name: Extract Decision Status
+      - name: Extract Decision
         id: decision
         run: |
           STATUS="pass"
@@ -125,9 +126,9 @@ jobs:
           name: ai-analysis-output
           path: agent_output/
 
-# ==========================================================
-# 3️⃣ AI FIX GENERATION (ONLY IF FAIL)
-# ==========================================================
+# ============================================================
+# 3️⃣ AI FIX GENERATION
+# ============================================================
 
   ai-fix-generation:
     runs-on: ubuntu-latest
@@ -151,40 +152,65 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install -U pyyaml requests
+      - run: pip install -U requests pyyaml
 
       - name: Generate Fixes
         run: |
           mkdir -p agent_output/patches
           python main.py --generate-fixes --skip-llm || true
 
-      - name: Validate Patches
+      # ------------------------------
+      # SAFE PATCH VALIDATION
+      # ------------------------------
+
+      - name: Validate Patch Integrity
         run: |
-          for p in agent_output/patches/*.patch; do
+          shopt -s nullglob
+          patches=(agent_output/patches/*.patch)
+
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "No patches generated."
+            exit 0
+          fi
+
+          for p in "${patches[@]}"; do
+            echo "Checking patch: $p"
             git apply --check "$p"
           done
 
       - name: Apply Patches
         run: |
-          for p in agent_output/patches/*.patch; do
+          shopt -s nullglob
+          patches=(agent_output/patches/*.patch)
+
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "No patches to apply."
+            exit 0
+          fi
+
+          for p in "${patches[@]}"; do
+            echo "Applying patch: $p"
             git apply --3way --whitespace=nowarn "$p"
           done
+
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -m "AI Security Fixes" || true
 
-      - name: Create PR
+      - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
         with:
-          branch: security/fix-${{ github.run_id }}
-          base: feature/AgentAI
-          title: "🔒 AI Security Fixes"
-          body: "Automated security remediation PR"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "security/fix-run-${{ github.run_id }}"
+          base: "feature/AgentAI"
+          title: "🔒 AI Security Fixes (Run ${{ github.run_id }})"
+          body: |
+            Automated AI-generated security remediations.
 
-# ==========================================================
-# 4️⃣ SECURITY GATE (ONLY FAIL HERE)
-# ==========================================================
+# ============================================================
+# 4️⃣ SECURITY GATE
+# ============================================================
 
   security-gate:
     runs-on: ubuntu-latest
