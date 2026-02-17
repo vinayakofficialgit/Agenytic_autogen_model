@@ -82,7 +82,6 @@ deny contains msg if {
   rc := resources[_]
   is_create_or_update(rc)
 
-  some tag
   tag := required_tags[_]
 
   not rc.change.after.tags[tag]
