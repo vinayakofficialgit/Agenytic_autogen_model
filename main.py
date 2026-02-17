@@ -305,7 +305,13 @@ def print_phase2_dynamic_suggestions(llm_report: dict, findings_grouped: dict, d
     llm_used = False
     
     # Process Semgrep findings
-    semgrep_items = llm_report.get("semgrep", []) if llm_report else []
+    # semgrep_items = llm_report.get("semgrep", []) if llm_report else []
+    
+    if isinstance(llm_report, dict):
+        semgrep_items = llm_report.get("semgrep", [])
+    else:
+        semgrep_items = []
+
     if not semgrep_items:
         semgrep_items = findings_grouped.get("semgrep", []) if findings_grouped else []
     

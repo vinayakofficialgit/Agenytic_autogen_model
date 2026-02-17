@@ -20,7 +20,7 @@ env:
   OLLAMA_NUM_CTX: ${{ secrets.OLLAMA_NUM_CTX }}
   OLLAMA_NUM_PREDICT: ${{ secrets.OLLAMA_NUM_PREDICT }}
   OLLAMA_TEMPERATURE: ${{ secrets.OLLAMA_TEMPERATURE }}
-  MIN_SEVERITY: "low"
+  MIN_SEVERITY: "critical"
   LLM_AUTOFIX_TOOLS: ${{ secrets.LLM_AUTOFIX_TOOLS }}
 
 jobs:
@@ -162,7 +162,7 @@ jobs:
       - name: Run Conftest (Policies)
         run: |
           set -e
-          conftest test k8s terraform policy \
+          conftest test k8s terraform dockerfile policy \
             --output json \
             > "$REPORTS_DIR/conftest.json" || echo "[]" > "$REPORTS_DIR/conftest.json"
           test -f "$REPORTS_DIR/conftest.json"
