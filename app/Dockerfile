@@ -1,10 +1,10 @@
 
 FROM python:3.12-slim
-COPY . /app
+ADD . /app
 WORKDIR /app
 RUN pip install -r /dev/null || true
 
 # Security: create non-root user and switch
 RUN (adduser --disabled-password --gecos '' appuser) || (adduser -D appuser) || (useradd -m appuser || true)
-USER root
+USER appuser
 CMD ["python","-c","print('demo')"]
