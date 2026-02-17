@@ -20,7 +20,7 @@ env:
   OLLAMA_NUM_CTX: ${{ secrets.OLLAMA_NUM_CTX }}
   OLLAMA_NUM_PREDICT: ${{ secrets.OLLAMA_NUM_PREDICT }}
   OLLAMA_TEMPERATURE: ${{ secrets.OLLAMA_TEMPERATURE }}
-  MIN_SEVERITY: "severity"
+  MIN_SEVERITY: "low"
   LLM_AUTOFIX_TOOLS: ${{ secrets.LLM_AUTOFIX_TOOLS }}
 
 jobs:
