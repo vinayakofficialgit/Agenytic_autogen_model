@@ -230,6 +230,7 @@ def main():
         with suppress_verbose_output():
             collector = CollectorAgent(cfg, reports_dir, output_dir)
             findings_grouped = collector.load_all()
+            print("DEBUG: findings meta:", findings_grouped.get("_meta"))
     except Exception as e:
         print(f"❌ Collector error: {e}")
         findings_grouped = {}

@@ -189,4 +189,8 @@ class CollectorAgent:
                 encoding="utf-8",
             )
 
+        # return grouped
+        
+        print(f"[collector] Total findings: {grouped['_meta']['total']}")
+        print(f"[collector] Worst severity: {grouped['_meta']['worst_severity']}")
         return grouped

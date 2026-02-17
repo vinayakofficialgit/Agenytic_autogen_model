@@ -113,6 +113,9 @@ jobs:
           export CI_MODE=1
           python main.py --analysis-only
 
+      - name: Show semgrep file
+        run: cat reports/semgrep.json | jq '.results | length'    
+
       - name: Extract Decision
         id: decision
         run: |
