@@ -4,7 +4,7 @@ package docker.security
 # Helpers
 ########################################
 
-# Collect instructions whether input is flat array or nested under Stages/Commands
+# Collect instructions whether input is flat or nested in Stages/Commands
 instructions[inst] {
   some i
   inst := input[i]
@@ -22,31 +22,29 @@ cmd(inst) := lower(inst.Cmd)
 
 # Get the first argument (lowercased) regardless of string/array
 first_arg(inst) := v {
-  is_array(inst.Value)
+  type_name(inst.Value) == "array"
   v := lower(tostring(inst.Value[0]))
 } else := v {
-  not is_array(inst.Value)
+  type_name(inst.Value) != "array"
   v := lower(tostring(inst.Value))
 }
 
 # For display: raw first arg (unmodified)
 first_arg_raw(inst) := out {
-  is_array(inst.Value)
+  type_name(inst.Value) == "array"
   out := inst.Value[0]
 } else := out {
-  not is_array(inst.Value)
+  type_name(inst.Value) != "array"
   out := inst.Value
 }
 
 # Join all value tokens into a single lowercased string for RUN analysis
-# (handles either an array or a string)
 value_as_text(inst) := v {
-  is_array(inst.Value)
-  # concat expects array of strings; ensure tostring on each element
+  type_name(inst.Value) == "array"
   parts := [ tostring(x) | x := inst.Value[_] ]
   v := lower(concat(" ", parts))
 } else := v {
-  not is_array(inst.Value)
+  type_name(inst.Value) != "array"
   v := lower(tostring(inst.Value))
 }
 
@@ -66,12 +64,21 @@ deny[msg] {
 # 2️⃣ Require non-root USER
 ########################################
 
-# Explicitly deny if USER is root/0
+# Explicitly deny if USER is root
 deny[msg] {
   inst := instructions[_]
   cmd(inst) == "user"
   u := first_arg(inst)
-  u == "root" or u == "0"
+  u == "root"
+  msg := "USER must not be root"
+}
+
+# Explicitly deny if USER is 0
+deny[msg] {
+  inst := instructions[_]
+  cmd(inst) == "user"
+  u := first_arg(inst)
+  u == "0"
   msg := "USER must not be root"
 }
 
