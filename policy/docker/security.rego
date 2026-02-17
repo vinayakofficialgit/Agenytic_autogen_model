@@ -37,7 +37,7 @@ cmd(inst) := lower(inst.Cmd)
 inst_text(inst) := lower(concat(" ", inst.Value))
 
 env_entries := [lower(e) |
-inst := input[]
+inst := input[_]
 cmd(inst) == "env"
 e := inst.Value[]
 ]
