@@ -168,7 +168,7 @@ jobs:
           
           test -f "$REPORTS_DIR/conftest-docker.json"
           
-          conftest test k8s/ -p policy --output json > "$REPORTS_DIR/conftest-k8s.json" || echo "[]" > "$REPORTS_DIR/conftest-k8s.json"
+          conftest test k8s/** -p policy --output json > "$REPORTS_DIR/conftest-k8s.json" || echo "[]" > "$REPORTS_DIR/conftest-k8s.json"
           test -f "$REPORTS_DIR/conftest-k8s.json"
 
           conftest test terraform/ -p policy --output json > "$REPORTS_DIR/conftest-terraform.json" || echo "[]" > "$REPORTS_DIR/conftest-terraform.json"
