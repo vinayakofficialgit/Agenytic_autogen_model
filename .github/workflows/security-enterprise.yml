@@ -18,16 +18,12 @@ permissions:
 env:
   REPORTS_DIR: reports
   OUTPUT_DIR: agent_output
-  AUDIT_DIR: security-review
   APP_DIR: Order-app-main
   PYTHON_VERSION: 3.12
 
-  # Optimized LLM settings (performance tuned)
   LLM_MODEL: "qwen2.5-coder:3b"
   OLLAMA_URL: "http://127.0.0.1:11434"
   OLLAMA_HOST: "127.0.0.1:11434"
-  OLLAMA_NUM_CTX: 2048
-  OLLAMA_NUM_PREDICT: 512
   OLLAMA_TEMP: 0.0
 
   MIN_SEVERITY: low
@@ -41,7 +37,6 @@ env:
 
 jobs:
   security-scan:
-    name: "🔍 Security Scan"
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -61,23 +56,46 @@ jobs:
 
       - run: python -m pip install --upgrade pip semgrep
 
+      # -----------------------------
+      # 🔍 SEMGREP (ENTERPRISE SAFE)
+      # -----------------------------
+
       - name: Run Semgrep JSON
         run: |
           semgrep --config=auto \
             --exclude "reports/**" \
             --exclude "agent_output/**" \
-            --exclude "security-review/**" \
             --exclude ".github/workflows/**" \
-            --json . > "${REPORTS_DIR}/semgrep.json" || echo '{}' > "${REPORTS_DIR}/semgrep.json"
+            --json . > "${REPORTS_DIR}/semgrep.json"
+
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -gt 1 ]; then
+            echo "❌ Semgrep execution error"
+            exit $EXIT_CODE
+          fi
+
+      - name: Debug Semgrep Results
+        run: |
+          echo "Semgrep findings:"
+          cat "${REPORTS_DIR}/semgrep.json" | jq '.results | length'
 
       - name: Run Semgrep SARIF
         run: |
           semgrep --config=auto \
             --exclude "reports/**" \
             --exclude "agent_output/**" \
-            --exclude "security-review/**" \
             --exclude ".github/workflows/**" \
-            --sarif . > "${REPORTS_DIR}/semgrep.sarif" || echo '{}' > "${REPORTS_DIR}/semgrep.sarif"
+            --sarif . > "${REPORTS_DIR}/semgrep.sarif"
+
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -gt 1 ]; then
+            echo "❌ Semgrep SARIF error"
+            exit $EXIT_CODE
+          fi
+
+      # -----------------------------
+      # 🔍 TRIVY
+      # -----------------------------
 
       - uses: actions/cache@v4
         with:
@@ -91,9 +109,17 @@ jobs:
 
       - name: Run Trivy FS
         run: |
-          trivy fs --cache-dir "${TRIVY_CACHE_DIR}" --format json \
-            --output "${REPORTS_DIR}/trivy_fs.json" "${APP_DIR}" \
-          || echo '{}' > "${REPORTS_DIR}/trivy_fs.json"
+          trivy fs \
+            --cache-dir "${TRIVY_CACHE_DIR}" \
+            --format json \
+            --output "${REPORTS_DIR}/trivy_fs.json" \
+            "${APP_DIR}"
+
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -gt 1 ]; then
+            echo "❌ Trivy execution error"
+            exit $EXIT_CODE
+          fi
 
       - uses: github/codeql-action/upload-sarif@v4
         with:
@@ -110,7 +136,6 @@ jobs:
 # ============================================================
 
   ai-analysis:
-    name: "🤖 AI Analysis"
     runs-on: ubuntu-latest
     needs: security-scan
 
@@ -132,7 +157,10 @@ jobs:
 
       - run: pip install -U pyyaml requests
 
-      # Cache Ollama model
+      # -----------------------------
+      # 🤖 OLLAMA
+      # -----------------------------
+
       - uses: actions/cache@v4
         with:
           path: ~/.ollama
@@ -148,16 +176,19 @@ jobs:
 
       - run: ollama pull "${LLM_MODEL}"
 
+      # -----------------------------
+      # 🧠 AI ANALYSIS
+      # -----------------------------
+
       - name: Run AI Analysis
         run: |
           mkdir -p "${OUTPUT_DIR}"
           export LLM_VERBOSE=1
           python main.py --analysis-only
 
-          # python main.py --analysis-only \
-          #   --model "${LLM_MODEL}" \
-          #   --ollama-url "${{ env.OLLAMA_URL }}" \
-          #   --verbose
+      - name: Debug Decision
+        run: |
+          cat agent_output/decision.json
 
       - name: Extract Decision Status
         id: decision
@@ -174,17 +205,13 @@ jobs:
           path: agent_output/
 
 # ============================================================
-# 3️⃣ AI FIX GENERATION (HARDENED)
+# 3️⃣ AI FIX GENERATION
 # ============================================================
 
   ai-fix-generation:
-    name: "🔧 AI Fix Generation"
     runs-on: ubuntu-latest
     needs: ai-analysis
     if: needs.ai-analysis.outputs.security_status == 'fail'
-
-    env:
-      LLM_AUTOFIX: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -206,57 +233,14 @@ jobs:
 
       - run: pip install -U requests pyyaml
 
-      - uses: actions/cache@v4
-        with:
-          path: ~/.ollama
-          key: ollama-${{ runner.os }}-${{ env.LLM_MODEL }}
-
-      - name: Install Ollama
-        run: |
-          curl -fsSL https://ollama.com/install.sh | sh
-          nohup ollama serve > /tmp/ollama.log 2>&1 &
-          for i in {1..30}; do
-            curl -sSf http://${{ env.OLLAMA_HOST }}/api/tags && break || sleep 2
-          done
-
-      - run: ollama pull "${LLM_MODEL}"
-
-      - name: Generate Fixes (Targeted)
+      - name: Generate Fixes
         run: |
           mkdir -p agent_output/patches
-          python main.py --generate-fixes \
-            --skip-llm 
-            
-          # python main.py --generate-fixes \
-          #   --skip-llm \
-          #   --model "${LLM_MODEL}" \
-          #   --ollama-url "${{ env.OLLAMA_URL }}" \
-          #   --targets-path agent_output/targets.json
-
-      # ------------------------------
-      # 🔐 AI HARDENING LAYER
-      # ------------------------------
-
-      - name: Validate Patch Scope
-        run: |
-          for p in agent_output/patches/*.patch; do
-            grep -E "^\+\+\+ b/(.github|reports|agent_output|security-review)/" "$p" && exit 1 || true
-          done
-
-      - name: Block Dangerous Code
-        run: |
-          for p in agent_output/patches/*.patch; do
-            grep -E "rm -rf|os\.system|subprocess|eval\(" "$p" && exit 1 || true
-          done
+          python main.py --generate-fixes --skip-llm
 
       - name: Validate Patch Integrity
         run: |
-          PATCHES=$(ls agent_output/patches/*.patch 2>/dev/null || true)
-          if [ -z "$PATCHES" ]; then
-            echo "No patches generated."
-            exit 0
-          fi
-          for p in $PATCHES; do
+          for p in agent_output/patches/*.patch; do
             git apply --check "$p"
           done
 
@@ -268,7 +252,7 @@ jobs:
           git add -A
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "AI Security Fixes (Hardened Patches)" || true
+          git commit -m "AI Security Fixes" || true
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v6
@@ -279,14 +263,12 @@ jobs:
           title: "🔒 AI Security Fixes (Run ${{ github.run_id }})"
           body: |
             Hardened AI-generated security fixes.
-            Please review carefully before merging.
 
 # ============================================================
 # 4️⃣ SECURITY GATE
 # ============================================================
 
   security-gate:
-    name: "🚦 Security Gate"
     runs-on: ubuntu-latest
     needs: ai-analysis
 
