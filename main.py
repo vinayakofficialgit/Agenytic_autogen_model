@@ -206,6 +206,8 @@ def main():
     parser.add_argument("--targets-path", default=None)
     parser.add_argument("--outputs-env", default=os.getenv("GITHUB_OUTPUT"))
     args = parser.parse_args()
+    # args = parser.parse_args()
+
 
     cfg = _load_cfg()
 

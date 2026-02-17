@@ -151,10 +151,13 @@ jobs:
       - name: Run AI Analysis
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --analysis-only \
-            --model "${LLM_MODEL}" \
-            --ollama-url "${{ env.OLLAMA_URL }}" \
-            --verbose
+          export LLM_VERBOSE=1
+          python main.py --analysis-only
+
+          # python main.py --analysis-only \
+          #   --model "${LLM_MODEL}" \
+          #   --ollama-url "${{ env.OLLAMA_URL }}" \
+          #   --verbose
 
       - name: Extract Decision Status
         id: decision
@@ -222,10 +225,13 @@ jobs:
         run: |
           mkdir -p agent_output/patches
           python main.py --generate-fixes \
-            --skip-llm \
-            --model "${LLM_MODEL}" \
-            --ollama-url "${{ env.OLLAMA_URL }}" \
-            --targets-path agent_output/targets.json
+            --skip-llm 
+            
+          # python main.py --generate-fixes \
+          #   --skip-llm \
+          #   --model "${LLM_MODEL}" \
+          #   --ollama-url "${{ env.OLLAMA_URL }}" \
+          #   --targets-path agent_output/targets.json
 
       # ------------------------------
       # 🔐 AI HARDENING LAYER
