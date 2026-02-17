@@ -34,12 +34,7 @@ Helpers
 ########################################
 
 cmd(inst) := lower(inst.Cmd)
-
-Join instruction args safely for RUN/ADD/etc
-
 inst_text(inst) := lower(concat(" ", inst.Value))
-
-Collect ENV entries from Dockerfile (handles both "ENV k v" and "ENV k=v" forms)
 
 env_entries := [lower(e) |
 inst := input[]
@@ -47,7 +42,6 @@ cmd(inst) == "env"
 e := inst.Value[]
 ]
 
-Split ENV tokens into parts to detect "AWS_ACCESS_KEY", "api-key", "secret_token" etc.
 
 env_parts := [p |
 e := env_entries[]
