@@ -162,7 +162,7 @@ jobs:
       - name: Run Conftest (Policies)
         run: |
           set -e
-          conftest test k8s terraform dockerfile policy \
+          conftest test k8s terraform docker policy \
             --output json \
             > "$REPORTS_DIR/conftest.json" || echo "[]" > "$REPORTS_DIR/conftest.json"
           test -f "$REPORTS_DIR/conftest.json"
