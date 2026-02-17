@@ -3,9 +3,9 @@ name: DevSecOps Agentic AI Pipeline
 
 on:
   push:
-    branches: [main, test-v-branch]
+    branches: [test-s-branch]
   pull_request:
-    branches: [main, test-v-branch]
+    branches: [test-s-branch]
   workflow_dispatch:
 
 env:
@@ -1096,7 +1096,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ steps.branch.outputs.name }}
-          base: test-v-branch
+          base: test-s-branch
           delete-branch: true
           add-paths: remediation-suggestions/**
           title: "🔴 Security Remediation Suggestions (Run #${{ github.run_number }})"
@@ -1216,9 +1216,9 @@ jobs:
 
 # on:
 #   push:
-#     branches: [main, test-v-branch]
+#     branches: [main, test-s-branch]
 #   pull_request:
-#     branches: [main, test-v-branch]
+#     branches: [main, test-s-branch]
 #   workflow_dispatch:
 
 # env:
@@ -2170,7 +2170,7 @@ jobs:
 #         with:
 #           token: ${{ secrets.GITHUB_TOKEN }}
 #           branch: ${{ steps.branch.outputs.name }}
-#           base: test-v-branch
+#           base: test-s-branch
 #           delete-branch: true
 #           add-paths: remediation-suggestions/**
 #           title: "🔴 Security Remediation Suggestions (Run #${{ github.run_number }})"
