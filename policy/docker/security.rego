@@ -39,12 +39,12 @@ inst_text(inst) := lower(concat(" ", inst.Value))
 env_entries := [lower(e) |
 inst := input[_]
 cmd(inst) == "env"
-e := inst.Value[]
+e := inst.Value[_]
 ]
 
 
 env_parts := [p |
-e := env_entries[]
+e := env_entries[_]
 parts := regex.split("[ :=-]", e)
 p := lower(parts[_])
 p != ""
@@ -57,22 +57,22 @@ p != ""
 ########################################
 
 deny contains msg if {
-e := env_entries[]
-k := suspicious_env_keys[]
+e := env_entries[_]
+k := suspicious_env_keys[_]
 startswith(e, k)
 msg := sprintf("Potential secret in ENV found: %s", [e])
 }
 
 deny contains msg if {
-e := env_entries[]
-k := suspicious_env_keys[]
+e := env_entries[_]
+k := suspicious_env_keys[_]
 endswith(e, k)
 msg := sprintf("Potential secret in ENV found: %s", [e])
 }
 
 deny contains msg if {
-p := env_parts[]
-p == suspicious_env_keys[]
+p := env_parts[_]
+p == suspicious_env_keys[_]
 msg := sprintf("Potential secret-like key in ENV found (part=%s)", [p])
 }
 
