@@ -308,7 +308,16 @@ def main():
             f.write(f"open_pr={'true' if decision['open_pr'] else 'false'}\n")
 
     print(f"\n🚦 Final Status: {decision['status'].upper()}")
+    # Always return 0 in CI — security gate will control failure
+    if os.getenv("CI_MODE", "1") == "1":
+        return 0
     return 1 if decision["status"] == "fail" else 0
+
+    # print(f"\n🚦 Final Status: {decision['status'].upper()}")
+    # return 1 if decision["status"] == "fail" else 0
+
+    
+    
 
 
 if __name__ == "__main__":

@@ -110,7 +110,8 @@ jobs:
       - name: Run AI Analysis (Never fail job here)
         run: |
           mkdir -p "${OUTPUT_DIR}"
-          python main.py --analysis-only || true
+          export CI_MODE=1
+          python main.py --analysis-only
 
       - name: Extract Decision
         id: decision
