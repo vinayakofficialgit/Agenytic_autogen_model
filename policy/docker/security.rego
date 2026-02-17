@@ -1,106 +1,153 @@
-package main
+package docker.security
 
-suspicious_env_keys = [
-    "passwd",
-    "password",
-    "secret",
-    "key",
-    "access",
-    "api_key",
-    "apikey",
-    "token",
+########################################
+
+Config
+
+########################################
+
+suspicious_env_keys := {
+"passwd",
+"password",
+"secret",
+"key",
+"access",
+"api_key",
+"apikey",
+"token",
+}
+
+pkg_update_commands := {
+"apk upgrade",
+"apt-get upgrade",
+"dist-upgrade",
+}
+
+image_tag_list := {
+"latest",
+}
+
+########################################
+
+Helpers
+
+########################################
+
+cmd(inst) := lower(inst.Cmd)
+
+Join instruction args safely for RUN/ADD/etc
+
+inst_text(inst) := lower(concat(" ", inst.Value))
+
+Collect ENV entries from Dockerfile (handles both "ENV k v" and "ENV k=v" forms)
+
+env_entries := [lower(e) |
+inst := input[]
+cmd(inst) == "env"
+e := inst.Value[]
 ]
 
-pkg_update_commands = [
-    "apk upgrade",
-    "apt-get upgrade",
-    "dist-upgrade",
+Split ENV tokens into parts to detect "AWS_ACCESS_KEY", "api-key", "secret_token" etc.
+
+env_parts := [p |
+e := env_entries[]
+parts := regex.split("[ :=-]", e)
+p := lower(parts[_])
+p != ""
 ]
 
-image_tag_list = [
-    "latest",
-    "LATEST",
-]
+########################################
 
-# Looking for suspicious environment variable settings
-deny[msg] {    
-    dockerenvs := [val | input[i].Cmd == "env"; val := input[i].Value]
-    dockerenv := dockerenvs[_]
-    envvar := dockerenv[_]
-    lower(envvar) == suspicious_env_keys[_]
-    msg = sprintf("Potential secret in ENV found: %s", [envvar])
+# 1) Potential secrets in ENV
+
+########################################
+
+deny contains msg if {
+e := env_entries[]
+k := suspicious_env_keys[]
+startswith(e, k)
+msg := sprintf("Potential secret in ENV found: %s", [e])
 }
 
-# Looking for suspicious environment variable settings
-deny[msg] {
-    dockerenvs := [val | input[i].Cmd == "env"; val := input[i].Value]
-    dockerenv := dockerenvs[_]
-    envvar := dockerenv[_]
-    startswith(lower(envvar), suspicious_env_keys[_])
-    msg = sprintf("Potential secret in ENV found: %s", [envvar])
+deny contains msg if {
+e := env_entries[]
+k := suspicious_env_keys[]
+endswith(e, k)
+msg := sprintf("Potential secret in ENV found: %s", [e])
 }
 
-# Looking for suspicious environment variable settings
-deny[msg] {
-    dockerenvs := [val | input[i].Cmd == "env"; val := input[i].Value]
-    dockerenv := dockerenvs[_]
-    envvar := dockerenv[_]
-    endswith(lower(envvar), suspicious_env_keys[_])
-    msg = sprintf("Potential secret in ENV found: %s", [envvar])
+deny contains msg if {
+p := env_parts[]
+p == suspicious_env_keys[]
+msg := sprintf("Potential secret-like key in ENV found (part=%s)", [p])
 }
 
-# Looking for suspicious environment variable settings
-deny[msg] {
-    dockerenvs := [val | input[i].Cmd == "env"; val := input[i].Value]
-    dockerenv := dockerenvs[_]
-    envvar := dockerenv[_]
-    parts := regex.split("[ :=_-]", envvar)
-    part := parts[_]
-    lower(part) == suspicious_env_keys[_]
-    msg = sprintf("Potential secret in ENV found: %s", [envvar])
+########################################
+
+# 2) Disallow :latest (or missing tag) in FROM
+
+########################################
+
+warn contains msg if {
+inst := input[_]
+cmd(inst) == "from"
+
+img := inst.Value[0]
+parts := split(img, ":")
+
+count(parts) == 1
+msg := sprintf("Image tag missing (defaults to latest): %s", [img])
 }
 
-# Looking for latest docker image used
-warn[msg] {
-    input[i].Cmd == "from"
-    val := split(input[i].Value[0], ":")
-    count(val) == 1
-    msg = sprintf("Do not use latest tag with image: %s", [val])
+warn contains msg if {
+inst := input[_]
+cmd(inst) == "from"
+
+img := lower(inst.Value[0])
+endswith(img, ":latest")
+
+msg := sprintf("Do not use latest tag with image: %s", [inst.Value[0]])
 }
 
-# Looking for latest docker image used
-warn[msg] {
-    input[i].Cmd == "from"
-    val := split(input[i].Value[0], ":")
-    contains(val[1], image_tag_list[_])
-    msg = sprintf("Do not use latest tag with image: %s", [input[i].Value])
+########################################
+
+# 3) Disallow package upgrade commands in RUN
+
+########################################
+
+deny contains msg if {
+inst := input[_]
+cmd(inst) == "run"
+val := inst_text(inst)
+
+c := pkg_update_commands[_]
+contains(val, c)
+
+msg := sprintf("Do not use upgrade commands in Dockerfile RUN: %s", [val])
 }
 
-# Looking for apk upgrade command used in Dockerfile
-deny[msg] {
-    input[i].Cmd == "run"
-    val := concat(" ", input[i].Value)
-    contains(val, pkg_update_commands[_])
-    msg = sprintf("Do not use upgrade commands: %s", [val])
+########################################
+
+# 4) Disallow ADD (use COPY)
+
+########################################
+
+deny contains msg if {
+inst := input[_]
+cmd(inst) == "add"
+msg := sprintf("Use COPY instead of ADD: %s", [concat(" ", inst.Value)])
 }
 
-# Looking for ADD command instead using COPY command
-deny[msg] {
-    input[i].Cmd == "add"
-    val := concat(" ", input[i].Value)
-    msg = sprintf("Use COPY instead of ADD: %s", [val])
-}
+########################################
 
-# sudo usage
-deny[msg] {
-    input[i].Cmd == "run"
-    val := concat(" ", input[i].Value)
-    contains(lower(val), "sudo")
-    msg = sprintf("Avoid using 'sudo' command: %s", [val])
-}
+# 5) Disallow sudo usage
 
-# # No Healthcheck usage
-# deny[msg] {
-#     input[i].Cmd == "healthcheck"
-#     msg := "no healthcheck"
-# }
+########################################
+
+deny contains msg if {
+inst := input[_]
+cmd(inst) == "run"
+val := inst_text(inst)
+contains(val, "sudo")
+msg := sprintf("Avoid using 'sudo' command: %s", [val])
+}
