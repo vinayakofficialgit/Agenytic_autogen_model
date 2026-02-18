@@ -146,10 +146,11 @@ jobs:
             --data ~/.dependency-check-data \
             --failOnCVSS 9 \
             --noupdate \
-            --disableRetired \
-            --disableCisaKey \
-            --nvdApiKey=${{ secrets.NVD_API_KEY }} \
-            --nvdApiDelay 10000
+            --prettyPrint
+            # --disableRetired \
+            # --disableCisaKey \
+            # --nvdApiKey=${{ secrets.NVD_API_KEY }} \
+            # --nvdApiDelay 10000
 
       - uses: actions/upload-artifact@v4
         with:
