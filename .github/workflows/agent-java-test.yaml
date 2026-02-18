@@ -136,8 +136,31 @@ jobs:
           unzip -o dc.zip
           mv dependency-check /opt/dependency-check
 
-      - name: Run OWASP Dependency Check
+      - name: Cache Dependency-Check Database
+        uses: actions/cache@v4
+        with:
+          path: ~/.dependency-check-data
+          key: dependency-check-db-${{ runner.os }}-v1
+
+
+
+
+
+
+
+      - name: Run OWASP Dependency Check (Smart Mode)
         run: |
+          mkdir -p $REPORTS_DIR
+          mkdir -p ~/.dependency-check-data
+
+          if [ -d "~/.dependency-check-data/nvdcache" ]; then
+            echo "✅ Using cached Dependency-Check database"
+            UPDATE_FLAG="--noupdate"
+          else
+            echo "📥 Downloading fresh Dependency-Check database..."
+            UPDATE_FLAG=""
+          fi
+
           /opt/dependency-check/bin/dependency-check.sh \
             --project EnterpriseJavaApp \
             --scan $APP_DIR \
@@ -145,8 +168,9 @@ jobs:
             --out $REPORTS_DIR \
             --data ~/.dependency-check-data \
             --failOnCVSS 9 \
-            --noupdate \
+            $UPDATE_FLAG \
             --prettyPrint
+            
             # --disableRetired \
             # --disableCisaKey \
             # --nvdApiKey=${{ secrets.NVD_API_KEY }} \
