@@ -1,4 +1,4 @@
-package kubernetes.security
+package k8s.security
 
 ########################################
 # Config (tune for your org)
@@ -41,12 +41,11 @@ is_deploy if { input.kind; lower(input.kind) == "deployment" }
 is_pod    if { input.kind; lower(input.kind) == "pod" }
 
 ########################################
-# Small helper (single-body, v1-safe)
+# Helper (single-body, no var redeclare)
 ########################################
 
 # True if image starts with any allowed registry prefix (case-insensitive)
 allowed_registry_match(img) if {
-  some p
   p := allowed_registries[_]
   startswith(lower(img), lower(p))
 }
@@ -494,7 +493,7 @@ deny contains msg if {
   msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
 }
 
-# runAsNonRoot true — split into explicit cases (no inline OR)
+# runAsNonRoot true — explicit cases (no inline OR)
 
 # Deploy: pod has NO securityContext, container missing securityContext
 deny contains msg if {
