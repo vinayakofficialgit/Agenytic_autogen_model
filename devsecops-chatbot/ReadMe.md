@@ -75,4 +75,4 @@ streamlit run app.py
 Step 3: Enter your Groq API key + GitHub PAT + repo name in the sidebar
 Step 4 (optional): Deploy free on share.streamlit.io — connect your repo, point to app.py, add API keys as secrets
 
-added
+added check
