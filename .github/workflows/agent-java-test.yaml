@@ -92,7 +92,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sast-reports
-          path: reports/
+          path: reports/*.json
           if-no-files-found: ignore
 
 # ============================================================
@@ -144,7 +144,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sca-reports
-          path: reports/
+          path: reports/*.json
           if-no-files-found: ignore
 
 # ============================================================
@@ -214,7 +214,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
-          path: reports/
+          path: reports/*.json
           if-no-files-found: ignore
 
 # ============================================================
@@ -256,12 +256,55 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: infra-reports
-          path: reports/
+          path: reports/*.json
           if-no-files-found: ignore
 
 # ============================================================
 # JOB 6 – DAST
 # ============================================================
+
+#   dast-scan:
+#     runs-on: ubuntu-latest
+#     needs: build-java
+#     continue-on-error: true
+
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Create Reports Dir
+#         run: mkdir -p $REPORTS_DIR
+
+#       - uses: actions/setup-java@v4
+#         with:
+#           distribution: temurin
+#           java-version: ${{ env.JAVA_VERSION }}
+
+#       - name: Start Java App
+#         run: |
+#           cd $APP_DIR || exit 0
+#           mvn spring-boot:run &
+#           sleep 30
+
+#       - name: Run OWASP ZAP Baseline
+#         run: |
+#           docker run --rm \
+#             -v $(pwd):/zap/wrk:rw \
+#             ghcr.io/zaproxy/zaproxy:stable \
+#             zap-baseline.py \
+#             -t http://host.docker.internal:8080 \
+#             -J zap-report.json || true
+
+#           if [ -f zap-report.json ]; then
+#             mv zap-report.json $REPORTS_DIR/zap.json
+#           else
+#             echo '{}' > $REPORTS_DIR/zap.json
+#           fi
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: dast-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore  
 
   dast-scan:
     runs-on: ubuntu-latest
@@ -270,9 +313,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Create Reports Dir
-        run: mkdir -p $REPORTS_DIR
+      - run: mkdir -p $REPORTS_DIR
 
       - uses: actions/setup-java@v4
         with:
@@ -283,19 +324,20 @@ jobs:
         run: |
           cd $APP_DIR || exit 0
           mvn spring-boot:run &
-          sleep 30
+          sleep 40
 
       - name: Run OWASP ZAP Baseline
         run: |
           docker run --rm \
+            --network=host \
             -v $(pwd):/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t http://host.docker.internal:8080 \
-            -J zap-report.json || true
+            -t http://localhost:8080 \
+            -J zap.json || true
 
-          if [ -f zap-report.json ]; then
-            mv zap-report.json $REPORTS_DIR/zap.json
+          if [ -f zap.json ]; then
+            mv zap.json $REPORTS_DIR/zap.json
           else
             echo '{}' > $REPORTS_DIR/zap.json
           fi
@@ -303,8 +345,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
-          path: reports/
-          if-no-files-found: ignore          
+          path: reports/*.json
+          if-no-files-found: ignore
 
 # ============================================================
 # JOB 7 – AGGREGATE
@@ -317,6 +359,7 @@ jobs:
       - sca-scan
       - container-scan
       - infra-scan
+      - dast-scan
     if: always()
 
     steps:
