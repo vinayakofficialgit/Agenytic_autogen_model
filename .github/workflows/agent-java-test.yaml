@@ -1,10 +1,10 @@
-name: DevSecOps Agentic AI Pipeline (Enterprise Parallel Java)
+name: DevSecOps Agentic AI Pipeline (Enterprise Java Parallel)
 
 on:
   push:
-    branches: [test-home-sachin]
-#   pull_request:
-#     branches: [test-home-sachin]
+    branches: [test-homee-sachin]
+  pull_request:
+    branches: [test-homee-sachin]
   workflow_dispatch:
 
 env:
@@ -14,49 +14,19 @@ env:
   REPORTS_DIR: "reports"
   OUTPUT_DIR: "agent_output"
   OLLAMA_MODEL: "qwen2.5-coder:1.5b"
+  MIN_SEVERITY: "critical"
 
 # ============================================================
-# 1️⃣ BUILD STAGE
+# JOB 1 – BUILD JAVA (BASE ARTIFACT)
 # ============================================================
 
 jobs:
 
   build-java:
     runs-on: ubuntu-latest
-    outputs:
-      artifact-name: java-build-artifact
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-
-      - name: Build Application
-        working-directory: ${{ env.APP_DIR }}
-        run: mvn -B clean package -DskipTests
-
-      - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: java-build
-          path: ${{ env.APP_DIR }}/target
-
-# ============================================================
-# 2️⃣ STATIC SECURITY (Parallel)
-# ============================================================
-
-  security-static:
-    runs-on: ubuntu-latest
-    needs: build-java
-
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
 
       - uses: actions/setup-java@v4
         with:
@@ -64,252 +34,213 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: SpotBugs
-        working-directory: ${{ env.APP_DIR }}
-        run: mvn com.github.spotbugs:spotbugs-maven-plugin:spotbugs -Dspotbugs.failOnError=false
+      - name: Build Java
+        run: |
+          cd $APP_DIR
+          mvn -B clean package -DskipTests
 
-      - name: Checkstyle
-        working-directory: ${{ env.APP_DIR }}
-        run: mvn checkstyle:check -Dcheckstyle.failOnViolation=false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-build
+          path: ${{ env.APP_DIR }}
+
+# ============================================================
+# JOB 2 – SAST
+# ============================================================
+
+  sast-scan:
+    runs-on: ubuntu-latest
+    needs: build-java
+
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-      - name: Install Semgrep
+      - uses: actions/download-artifact@v4
+        with:
+          name: java-build
+          path: ${{ env.APP_DIR }}
+
+      - name: Create Reports Dir
+        run: mkdir -p $REPORTS_DIR
+
+      - name: Install Semgrep (cached)
         run: pip install semgrep
 
       - name: Run Semgrep
         run: |
           semgrep scan \
-            --config=auto \
+            --config=p/java \
+            --config=p/owasp-top-ten \
             --json \
             --output $REPORTS_DIR/semgrep.json \
             $APP_DIR
 
+      - name: Run SpotBugs
+        run: |
+          cd $APP_DIR
+          mvn com.github.spotbugs:spotbugs-maven-plugin:spotbugs \
+            -Dspotbugs.outputFormat=json || true
+          if [ -f target/spotbugsJson.json ]; then
+            cp target/spotbugsJson.json ../$REPORTS_DIR/spotbugs.json
+          else
+            echo '{}' > ../$REPORTS_DIR/spotbugs.json
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
-          name: static-reports
-          path: ${{ env.REPORTS_DIR }}
+          name: sast-reports
+          path: reports/
 
 # ============================================================
-# 3️⃣ DEPENDENCY SECURITY (Parallel)
+# JOB 3 – SCA
 # ============================================================
 
-  security-dependency:
-    name: 🔐 Dependency Security (Hybrid Enterprise)
+  sca-scan:
     runs-on: ubuntu-latest
     needs: build-java
-  
+
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-  
-      - uses: actions/setup-java@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-  
-      # SBOM
-      - name: Generate SBOM
-        working-directory: ${{ env.APP_DIR }}
-        run: mvn -B org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
-  
-      # Trivy FS (Primary Blocking)
-      - name: Trivy Filesystem Scan
-        uses: aquasecurity/trivy-action@0.20.0
+          name: java-build
+          path: ${{ env.APP_DIR }}
+
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
         with:
-          scan-type: fs
-          scan-ref: ${{ env.APP_DIR }}
-          format: json
-          output: ${{ env.REPORTS_DIR }}/trivy_fs.json
-          severity: CRITICAL,HIGH
-  
-      # OWASP Dependency Check Maven Plugin (Non-Blocking)
-      - name: OWASP Dependency Check (Maven Plugin)
-        working-directory: ${{ env.APP_DIR }}
-        continue-on-error: true
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}
+
+      - name: Install Trivy
         run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv ./bin/trivy /usr/local/bin/
+
+      - name: Create Reports Dir
+        run: mkdir -p $REPORTS_DIR
+
+      - name: OWASP Dependency Check
+        run: |
+          cd $APP_DIR
           mvn org.owasp:dependency-check-maven:check \
-              -Dformat=JSON \
-              -DfailBuildOnCVSS=11
-  
+            -Dformat=JSON \
+            -DoutputDirectory=../$REPORTS_DIR || true
+
+      - name: Run Trivy FS
+        run: |
+          trivy fs \
+            --format json \
+            --output $REPORTS_DIR/trivy_fs.json \
+            $APP_DIR
+
       - uses: actions/upload-artifact@v4
         with:
-          name: dependency-reports
-          path: ${{ env.REPORTS_DIR }}
+          name: sca-reports
+          path: reports/
 
-#   security-dependency:
-#     runs-on: ubuntu-latest
-#     needs: build-java
+# ============================================================
+# JOB 4 – CONTAINER
+# ============================================================
 
-#     steps:
-#       - uses: actions/checkout@v4
-#       - run: mkdir -p $REPORTS_DIR
+  container-scan:
+    runs-on: ubuntu-latest
+    needs: build-java
 
-#       - uses: actions/setup-java@v4
-#         with:
-#           distribution: temurin
-#           java-version: ${{ env.JAVA_VERSION }}
-#           cache: maven
+    steps:
+      - uses: actions/checkout@v4
 
-#       - name: Generate SBOM
-#         working-directory: ${{ env.APP_DIR }}
-#         run: mvn org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}
 
-#       - name: Cache OWASP Dependency DB
-#         uses: actions/cache@v4
-#         with:
-#           path: ~/.dependency-check-data
-#           key: owasp-db-${{ runner.os }}
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo mv ./bin/trivy /usr/local/bin/
 
-#     #   - name: OWASP Dependency Check
-#     #     uses: dependency-check/Dependency-Check_Action@main
-#     #     with:
-#     #       project: EnterpriseJavaApp
-#     #       path: ${{ env.APP_DIR }}
-#     #       format: JSON
-#     #       out: ${{ env.REPORTS_DIR }}
-#     #       args: --failOnCVSS 9
+      - name: Create Reports Dir
+        run: mkdir -p $REPORTS_DIR
 
-#       - name: Download OWASP Dependency Check
-#         run: |
-#           VERSION=9.0.9
-#           curl -L -o dc.zip https://github.com/jeremylong/DependencyCheck/releases/download/v${VERSION}/dependency-check-9.0.9-release.zip
-#           unzip -o dc.zip
-#           mv dependency-check /opt/dependency-check
+      - name: Build Docker
+        run: docker build -t java-app:scan $APP_DIR
 
-#       - name: Cache Dependency-Check Database
-#         uses: actions/cache@v4
-#         with:
-#           path: ~/.dependency-check-data
-#           key: dependency-check-db-${{ runner.os }}-v1
+      - name: Run Trivy Image
+        run: |
+          trivy image \
+            --format json \
+            --output $REPORTS_DIR/trivy_image.json \
+            java-app:scan
 
-#       - name: Run OWASP Dependency Check (Smart Mode)
-#         run: |
-#           mkdir -p $REPORTS_DIR
-#           mkdir -p ~/.dependency-check-data
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-reports
+          path: reports/
 
-#           if [ -d "~/.dependency-check-data/nvdcache" ]; then
-#             echo "✅ Using cached Dependency-Check database"
-#             UPDATE_FLAG="--noupdate"
-#           else
-#             echo "📥 Downloading fresh Dependency-Check database..."
-#             UPDATE_FLAG=""
-#           fi
+# ============================================================
+# JOB 5 – INFRA
+# ============================================================
 
-#           /opt/dependency-check/bin/dependency-check.sh \
-#             --project EnterpriseJavaApp \
-#             --scan $APP_DIR \
-#             --format JSON \
-#             --out $REPORTS_DIR \
-#             --data ~/.dependency-check-data \
-#             --failOnCVSS 9 \
-#             --nvdApiKey=${{ secrets.NVD_API_KEY }} \
-#             --nvdApiDelay 10000 \
-#             --prettyPrint
-#             # $UPDATE_FLAG \
-            
+  infra-scan:
+    runs-on: ubuntu-latest
+    needs: build-java
 
-#             # --disableRetired \
-#             # --disableCisaKey \
-#             # --nvdApiKey=${{ secrets.NVD_API_KEY }} \
-#             # --nvdApiDelay 10000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Reports Dir
+        run: mkdir -p $REPORTS_DIR
 
-#       - uses: actions/upload-artifact@v4
-#         with:
-#           name: dependency-reports
-#           path: ${{ env.REPORTS_DIR }}
+      - name: Install tfsec
+        run: curl -sfL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
 
-# # ============================================================
-# # 4️⃣ CONTAINER SECURITY (Parallel)
-# # ============================================================
+      - name: Run tfsec
+        run: tfsec terraform --format json > $REPORTS_DIR/tfsec.json || true
 
-#   security-container:
-#     runs-on: ubuntu-latest
-#     needs: build-java
+      - name: Install Conftest
+        run: |
+          curl -sL https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz | tar -xz
+          sudo mv conftest /usr/local/bin/
 
-#     steps:
-#       - uses: actions/checkout@v4
-#       - run: mkdir -p $REPORTS_DIR
+      - name: Run Conftest
+        run: |
+          conftest test terraform/ -p policy --output json > $REPORTS_DIR/conftest.json || echo "[]" > $REPORTS_DIR/conftest.json
 
-#       - name: Lint Dockerfile
-#         uses: hadolint/hadolint-action@v3
-#         with:
-#           dockerfile: ${{ env.APP_DIR }}/Dockerfile
+      - uses: actions/upload-artifact@v4
+        with:
+          name: infra-reports
+          path: reports/
 
-#       - name: Build Image
-#         run: docker build -t enterprise-java-app:scan $APP_DIR
+# ============================================================
+# JOB 6 – AGGREGATE
+# ============================================================
 
-#       - name: Trivy Scan
-#         uses: aquasecurity/trivy-action@0.20.0
-#         with:
-#           image-ref: enterprise-java-app:scan
-#           format: json
-#           output: ${{ env.REPORTS_DIR }}/trivy_image.json
-#           severity: CRITICAL,HIGH
+  aggregate-reports:
+    runs-on: ubuntu-latest
+    needs:
+      - sast-scan
+      - sca-scan
+      - container-scan
+      - infra-scan
 
-#       - uses: actions/upload-artifact@v4
-#         with:
-#           name: container-reports
-#           path: ${{ env.REPORTS_DIR }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
 
-# # ============================================================
-# # 5️⃣ INFRA SECURITY (Parallel)
-# # ============================================================
+      - name: Merge Reports
+        run: |
+          mkdir -p final-reports
+          cp -r reports/*/* final-reports/ || true
 
-#   security-infra:
-#     runs-on: ubuntu-latest
-#     needs: build-java
-
-#     steps:
-#       - uses: actions/checkout@v4
-#       - run: mkdir -p $REPORTS_DIR
-
-#       - name: Install kube-linter
-#         run: |
-#           curl -sSL https://github.com/stackrox/kube-linter/releases/latest/download/kube-linter-linux.tar.gz | tar -xz
-#           sudo mv kube-linter /usr/local/bin/
-
-#       - name: Run kube-linter
-#         run: |
-#           kube-linter lint k8s/ \
-#             --format json > $REPORTS_DIR/kube_linter.json || true
-
-#       - uses: actions/upload-artifact@v4
-#         with:
-#           name: infra-reports
-#           path: ${{ env.REPORTS_DIR }}
-
-# # ============================================================
-# # 6️⃣ DAST (Parallel)
-# # ============================================================
-
-#   security-dast:
-#     runs-on: ubuntu-latest
-#     needs: build-java
-
-#     steps:
-#       - uses: actions/checkout@v4
-#       - run: mkdir -p $REPORTS_DIR
-
-#       - name: Build Docker Image
-#         run: docker build -t enterprise-java-app:scan $APP_DIR
-
-#       - name: Run App Container
-#         run: |
-#           docker run -d -p 8080:8080 --name app-test enterprise-java-app:scan
-#           sleep 20
-
-#       - name: Run OWASP ZAP
-#         uses: zaproxy/action-baseline@v0.10.0
-#         with:
-#           target: http://localhost:8080
-#           format: json
-#           output: ${{ env.REPORTS_DIR }}/zap.json
-
-#       - uses: actions/upload-artifact@v4
-#         with:
-#           name: dast-reports
-#           path: ${{ env.REPORTS_DIR }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-reports
+          path: final-reports/
