@@ -142,12 +142,6 @@ jobs:
           path: ~/.dependency-check-data
           key: dependency-check-db-${{ runner.os }}-v1
 
-
-
-
-
-
-
       - name: Run OWASP Dependency Check (Smart Mode)
         run: |
           mkdir -p $REPORTS_DIR
@@ -168,9 +162,12 @@ jobs:
             --out $REPORTS_DIR \
             --data ~/.dependency-check-data \
             --failOnCVSS 9 \
-            $UPDATE_FLAG \
+            --nvdApiKey=${{ secrets.NVD_API_KEY }} \
+            --nvdApiDelay 10000 \
             --prettyPrint
+            # $UPDATE_FLAG \
             
+
             # --disableRetired \
             # --disableCisaKey \
             # --nvdApiKey=${{ secrets.NVD_API_KEY }} \
