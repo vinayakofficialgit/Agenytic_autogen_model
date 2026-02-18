@@ -103,6 +103,13 @@ def _load_cfg() -> dict:
             "model": os.getenv("OLLAMA_MODEL", "llama3:latest"),
             "temperature": float(os.getenv("OLLAMA_TEMPERATURE", "0.2")),
         },
+        "tool_alias": {
+            "owasp-dep-check": "dependency-check",
+            "dependency-check": "dependency-check",
+            "spotbugs": "spotbugs",
+            "zap": "zap",
+            "trivy-image": "trivy_image"
+        },        
         "remediation": {
             "defaults": {
                 "docker_nonroot_user": "appuser",
@@ -135,7 +142,8 @@ def _load_cfg() -> dict:
 def print_banner():
     """Print startup banner."""
     print("\n" + "=" * 70)
-    print("   🛡️  DevSecOps Agentic AI Security Scanner")
+    # print("   🛡️  DevSecOps Agentic AI Security Scanner")
+    print("   ☕ Multi-language Security Orchestrator (Java Enabled)")
     print("=" * 70)
     print(f"   📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"   🤖 LLM: {os.getenv('OLLAMA_MODEL', 'llama3:latest')} @ {os.getenv('OLLAMA_URL', 'localhost:11434')}")
@@ -283,6 +291,62 @@ def generate_dynamic_suggestion(item: dict, tool: str) -> dict:
             suggestion["quick_fix"] = f"""
    → Fix the issue in {location}"""
     
+    elif tool == "spotbugs":
+        file_path = item.get("file", "unknown")
+        bug = item.get("bug_type", item.get("id", ""))
+        message = item.get("message", "")
+
+        suggestion["location"] = file_path
+        suggestion["issue"] = message or f"SpotBugs issue {bug}"
+
+        if "SQL" in bug.upper():
+            suggestion["quick_fix"] = """
+   → Replace concatenated SQL with PreparedStatement
+   → Use parameterized queries"""
+        elif "XSS" in bug.upper():
+            suggestion["quick_fix"] = """
+   → Encode user input before rendering
+   → Use Spring Security encoder"""
+        else:
+            suggestion["quick_fix"] = f"""
+   → Fix issue in {file_path}"""
+
+    elif tool == "dependency-check":
+        pkg = item.get("package", item.get("file", ""))
+        cve = item.get("id", "")
+        suggestion["location"] = pkg
+        suggestion["issue"] = f"Vulnerable dependency {pkg} ({cve})"
+        suggestion["quick_fix"] = """
+   → Update dependency version in pom.xml
+   → mvn versions:use-latest-releases"""
+
+    elif tool == "zap":
+        url = item.get("url", "")
+        alert = item.get("alert", item.get("message", ""))
+        suggestion["location"] = url
+        suggestion["issue"] = alert
+        suggestion["quick_fix"] = f"""
+   → Fix vulnerability on endpoint {url}
+   → Add validation/authentication/headers"""
+
+    elif tool == "conftest":
+        file_path = item.get("file", "unknown")
+        msg = item.get("message", "")
+        suggestion["location"] = file_path
+        suggestion["issue"] = msg
+        suggestion["quick_fix"] = """
+   → Update config to satisfy policy
+   → Review OPA rule violation"""
+
+    elif tool == "trivy_image":
+        image = item.get("image", "")
+        cve = item.get("id", "")
+        suggestion["location"] = image
+        suggestion["issue"] = f"Container vulnerability {cve}"
+        suggestion["quick_fix"] = """
+   → Update base image
+   → Rebuild container with patched version"""    
+    
     return suggestion
 
 
@@ -346,7 +410,7 @@ def print_phase2_dynamic_suggestions(llm_report: dict, findings_grouped: dict, d
                 print(f"      Fix:{sugg['quick_fix']}")
     
     # Process Trivy findings
-    trivy_items = llm_report.get("trivy_fs", []) if llm_report else []
+    trivy_items = llm_report.get("trivy_fs", []) if isinstance(llm_report, dict) else []
     if not trivy_items:
         trivy_items = findings_grouped.get("trivy_fs", []) if findings_grouped else []
     
@@ -375,7 +439,40 @@ def print_phase2_dynamic_suggestions(llm_report: dict, findings_grouped: dict, d
                 print(f"      Fix:{sugg['quick_fix']}")
                 if sugg.get("command"):
                     print(f"      Command: {sugg['command']}")
-    
+
+    # Process spotbug findings                
+    spotbugs_items = findings_grouped.get("spotbugs", []) if findings_grouped else []
+    if spotbugs_items:
+        print(f"\n   ☕ JAVA CODE ISSUES ({len(spotbugs_items)} found)")
+        print("   " + "─" * 50)
+        for i, item in enumerate(spotbugs_items, 1):
+            sugg = generate_dynamic_suggestion(item, "spotbugs")
+            print(f"\n   {i}. {sugg['location']}")
+            print(f"      Issue: {sugg['issue'][:60]}...")
+            print(f"      Fix:{sugg['quick_fix']}")
+   
+    # Dependency check findings
+    dep_items = findings_grouped.get("dependency-check", []) if findings_grouped else []
+    if dep_items:
+        print(f"\n   📦 DEPENDENCY VULNS ({len(dep_items)} found)")
+        print("   " + "─" * 50)
+        for i, item in enumerate(dep_items, 1):
+            sugg = generate_dynamic_suggestion(item, "dependency-check")
+            print(f"\n   {i}. {sugg['location']}")
+            print(f"      Issue: {sugg['issue']}")
+            print(f"      Fix:{sugg['quick_fix']}")
+
+    # ZAP check findings
+    zap_items = findings_grouped.get("zap", []) if findings_grouped else []
+    if zap_items:
+        print(f"\n   🌐 DAST ISSUES ({len(zap_items)} found)")
+        print("   " + "─" * 50)
+        for i, item in enumerate(zap_items, 1):
+            sugg = generate_dynamic_suggestion(item, "zap")
+            print(f"\n   {i}. {sugg['location']}")
+            print(f"      Issue: {sugg['issue']}")
+            print(f"      Fix:{sugg['quick_fix']}") 
+
     # Process Gitleaks findings
     gitleaks_items = findings_grouped.get("gitleaks", []) if findings_grouped else []
     if gitleaks_items:
@@ -442,20 +539,41 @@ def print_quick_actions(decision: dict, findings_grouped: dict):
     if by_tool.get("semgrep", 0) > 0:
         actions.append("   # Re-run Semgrep after fixes:")
         actions.append("   semgrep scan --config=auto .")
+
+    if by_tool.get("dependency-check", 0) > 0:
+        actions.append("\n   # Update Maven dependencies:")
+        actions.append("   mvn versions:display-dependency-updates")
+        actions.append("   mvn versions:use-latest-releases")
     
-    if by_tool.get("trivy_fs", 0) > 0 or by_tool.get("trivy-fs", 0) > 0:
-        actions.append("\n   # Update dependencies:")
-        actions.append("   pip install --upgrade -r requirements.txt")
-        actions.append("   # Or rebuild Docker image:")
-        actions.append("   docker build --no-cache -t myapp .")
+    if by_tool.get("spotbugs", 0) > 0:
+        actions.append("\n   # Re-run SpotBugs:")
+        actions.append("   mvn spotbugs:spotbugs")
     
+    if by_tool.get("zap", 0) > 0:
+        actions.append("\n   # Re-run ZAP:")
+        actions.append("   zap-baseline.py -t http://localhost:8080")  
+
     if by_tool.get("gitleaks", 0) > 0:
         actions.append("\n   # Check for secrets:")
         actions.append("   gitleaks detect --source . --verbose")
-    
+
     if by_tool.get("tfsec", 0) > 0:
         actions.append("\n   # Re-run Terraform scan:")
-        actions.append("   tfsec terraform/")
+        actions.append("   tfsec terraform/")              
+    
+    # if by_tool.get("trivy_fs", 0) > 0 or by_tool.get("trivy-fs", 0) > 0:
+    #     actions.append("\n   # Update dependencies:")
+    #     actions.append("   pip install --upgrade -r requirements.txt")
+    #     actions.append("   # Or rebuild Docker image:")
+    #     actions.append("   docker build --no-cache -t myapp .")
+    
+    # if by_tool.get("gitleaks", 0) > 0:
+    #     actions.append("\n   # Check for secrets:")
+    #     actions.append("   gitleaks detect --source . --verbose")
+    
+    # if by_tool.get("tfsec", 0) > 0:
+    #     actions.append("\n   # Re-run Terraform scan:")
+    #     actions.append("   tfsec terraform/")
     
     if actions:
         for action in actions:

@@ -348,3 +348,89 @@ jobs:
           name: scan-reports
           path: final-reports/*.json
           if-no-files-found: ignore
+
+# ============================================================
+# JOB 2: AI ANALYSIS (OLLAMA ENABLED) — Agentic AI Analysis
+# ============================================================
+
+  llm-agent-analysis:
+    name: 🤖 Run Agentic AI Analysis
+    runs-on: ubuntu-latest
+    needs: aggregate-reports
+  
+    outputs:
+      pipeline_status: ${{ steps.status.outputs.pipeline_status }}
+  
+    steps:
+      - uses: actions/checkout@v4
+  
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+  
+      - name: Setup Python Venv
+        run: |
+          python3 -m venv envmine
+          echo "$GITHUB_WORKSPACE/envmine/bin" >> $GITHUB_PATH
+  
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ${{ github.workspace }}/envmine
+          key: analysis-pip-${{ hashFiles('requirements.txt') }}
+  
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyyaml requests jq
+  
+      - uses: actions/download-artifact@v4
+        with:
+          name: scan-reports
+          path: reports
+  
+      - name: Cache Ollama model
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ollama-model-cache
+          key: ollama-model-${{ env.OLLAMA_MODEL }}-v3
+  
+      - name: Install & Start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama || true
+          sudo systemctl disable ollama || true
+  
+          export OLLAMA_MODELS="/home/runner/.ollama-model-cache"
+          mkdir -p "$OLLAMA_MODELS"
+  
+          OLLAMA_MODELS="$OLLAMA_MODELS" nohup ollama serve > /tmp/ollama.log 2>&1 &
+  
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:11434/api/tags && break
+            sleep 2
+          done
+  
+          if ! OLLAMA_MODELS="$OLLAMA_MODELS" ollama list | grep -q "$OLLAMA_MODEL"; then
+            OLLAMA_MODELS="$OLLAMA_MODELS" ollama pull "$OLLAMA_MODEL"
+          fi
+  
+      - name: Run agentic analysis
+        run: python main.py --verbose || true
+  
+      - name: Capture Status
+        id: status
+        run: |
+          if [ -f "$OUTPUT_DIR/decision.json" ]; then
+            STATUS=$(jq -r '.status' "$OUTPUT_DIR/decision.json")
+          else
+            STATUS="fail"
+          fi
+          echo "pipeline_status=$STATUS" >> "$GITHUB_OUTPUT"
+  
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-results
+          path: agent_output/          
