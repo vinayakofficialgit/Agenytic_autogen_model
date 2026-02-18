@@ -2,9 +2,9 @@ name: DevSecOps Agentic AI Pipeline (Enterprise Java Parallel)
 
 on:
   push:
-    branches: [test-homee-sachin]
+    branches: [test-home-sachin]
   pull_request:
-    branches: [test-homee-sachin]
+    branches: [test-home-sachin]
   workflow_dispatch:
 
 env:
