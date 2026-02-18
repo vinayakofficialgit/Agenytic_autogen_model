@@ -1,4 +1,4 @@
-package k8s.security
+package kubernetes.security
 
 ########################################
 # Safe Helpers

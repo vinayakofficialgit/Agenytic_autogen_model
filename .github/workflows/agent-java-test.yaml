@@ -246,11 +246,17 @@ jobs:
 
           tar -xzf conftest.tar.gz || true
           sudo mv conftest /usr/local/bin/ || true
+          
+          conftest test app/Dockerfile -p policy --output json > "$REPORTS_DIR/conftest-docker.json" || echo "[]" > "$REPORTS_DIR/conftest-docker.json"
 
-          if [ -d terraform ]; then
-            conftest test terraform/ -p policy --output json > $REPORTS_DIR/conftest.json || echo "[]" > $REPORTS_DIR/conftest.json
+          conftest test k8s/deployment.yaml -p policy --output json > "$REPORTS_DIR/conftest-k8s.json" || echo "[]" > "$REPORTS_DIR/conftest-k8s.json"
+
+          conftest test terraform/main.tf -p policy --output json > $REPORTS_DIR/conftest.json || echo "[]" > $REPORTS_DIR/conftest-terraform.json
+
+          if [ -d $APP_DIR ]; then
+            conftest test $APP_DIR/Docker-files/** -p policy --output json > $REPORTS_DIR/conftest_MultiImage.json || echo "[]" > $REPORTS_DIR/conftest.json
           else
-            echo "[]" > $REPORTS_DIR/conftest.json
+            echo "[]" > $REPORTS_DIR/cconftest_MultiImage.json
           fi
 
       - uses: actions/upload-artifact@v4

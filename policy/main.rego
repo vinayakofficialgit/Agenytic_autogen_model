@@ -7,7 +7,7 @@ msg := data.docker.security.deny[_]
 }
 
 deny contains msg if {
-msg := data.k8s.security.deny[_]
+msg := data.kubernetes.security.deny[_]
 }
 
 deny contains msg if {
@@ -21,7 +21,7 @@ msg := data.docker.security.warn[_]
 }
 
 warn contains msg if {
-msg := data.k8s.security.warn[_]
+msg := data.kubernetes.security.warn[_]
 }
 
 warn contains msg if {
