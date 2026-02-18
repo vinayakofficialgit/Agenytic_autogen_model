@@ -249,7 +249,7 @@ jobs:
           
           conftest test app/Dockerfile -p policy --output json > "$REPORTS_DIR/conftest-docker.json" || echo "[]" > "$REPORTS_DIR/conftest-docker.json"
 
-          conftest test k8s/deployment.yaml -p policy --output json > "$REPORTS_DIR/conftest-k8s.json" || echo "[]" > "$REPORTS_DIR/conftest-k8s.json"
+          conftest test kubernetes/deployment.yaml -p policy --output json > "$REPORTS_DIR/conftest-k8s.json" || echo "[]" > "$REPORTS_DIR/conftest-k8s.json"
 
           conftest test terraform/main.tf -p policy --output json > $REPORTS_DIR/conftest.json || echo "[]" > $REPORTS_DIR/conftest-terraform.json
 
