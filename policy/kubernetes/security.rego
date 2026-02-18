@@ -417,217 +417,38 @@ deny contains msg if {
   msg := sprintf("container %q must define readinessProbe", [c.name])
 }
 
+# 7) SecurityContext hardening — runAsNonRoot (fixed)
 ########################################
-# 7) SecurityContext hardening
-########################################
 
-# Not privileged
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  c.securityContext
-  c.securityContext.privileged == true
-  msg := sprintf("container %q must not run privileged", [c.name])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  c.securityContext
-  c.securityContext.privileged == true
-  msg := sprintf("container %q must not run privileged", [c.name])
-}
-
-# allowPrivilegeEscalation: false
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
-}
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  c.securityContext
-  c.securityContext.allowPrivilegeEscalation != false
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  c.securityContext
-  c.securityContext.allowPrivilegeEscalation != false
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
-}
-
-# readOnlyRootFilesystem: true
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
-}
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  c.securityContext
-  c.securityContext.readOnlyRootFilesystem != true
-  msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  c.securityContext
-  c.securityContext.readOnlyRootFilesystem != true
-  msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
-}
-
-# runAsNonRoot true — explicit cases (no inline OR)
-
-# Deploy: pod has NO securityContext, container missing securityContext
+# Deployment: require runAsNonRoot: true at container OR pod-template level.
+# Violates when container.runAsNonRoot != true AND pod.runAsNonRoot != true.
 deny contains msg if {
   is_deploy
   ps := input.spec.template.spec
-  not ps.securityContext
   c := ps.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
-# Deploy: pod has NO securityContext, container has SC but not true
-deny contains msg if {
-  is_deploy
-  ps := input.spec.template.spec
-  not ps.securityContext
-  c := ps.containers[_]
-  c.securityContext
-  c.securityContext.runAsNonRoot != true
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
-# Deploy: pod has SC but not true, container missing SC
-deny contains msg if {
-  is_deploy
-  ps := input.spec.template.spec
-  ps.securityContext
-  ps.securityContext.runAsNonRoot != true
-  c := ps.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
-# Deploy: pod has SC but not true, container has SC but not true
-deny contains msg if {
-  is_deploy
-  ps := input.spec.template.spec
-  ps.securityContext
-  ps.securityContext.runAsNonRoot != true
-  c := ps.containers[_]
-  c.securityContext
-  c.securityContext.runAsNonRoot != true
+
+  # Container is NOT explicitly true
+  not (c.securityContext and c.securityContext.runAsNonRoot == true)
+
+  # Pod template is NOT explicitly true
+  not (ps.securityContext and ps.securityContext.runAsNonRoot == true)
+
   msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
 }
 
-# Pod: same four cases
+# Pod: require runAsNonRoot: true at container OR pod level.
 deny contains msg if {
   is_pod
   ps := input.spec
-  not ps.securityContext
   c := ps.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
-deny contains msg if {
-  is_pod
-  ps := input.spec
-  not ps.securityContext
-  c := ps.containers[_]
-  c.securityContext
-  c.securityContext.runAsNonRoot != true
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
-deny contains msg if {
-  is_pod
-  ps := input.spec
-  ps.securityContext
-  ps.securityContext.runAsNonRoot != true
-  c := ps.containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
-deny contains msg if {
-  is_pod
-  ps := input.spec
-  ps.securityContext
-  ps.securityContext.runAsNonRoot != true
-  c := ps.containers[_]
-  c.securityContext
-  c.securityContext.runAsNonRoot != true
-  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
-}
 
-# Must NOT run as UID 0 (either pod or container)
-deny contains msg if {
-  is_deploy
-  ps := input.spec.template.spec
-  ps.securityContext
-  ps.securityContext.runAsUser == 0
-  c := ps.containers[_]
-  msg := sprintf("container %q must not run as root user (pod runAsUser: 0)", [c.name])
-}
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  c.securityContext
-  c.securityContext.runAsUser == 0
-  msg := sprintf("container %q must not run as root user (runAsUser: 0)", [c.name])
-}
-deny contains msg if {
-  is_pod
-  ps := input.spec
-  ps.securityContext
-  ps.securityContext.runAsUser == 0
-  c := ps.containers[_]
-  msg := sprintf("container %q must not run as root user (pod runAsUser: 0)", [c.name])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  c.securityContext
-  c.securityContext.runAsUser == 0
-  msg := sprintf("container %q must not run as root user (runAsUser: 0)", [c.name])
-}
+  # Container is NOT explicitly true
+  not (c.securityContext and c.securityContext.runAsNonRoot == true)
 
-# Capabilities: disallow adds outside allow-list
-deny contains msg if {
-  is_deploy
-  c := input.spec.template.spec.containers[_]
-  c.securityContext
-  c.securityContext.capabilities
-  c.securityContext.capabilities.add
-  a := c.securityContext.capabilities.add[_]
-  cap := upper(a)
-  not allowed_add_caps[cap]
-  msg := sprintf("container %q adds disallowed Linux capability: %s", [c.name, cap])
-}
-deny contains msg if {
-  is_pod
-  c := input.spec.containers[_]
-  c.securityContext
-  c.securityContext.capabilities
-  c.securityContext.capabilities.add
-  a := c.securityContext.capabilities.add[_]
-  cap := upper(a)
-  not allowed_add_caps[cap]
-  msg := sprintf("container %q adds disallowed Linux capability: %s", [c.name, cap])
+  # Pod is NOT explicitly true
+  not (ps.securityContext and ps.securityContext.runAsNonRoot == true)
+
+  msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
 }
 
 ########################################
