@@ -145,7 +145,7 @@ jobs:
             --out $REPORTS_DIR \
             --data ~/.dependency-check-data \
             --failOnCVSS 9 \
-            --nvdApiKey=${{secrets.NVD_API_KEY}}
+            --nvdApiKey ${{ secrets.NVD_API_KEY }}
 
       - uses: actions/upload-artifact@v4
         with:
