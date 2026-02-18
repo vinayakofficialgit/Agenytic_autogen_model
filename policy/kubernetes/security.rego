@@ -38,6 +38,9 @@ allowed_add_caps := {
   "NET_BIND_SERVICE",
 }
 
+# Allowed seccomp types (normalized to lowercase)
+allowed_seccomp := {"runtimedefault", "localhost"}
+
 ########################################
 # Helpers
 ########################################
@@ -71,10 +74,7 @@ all_containers[c] if { ps := pod_specs[_]; c := ps.containers[_] }
 all_init_containers[c] if { ps := pod_specs[_]; c := ps.initContainers[_] }
 
 # Pod-level securityContext (for runAs* and seccomp)
-pod_sc[psc] if {
-  ps := pod_specs[_]
-  psc := ps.securityContext
-}
+pod_sc[psc] if { ps := pod_specs[_]; psc := ps.securityContext }
 
 # ENV names (lowercased)
 env_names[name] if { c := all_containers[_]; e := c.env[_]; name := lower(e.name) }
@@ -88,35 +88,16 @@ env_name_parts[p] if {
   p != ""
 }
 
-# Aggregate command/args/lifecycle exec commands (lowercased)
-cmd_texts[t] if {
-  c := all_containers[_]
-  cmd := concat(" ", [x | x := c.command[_]])
-  args := concat(" ", [x | x := c.args[_]])
-  t := lower(trim(sprintf("%s %s", [cmd, args])))
-}
-cmd_texts[t] if {
-  c := all_init_containers[_]
-  cmd := concat(" ", [x | x := c.command[_]])
-  args := concat(" ", [x | x := c.args[_]])
-  t := lower(trim(sprintf("%s %s", [cmd, args])))
-}
-cmd_texts[t] if {
-  c := all_containers[_]; c.lifecycle.postStart.exec.command
-  t := lower(concat(" ", c.lifecycle.postStart.exec.command))
-}
-cmd_texts[t] if {
-  c := all_containers[_]; c.lifecycle.preStop.exec.command
-  t := lower(concat(" ", c.lifecycle.preStop.exec.command))
-}
-cmd_texts[t] if {
-  c := all_init_containers[_]; c.lifecycle.postStart.exec.command
-  t := lower(concat(" ", c.lifecycle.postStart.exec.command))
-}
-cmd_texts[t] if {
-  c := all_init_containers[_]; c.lifecycle.preStop.exec.command
-  t := lower(concat(" ", c.lifecycle.preStop.exec.command))
-}
+# Aggregate command/args/lifecycle exec commands (lowercased).
+# Split rules keep us safe when fields are missing.
+cmd_texts[t] if { c := all_containers[_]; c.command; t := lower(concat(" ", c.command)) }
+cmd_texts[t] if { c := all_containers[_]; c.args;    t := lower(concat(" ", c.args)) }
+cmd_texts[t] if { c := all_init_containers[_]; c.command; t := lower(concat(" ", c.command)) }
+cmd_texts[t] if { c := all_init_containers[_]; c.args;    t := lower(concat(" ", c.args)) }
+cmd_texts[t] if { c := all_containers[_]; c.lifecycle.postStart.exec.command; t := lower(concat(" ", c.lifecycle.postStart.exec.command)) }
+cmd_texts[t] if { c := all_containers[_]; c.lifecycle.preStop.exec.command;   t := lower(concat(" ", c.lifecycle.preStop.exec.command)) }
+cmd_texts[t] if { c := all_init_containers[_]; c.lifecycle.postStart.exec.command; t := lower(concat(" ", c.lifecycle.postStart.exec.command)) }
+cmd_texts[t] if { c := all_init_containers[_]; c.lifecycle.preStop.exec.command;   t := lower(concat(" ", c.lifecycle.preStop.exec.command)) }
 
 # :latest or missing tag (unless pinned by digest)
 image_is_latest_or_missing(img) if { endswith(lower(img), ":latest") }
@@ -130,7 +111,10 @@ image_from_allowed_registry(img) if {
 }
 
 # Capability helpers (case-insensitive)
-added_caps(c)[cap] if { c.securityContext.capabilities.add[_]; cap := upper(c.securityContext.capabilities.add[_]) }
+added_caps(c)[cap] if {
+  a := c.securityContext.capabilities.add[_]
+  cap := upper(a)
+}
 drops_all_caps(c) if { lower(c.securityContext.capabilities.drop[_]) == "all" }
 
 # runAsNonRoot: true at container OR pod level
@@ -145,13 +129,13 @@ is_root_user(c) if { psc := pod_sc[_]; psc.runAsUser == 0 }
 seccomp_ok(c) if {
   c.securityContext.seccompProfile.type
   t := lower(c.securityContext.seccompProfile.type)
-  t == "runtime/default" or t == "localhost"
+  allowed_seccomp[t]
 }
 seccomp_ok(c) if {
   psc := pod_sc[_]
   psc.seccompProfile.type
   t := lower(psc.seccompProfile.type)
-  t == "runtime/default" or t == "localhost"
+  allowed_seccomp[t]
 }
 
 ########################################
@@ -313,14 +297,12 @@ deny contains msg if {
 }
 
 # must set allowPrivilegeEscalation: false
-deny contains msg if {
-  c := all_containers[_]
-  not c.securityContext.allowPrivilegeEscalation
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
+allow_priv_escal_false(c) {
+  c.securityContext.allowPrivilegeEscalation == false
 }
 deny contains msg if {
   c := all_containers[_]
-  c.securityContext.allowPrivilegeEscalation != false
+  not allow_priv_escal_false(c)
   msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
 }
 
