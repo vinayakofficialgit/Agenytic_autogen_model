@@ -37,7 +37,7 @@ allowed_add_caps := {
 allowed_seccomp := {"runtimedefault", "localhost"}
 
 ########################################
-# Helpers (safe and OR-free)
+# Helpers (safe & OR-free)
 ########################################
 
 # Support single-doc, multi-doc array, and kind: List
@@ -132,8 +132,8 @@ env_name_parts[p] {
   p != ""
 }
 
-# Aggregate command/args/lifecycle exec commands (lowercased).
-# Use separate rules so missing fields don't break evaluation.
+# Aggregate command/args/lifecycle exec commands (lowercased),
+# using separate rules so missing fields don't break evaluation.
 cmd_texts[t] {
   c := all_containers[_]
   c.command
@@ -201,8 +201,8 @@ image_from_allowed_registry(img) {
   startswith(lower(img), lower(p))
 }
 
-# Capability helpers
-added_caps(c)[cap] {
+# Capability helpers — use predicates (no partial-set-with-args)
+added_cap(c, cap) {
   c.securityContext
   c.securityContext.capabilities
   c.securityContext.capabilities.add
@@ -248,12 +248,24 @@ seccomp_ok(c) {
   allowed_seccomp[t]
 }
 
-# secret-like name helper without inline "or"
+# secret-like name helper without inline 'or'
 secret_like(name, k) {
   startswith(name, k)
 }
 secret_like(name, k) {
   endswith(name, k)
+}
+
+# allowPrivilegeEscalation must be explicitly false
+allow_priv_escal_false(c) {
+  c.securityContext
+  c.securityContext.allowPrivilegeEscalation == false
+}
+
+# readOnlyRootFilesystem must be explicitly true
+read_only_fs_true(c) {
+  c.securityContext
+  c.securityContext.readOnlyRootFilesystem == true
 }
 
 ########################################
@@ -312,7 +324,6 @@ warn[msg] {
   image_latest_or_missing(c.image)
   msg := sprintf("Avoid :latest or missing tag for container %q image: %s", [c.name, c.image])
 }
-
 warn[msg] {
   c := all_init_containers[_]
   image_latest_or_missing(c.image)
@@ -353,50 +364,45 @@ deny[msg] {
 }
 
 ########################################
-# 6) Require CPU/Memory requests and limits (all containers & initContainers)
+# 6) Require CPU/Memory requests and limits (containers & initContainers)
 ########################################
 
+# Containers
 deny[msg] {
   c := all_containers[_]
   not c.resources
   msg := sprintf("container %q missing resources", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   c.resources
   not c.resources.requests
   msg := sprintf("container %q missing resources.requests", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   c.resources
   not c.resources.limits
   msg := sprintf("container %q missing resources.limits", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   c.resources
   not c.resources.requests.cpu
   msg := sprintf("container %q missing resources.requests.cpu", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   c.resources
   not c.resources.requests.memory
   msg := sprintf("container %q missing resources.requests.memory", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   c.resources
   not c.resources.limits.cpu
   msg := sprintf("container %q missing resources.limits.cpu", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   c.resources
@@ -404,48 +410,42 @@ deny[msg] {
   msg := sprintf("container %q missing resources.limits.memory", [c.name])
 }
 
-# initContainers too
+# initContainers
 deny[msg] {
   c := all_init_containers[_]
   not c.resources
   msg := sprintf("initContainer %q missing resources", [c.name])
 }
-
 deny[msg] {
   c := all_init_containers[_]
   c.resources
   not c.resources.requests
   msg := sprintf("initContainer %q missing resources.requests", [c.name])
 }
-
 deny[msg] {
   c := all_init_containers[_]
   c.resources
   not c.resources.limits
   msg := sprintf("initContainer %q missing resources.limits", [c.name])
 }
-
 deny[msg] {
   c := all_init_containers[_]
   c.resources
   not c.resources.requests.cpu
   msg := sprintf("initContainer %q missing resources.requests.cpu", [c.name])
 }
-
 deny[msg] {
   c := all_init_containers[_]
   c.resources
   not c.resources.requests.memory
   msg := sprintf("initContainer %q missing resources.requests.memory", [c.name])
 }
-
 deny[msg] {
   c := all_init_containers[_]
   c.resources
   not c.resources.limits.cpu
   msg := sprintf("initContainer %q missing resources.limits.cpu", [c.name])
 }
-
 deny[msg] {
   c := all_init_containers[_]
   c.resources
@@ -462,7 +462,6 @@ deny[msg] {
   not c.livenessProbe
   msg := sprintf("container %q must define livenessProbe", [c.name])
 }
-
 deny[msg] {
   c := all_containers[_]
   not c.readinessProbe
@@ -473,7 +472,7 @@ deny[msg] {
 # 8) SecurityContext hardening
 ########################################
 
-# not privileged
+# Not privileged
 deny[msg] {
   c := all_containers[_]
   c.securityContext
@@ -484,32 +483,14 @@ deny[msg] {
 # allowPrivilegeEscalation: false (explicit)
 deny[msg] {
   c := all_containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
-}
-deny[msg] {
-  c := all_containers[_]
-  c.securityContext
-  not c.securityContext.allowPrivilegeEscalation
-  msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
-}
-deny[msg] {
-  c := all_containers[_]
-  c.securityContext
-  c.securityContext.allowPrivilegeEscalation != false
+  not allow_priv_escal_false(c)
   msg := sprintf("container %q must set securityContext.allowPrivilegeEscalation: false", [c.name])
 }
 
-# readOnlyRootFilesystem: true
+# readOnlyRootFilesystem: true (explicit)
 deny[msg] {
   c := all_containers[_]
-  not c.securityContext
-  msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
-}
-deny[msg] {
-  c := all_containers[_]
-  c.securityContext
-  c.securityContext.readOnlyRootFilesystem != true
+  not read_only_fs_true(c)
   msg := sprintf("container %q must set securityContext.readOnlyRootFilesystem: true", [c.name])
 }
 
@@ -530,7 +511,7 @@ deny[msg] {
 # capabilities: disallow additions outside allow-list
 deny[msg] {
   c := all_containers[_]
-  ac := {cap | cap := added_caps(c)[_]; not allowed_add_caps[cap]}
+  ac := {cap | added_cap(c, cap); not allowed_add_caps[cap]}
   count(ac) > 0
   msg := sprintf("container %q adds disallowed Linux capabilities: %v", [c.name, ac])
 }
