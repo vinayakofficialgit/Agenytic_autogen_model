@@ -51,7 +51,7 @@ allowed_registry_match(img) if {
 }
 
 ########################################
-# 1) ENV secret-like names + inline values
+# 1 ENV secret-like names + inline values
 ########################################
 
 # Deployment
@@ -143,7 +143,7 @@ warn contains msg if {
 }
 
 ########################################
-# 2) :latest or missing tag (warn)
+# 2 :latest or missing tag (warn)
 ########################################
 
 # Deployment
@@ -177,7 +177,7 @@ warn contains msg if {
 }
 
 ########################################
-# 3) Disallow package upgrades & sudo
+# 3 Disallow package upgrades & sudo
 ########################################
 
 # Deployment
@@ -253,7 +253,7 @@ deny contains msg if {
 }
 
 ########################################
-# 4) Disallow hostPath volumes
+# 4 Disallow hostPath volumes
 ########################################
 
 deny contains msg if {
@@ -274,7 +274,7 @@ deny contains msg if {
 }
 
 ########################################
-# 5) Require CPU/Memory requests & limits
+# 5 Require CPU/Memory requests & limits
 ########################################
 
 # Deployment
@@ -386,7 +386,7 @@ deny contains msg if {
 }
 
 ########################################
-# 6) Liveness & Readiness probes
+# 6 Liveness & Readiness probes
 ########################################
 
 # Deployment
@@ -417,42 +417,36 @@ deny contains msg if {
   msg := sprintf("container %q must define readinessProbe", [c.name])
 }
 
-# 7) SecurityContext hardening — runAsNonRoot (fixed)
+########################################
+# 7 SecurityContext hardening — runAsNonRoot
 ########################################
 
-# Deployment: require runAsNonRoot: true at container OR pod-template level.
-# Violates when container.runAsNonRoot != true AND pod.runAsNonRoot != true.
+# Deployment: require runAsNonRoot: true at container OR pod-template level
 deny contains msg if {
   is_deploy
   ps := input.spec.template.spec
   c := ps.containers[_]
 
-  # Container is NOT explicitly true
-  not (c.securityContext and c.securityContext.runAsNonRoot == true)
-
-  # Pod template is NOT explicitly true
-  not (ps.securityContext and ps.securityContext.runAsNonRoot == true)
+  not container_run_as_non_root_true(c)
+  not pod_run_as_non_root_true(ps)
 
   msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
 }
 
-# Pod: require runAsNonRoot: true at container OR pod level.
+# Pod: require runAsNonRoot: true at container OR pod level
 deny contains msg if {
   is_pod
   ps := input.spec
   c := ps.containers[_]
 
-  # Container is NOT explicitly true
-  not (c.securityContext and c.securityContext.runAsNonRoot == true)
-
-  # Pod is NOT explicitly true
-  not (ps.securityContext and ps.securityContext.runAsNonRoot == true)
+  not container_run_as_non_root_true(c)
+  not pod_run_as_non_root_true(ps)
 
   msg := sprintf("container %q must set runAsNonRoot: true (at container or pod level)", [c.name])
 }
 
 ########################################
-# 8) Disallow hostNetwork / hostPID / hostIPC
+# 8 Disallow hostNetwork / hostPID / hostIPC
 ########################################
 
 deny contains msg if {
@@ -487,7 +481,7 @@ deny contains msg if {
 }
 
 ########################################
-# 9) Allowed image registries (strict allow-list)
+# 9 Allowed image registries (strict allow-list)
 ########################################
 
 deny contains msg if {
