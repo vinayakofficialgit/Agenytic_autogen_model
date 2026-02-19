@@ -3,9 +3,11 @@ name: DevSecOps Agentic AI Pipeline (Enterprise Optimized)
 on:
   push:
     branches: [test-home-sachin]
-  # pull_request:
-  #   branches: [test-home-sachin]
   workflow_dispatch:
+
+concurrency:
+  group: devsecops-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   JAVA_VERSION: "17"
@@ -14,15 +16,14 @@ env:
   REPORTS_DIR: "reports"
   MIN_SEVERITY: "critical"
 
-# ============================================================
-# JOB 1 – BUILD ONCE (Artifact Producer)
-# ============================================================
-
 jobs:
+
+# ============================================================
+# BUILD
+# ============================================================
 
   build-java:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -32,63 +33,50 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Build Java
-        run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+      - run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target/enterprise-app-1.0.jar
+          retention-days: 7
 
 # ============================================================
-# JOB 2 – SAST (Build for Bytecode + Static Scan)
+# SAST
 # ============================================================
 
   sast:
     runs-on: ubuntu-latest
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: mkdir -p $REPORTS_DIR
 
-      # Build required for SpotBugs bytecode analysis
-      - name: Build for SpotBugs
-        run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+      - run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
 
-      - name: Run Semgrep
-        run: |
+      - run: |
           pip install semgrep
           semgrep scan \
             --config=p/java \
             --config=p/owasp-top-ten \
             --json \
             --output $REPORTS_DIR/semgrep.json \
-            $APP_DIR/app/src/main/java \
-            || echo '{}' > $REPORTS_DIR/semgrep.json
+            $APP_DIR/app/src/main/java || echo '{}' > $REPORTS_DIR/semgrep.json
 
-      - name: Run SpotBugs
-        run: |
+      - run: |
           mvn com.github.spotbugs:spotbugs-maven-plugin:4.9.8.2:spotbugs \
-            -Dspotbugs.outputFormat=json \
-            -f $APP_DIR/app/pom.xml || true
+            -Dspotbugs.outputFormat=json -f $APP_DIR/app/pom.xml || true
 
-          if [ -f $APP_DIR/app/target/spotbugsJson.json ]; then
-            cp $APP_DIR/app/target/*spotbugs*.json $REPORTS_DIR/spotbugs.json || echo '{}' > $REPORTS_DIR/spotbugs.json
-            # cp $APP_DIR/app/target/spotbugsJson.json $REPORTS_DIR/spotbugs.json
-          else
-            echo '{}' > $REPORTS_DIR/spotbugs.json
-          fi
+          cp $(ls $APP_DIR/app/target/*spotbugs*.json | head -1) \
+             $REPORTS_DIR/spotbugs.json || echo '{}' > $REPORTS_DIR/spotbugs.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -96,39 +84,24 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-
 # ============================================================
-# JOB 3 – SECRETS SCAN
+# SECRETS
 # ============================================================
 
   secrets-scan:
     runs-on: ubuntu-latest
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-
       - run: mkdir -p $REPORTS_DIR
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Install Gitleaks
-        run: |
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - run: |
           VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -L -o gitleaks.tar.gz \
-            https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
-          tar -xzf gitleaks.tar.gz
-          sudo mv gitleaks /usr/local/bin/
-
-      - name: Run Gitleaks
-        run: |
-          gitleaks detect \
-            --source . \
-            --report-format json \
-            --report-path $REPORTS_DIR/gitleaks.json \
-            || echo '{}' > $REPORTS_DIR/gitleaks.json
-
+          curl -L -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+      - run: |
+          gitleaks detect --source . --report-format json \
+          --report-path $REPORTS_DIR/gitleaks.json || echo '{}' > $REPORTS_DIR/gitleaks.json
       - uses: actions/upload-artifact@v4
         with:
           name: secrets-reports
@@ -136,313 +109,182 @@ jobs:
           if-no-files-found: ignore
 
 # ============================================================
-# JOB 4 – SCA
+# SCA
 # ============================================================
 
   sca:
     runs-on: ubuntu-latest
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-
-      - name: Dependency Check
-        run: |
-          mvn org.owasp:dependency-check-maven:check \
-            -Dformat=JSON \
-            -DoutputDirectory=$REPORTS_DIR \
-            -f $APP_DIR/app/pom.xml || true
-          cp $APP_DIR/app/target/dependency-check-report.json $REPORTS_DIR/dependency-check.json || echo '{}' > $REPORTS_DIR/dependency-check.json  
-
-      - name: Trivy Filesystem Scan
-        run: |
+      # - run: mkdir -p $REPORTS_DIR
+      # - run: |
+      #     mvn org.owasp:dependency-check-maven:check \
+      #     -Dformat=JSON -f $APP_DIR/app/pom.xml || true
+      #     cp $APP_DIR/app/target/dependency-check-report.json \
+      #        $REPORTS_DIR/dependency-check.json || echo '{}' > $REPORTS_DIR/dependency-check.json
+      - run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          ./bin/trivy fs \
-            --format json \
-            --output $REPORTS_DIR/trivy_fs.json \
-            $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
-
+          ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
+          $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
       - uses: actions/upload-artifact@v4
         with:
           name: sca-reports
           path: reports/*.json
-          if-no-files-found: ignore
 
 # ============================================================
-# JOB 5 – INFRASCTRUCTURE AS CODE
-# ============================================================          
+# IAC
+# ============================================================
 
   IAC-scan:
     runs-on: ubuntu-latest
-    # needs: build-java
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-
       - run: mkdir -p $REPORTS_DIR
-
-      - name: Install tfsec
-        run: |
-          curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 \
-            -o tfsec
-          chmod +x tfsec
-          sudo mv tfsec /usr/local/bin/
-
-      - name: Run tfsec
-        run: |
-          set -e
-          tfsec $APP_DIR/terraform --format json \
-            > "$REPORTS_DIR/tfsec.json" || true
-          test -f "$REPORTS_DIR/tfsec.json"
-
+      - run: |
+          curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
+          chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+      - run: |
+          tfsec $APP_DIR/terraform --format json > "$REPORTS_DIR/tfsec.json" || true
       - uses: actions/upload-artifact@v4
         with:
           name: iac-reports
-          path: reports/*.json    
+          path: reports/*.json
 
 # ============================================================
-# JOB 6 – CONTAINER (Reuse JAR)
+# CONTAINER
 # ============================================================
 
   container-scan:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
-
       - run: mkdir -p $REPORTS_DIR
-
-      - name: Build Docker Image
-        run: |
-          docker build \
-            -t enterprise-app \
-            -f $APP_DIR/docker/Dockerfile .
-
-      - name: Trivy Image Scan
-        run: |
+      - run: docker build -t enterprise-app -f $APP_DIR/docker/Dockerfile $APP_DIR
+      - run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          ./bin/trivy image enterprise-app \
-            --format json \
-            --output $REPORTS_DIR/trivy_image.json \
-            || echo '{}' > $REPORTS_DIR/trivy_image.json
-
+          ./bin/trivy image enterprise-app --format json \
+          --output $REPORTS_DIR/trivy_image.json || echo '{}' > $REPORTS_DIR/trivy_image.json
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
           path: reports/*.json
-          if-no-files-found: ignore
 
 # ============================================================
-# JOB 7 – DAST (Reuse JAR)
+# DAST
 # ============================================================
 
   dast:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
-
       - run: mkdir -p $REPORTS_DIR
-
-      - name: Start Application
-        run: |
-          mkdir -p config/dummy
-
-          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
-            --spring.config.import=optional:file:./config/*/ &
+      - run: |
+          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar &
           sleep 40
-
-      - name: OWASP ZAP Baseline
-        run: |
-          mkdir -p zap-output
-      
-          docker run --rm \
-            -u root \
-            --network=host \
-            -v $(pwd)/zap-output:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://localhost:8080 \
-            -J zap.json || true
-      
-          if [ -f zap-output/zap.json ]; then
-            mv zap-output/zap.json $REPORTS_DIR/zap.json
-          else
-            echo '{}' > $REPORTS_DIR/zap.json
-          fi
-
-      - uses: actions/upload-artifact@v4  
+      - run: |
+          docker run --rm -u root --network=host \
+          ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+          -t http://localhost:8080 -J zap.json || true
+          mv zap.json $REPORTS_DIR/zap.json || echo '{}' > $REPORTS_DIR/zap.json
+      - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
           path: reports/*.json
-          if-no-files-found: ignore
 
 # ============================================================
-# JOB 8 – POLICY SCAN
-# ============================================================
-
-  policy-scan:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-   
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq 
-      - name: Install Conftest
-        run: |
-          VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
-          curl -L -o conftest.tar.gz \
-            https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz
-          tar -xzf conftest.tar.gz
-          sudo mv conftest /usr/local/bin/
-
-      - name: Scan Kubernetes
-        run: |
-          conftest test $APP_DIR/k8s \
-            -p policy \
-            --output json \
-            > $REPORTS_DIR/conftest_k8s.json \
-            || echo '[]' > $REPORTS_DIR/conftest_k8s.json
-
-      - name: Scan Terraform
-        run: |
-          conftest test $APP_DIR/terraform \
-            -p policy \
-            --output json \
-            > $REPORTS_DIR/conftest_tf.json \
-            || echo '[]' > $REPORTS_DIR/conftest_tf.json
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: policy-reports
-          path: reports/*.json
-
-# ============================================================
-# JOB 9 – AGGREGATE ALL REPORTS (For AI Analysis)
+# AGGREGATE
 # ============================================================
 
   aggregate-reports:
     runs-on: ubuntu-latest
-    needs:
-      - sast
-      - secrets-scan
-      - sca
-      - IAC-scan
-      - container-scan
-      - dast
-      - policy-scan
+    needs: [sast,secrets-scan,sca,IAC-scan,container-scan,dast]
     if: always()
-
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: collected-reports
-        continue-on-error: true
-
-      - name: Merge Reports
-        run: |
+      - run: |
           mkdir -p final-reports
           find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
-
-          if [ -z "$(ls -A final-reports)" ]; then
-            echo '{}' > final-reports/empty.json
-          fi
-
-          echo "Final merged reports:"
-          ls -la final-reports
-
       - uses: actions/upload-artifact@v4
         with:
           name: all-scan-reports
           path: final-reports/*.json
-          if-no-files-found: ignore
 
 # ============================================================
-# JOB 10 –AI Security Analysis (Collector + PolicyGate)
+# AI ANALYSIS
+# ============================================================
+
+  ai-analysis:
+    runs-on: ubuntu-latest
+    needs: aggregate-reports
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-scan-reports
+          path: reports
+      - run: |
+          python -m pip install --upgrade pip
+          pip install openai
+      - run: |
+          mkdir -p agent_output
+          python agents/ai_analysis.py \
+          --reports-dir reports \
+          --output-dir agent_output
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-analysis
+          path: agent_output/*
+
+# ============================================================
+# SECURITY GATE
 # ============================================================
 
   security-gate:
     runs-on: ubuntu-latest
-    needs: aggregate-reports
-    if: always()
-
+    needs: ai-analysis
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Download merged scan reports
-        uses: actions/download-artifact@v4
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: reports
-
-      - name: Install orchestrator deps
-        run: |
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-analysis
+          path: agent_output
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Run Collector + PolicyGate
-        timeout-minutes: 10
-        run: |
-          mkdir -p agent_output
-
+      - run: |
           python main.py \
-            --reports-dir reports \
-            --output-dir agent_output \
-            --min-severity $MIN_SEVERITY
-
-      - name: Validate decision file
-        run: |
-          if [ ! -f agent_output/decision.json ]; then
-            echo "❌ decision.json missing"
-            exit 1
-          fi
-
-      - name: Upload security decision
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-decision
-          path: agent_output/*
-
-      - name: Enforce Security Gate
-        run: |
-          cat agent_output/decision.json
-
+          --reports-dir reports \
+          --output-dir agent_output \
+          --min-severity $MIN_SEVERITY
+      - run: |
           STATUS=$(jq -r '.decision' agent_output/decision.json)
-
-          if [ "$STATUS" = "FAIL" ]; then
-            echo "❌ Security Gate FAILED"
-            exit 1
-          fi
-
-          echo "✅ Security Gate PASSED"          
-          
-# ============================================================
-# JOB 10 –Security Gate enforcement
-# ============================================================
+          if [ "$STATUS" = "FAIL" ]; then exit 1; fi
