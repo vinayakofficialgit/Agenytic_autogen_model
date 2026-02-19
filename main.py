@@ -158,21 +158,57 @@ def main():
     # =======================
     decision = PolicyGate(cfg, output_dir).decide(grouped) or {}
 
-
     # normalize decision schema
     if "decision" not in decision:
         decision["decision"] = "FAIL" if decision.get("status") == "fail" else "PASS"
 
-    print("\n========== SECURITY GATE ==========")
-    print("Total findings:", decision["stats"]["total"])
+    # print("\n========== SECURITY GATE ==========")
+    # print("Total findings:", decision["stats"]["total"])
     
-    print("\nBy Severity:")
-    for s, c in decision["stats"]["by_severity"].items():
-        print(f"{s}: {c}")
+    # print("\nBy Severity:")
+    # for s, c in decision["stats"]["by_severity"].items():
+    #     print(f"{s}: {c}")
     
-    print("\nBy Tool:")
-    for t, c in decision["stats"]["by_tool"].items():
-        print(f"{t}: {c}")
+    # print("\nBy Tool:")
+    # for t, c in decision["stats"]["by_tool"].items():
+    #     print(f"{t}: {c}")
+
+    print("\n========== SECURITY GATE TABLE ==========")
+
+    stats = decision.get("stats", {})
+    by_tool = stats.get("by_tool", {})
+    by_sev = stats.get("by_severity", {})
+    
+    # build matrix
+    matrix = {}
+    
+    for tool, items in grouped.items():
+        for item in items:
+            sev = (item.get("severity") or "unknown").lower()
+            matrix.setdefault(tool, {})
+            matrix[tool][sev] = matrix[tool].get(sev, 0) + 1
+    
+    # header
+    all_sev = ["critical", "high", "medium", "low"]
+    
+    header = ["Tool"] + all_sev + ["Total"]
+    print("{:<18} {:>8} {:>8} {:>8} {:>8} {:>8}".format(*header))
+    
+    print("-" * 70)
+    
+    # rows
+    for tool in matrix:
+        row = [tool]
+        total = 0
+        for s in all_sev:
+            c = matrix[tool].get(s, 0)
+            row.append(c)
+            total += c
+        row.append(total)
+    
+        print("{:<18} {:>8} {:>8} {:>8} {:>8} {:>8}".format(*row))
+    
+    print("=" * 70)
     
     print("Gate Decision:", decision["decision"])
     print("===================================\n")
