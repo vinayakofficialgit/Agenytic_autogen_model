@@ -95,8 +95,47 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
+
 # ============================================================
-# JOB 3 – SCA
+# JOB 3 – SECRETS SCAN
+# ============================================================
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: mkdir -p $REPORTS_DIR
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install Gitleaks
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          curl -L -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+
+      - name: Run Gitleaks
+        run: |
+          gitleaks detect \
+            --source . \
+            --report-format json \
+            --report-path $REPORTS_DIR/gitleaks.json \
+            || echo '{}' > $REPORTS_DIR/gitleaks.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secrets-reports
+          path: reports/*.json
+          if-no-files-found: ignore
+
+# ============================================================
+# JOB 4 – SCA
 # ============================================================
 
   sca:
@@ -129,7 +168,35 @@ jobs:
           if-no-files-found: ignore
 
 # ============================================================
-# JOB 4 – CONTAINER (Reuse JAR)
+# JOB 5 – INFRASCTRUCTURE AS CODE
+# ============================================================          
+
+  IAC-scan:
+    runs-on: ubuntu-latest
+    # needs: build-java
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: mkdir -p $REPORTS_DIR
+
+      - name: Install tfsec
+        run: |
+          curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 \
+            -o tfsec
+          chmod +x tfsec
+          sudo mv tfsec /usr/local/bin/
+
+      - name: Run tfsec
+        run: |
+          set -e
+          tfsec $APP_DIR/terraform --format json \
+            > "$REPORTS_DIR/tfsec.json" || true
+          test -f "$REPORTS_DIR/tfsec.json"
+
+# ============================================================
+# JOB 6 – CONTAINER (Reuse JAR)
 # ============================================================
 
   container-scan:
@@ -168,7 +235,7 @@ jobs:
           if-no-files-found: ignore
 
 # ============================================================
-# JOB 5 – DAST (Reuse JAR)
+# JOB 7 – DAST (Reuse JAR)
 # ============================================================
 
   dast:
@@ -218,3 +285,86 @@ jobs:
           name: dast-reports
           path: reports/*.json
           if-no-files-found: ignore
+
+# ============================================================
+# JOB 8 – POLICY SCAN
+# ============================================================
+
+  policy-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+   
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq 
+      - name: Install Conftest
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/open-policy-agent/conftest/releases/latest | jq -r .tag_name)
+          curl -L -o conftest.tar.gz \
+            https://github.com/open-policy-agent/conftest/releases/download/${VERSION}/conftest_${VERSION#v}_Linux_x86_64.tar.gz
+          tar -xzf conftest.tar.gz
+          sudo mv conftest /usr/local/bin/
+
+      - name: Scan Kubernetes
+        run: |
+          conftest test $APP_DIR/k8s \
+            -p policy \
+            --output json \
+            > $REPORTS_DIR/conftest_k8s.json \
+            || echo '[]' > $REPORTS_DIR/conftest_k8s.json
+
+      - name: Scan Terraform
+        run: |
+          conftest test $APP_DIR/terraform \
+            -p policy \
+            --output json \
+            > $REPORTS_DIR/conftest_tf.json \
+            || echo '[]' > $REPORTS_DIR/conftest_tf.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: policy-reports
+          path: reports/*.json
+
+# ============================================================
+# JOB 9 – AGGREGATE ALL REPORTS (For AI Analysis)
+# ============================================================
+
+  aggregate-reports:
+    runs-on: ubuntu-latest
+    needs:
+      - sast
+      - secrets-scan
+      - sca
+      - IAC-scan
+      - container-scan
+      - dast
+      - policy-scan
+    if: always()
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: collected-reports
+        continue-on-error: true
+
+      - name: Merge Reports
+        run: |
+          mkdir -p final-reports
+          find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
+
+          if [ -z "$(ls -A final-reports)" ]; then
+            echo '{}' > final-reports/empty.json
+          fi
+
+          echo "Final merged reports:"
+          ls -la final-reports
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-scan-reports
+          path: final-reports/*.json
+          if-no-files-found: ignore          
