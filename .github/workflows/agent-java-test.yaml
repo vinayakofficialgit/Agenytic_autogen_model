@@ -260,14 +260,12 @@ jobs:
         run: |
           docker run --rm \
             --network=host \
-            --memory=2g \
             -v $(pwd)/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \            
             -t http://localhost:8080 \
             -m 2 \
-            -J zap.json \
-            -d || true
+            -J zap.json || true
   
       # ⭐ Move report
       - name: Save ZAP report
