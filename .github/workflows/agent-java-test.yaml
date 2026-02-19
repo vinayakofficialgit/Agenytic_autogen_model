@@ -10,7 +10,6 @@ on:
 env:
   JAVA_VERSION: "17"
   PYTHON_VERSION: "3.12"
-  # APP_DIR: "Java-app-main"
   APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
   OUTPUT_DIR: "agent_output"
@@ -18,10 +17,11 @@ env:
   MIN_SEVERITY: "critical"
 
 # ============================================================
-# JOB 1 – BUILD JAVA (BASE ARTIFACT)
+# JOB 1 – BUILD JAVA
 # ============================================================
 
 jobs:
+
   build-java:
     runs-on: ubuntu-latest
     steps:
@@ -35,13 +35,12 @@ jobs:
 
       - name: Build Java
         run: |
-          cd $APP_DIR/app || exit 0
-          mvn -B clean package -DskipTests || true
+          mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
 
       - uses: actions/upload-artifact@v4
         with:
           name: java-build
-          path: ${{ env.APP_DIR }}
+          path: ${{ env.APP_DIR }}/app/target
           if-no-files-found: ignore
 
 # ============================================================
@@ -56,46 +55,169 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: java-build
-          path: ${{ env.APP_DIR }}
-        continue-on-error: true
 
       - run: mkdir -p $REPORTS_DIR
 
-      - name: Run Semgrep
+      - name: Run Semgrep (Java Only)
         run: |
-          pip install semgrep || true
+          pip install semgrep
           semgrep scan \
             --config=p/java \
             --config=p/owasp-top-ten \
-            --include=*/*.java \
             --json \
             --output $REPORTS_DIR/semgrep.json \
-            $APP_DIR || echo '{}' > $REPORTS_DIR/semgrep.json
+            $APP_DIR/app/src/main/java \
+            || echo '{}' > $REPORTS_DIR/semgrep.json
 
-      - name: SpotBugs
+      - name: Run SpotBugs
         run: |
-          mkdir -p $REPORTS_DIR
-      
           mvn com.github.spotbugs:spotbugs-maven-plugin:4.9.8.2:spotbugs \
             -Dspotbugs.outputFormat=json \
             -f $APP_DIR/app/pom.xml || true
-      
+
           if [ -f $APP_DIR/app/target/spotbugsJson.json ]; then
             cp $APP_DIR/app/target/spotbugsJson.json $REPORTS_DIR/spotbugs.json
           else
             echo '{}' > $REPORTS_DIR/spotbugs.json
           fi
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: sast-reports
+          path: reports/*.json
+          if-no-files-found: ignore
+
+# ============================================================
+# JOB 3 – SCA
+# ============================================================
+
+  sca-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+
+      - name: Dependency Check
+        run: |
+          mvn org.owasp:dependency-check-maven:check \
+            -Dformat=JSON \
+            -DoutputDirectory=$REPORTS_DIR \
+            -f $APP_DIR/app/pom.xml || true
+
+      - name: Trivy Filesystem
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          ./bin/trivy fs \
+            --format json \
+            --output $REPORTS_DIR/trivy_fs.json \
+            $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-reports
+          path: reports/*.json
+          if-no-files-found: ignore
+
+# ============================================================
+# JOB 4 – CONTAINER
+# ============================================================
+
+  container-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+
+      - name: Build Docker Image
+        run: |
+          mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+          docker build -t enterprise-app -f $APP_DIR/docker/Dockerfile .
+
+      - name: Trivy Image Scan
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          ./bin/trivy image enterprise-app \
+            --format json \
+            --output $REPORTS_DIR/trivy_image.json \
+            || echo '{}' > $REPORTS_DIR/trivy_image.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-reports
+          path: reports/*.json
+          if-no-files-found: ignore
+
+# ============================================================
+# JOB 5 – INFRA
+# ============================================================
+
+  infra-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+
+      - name: tfsec
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+          tfsec $APP_DIR/terraform \
+            --format json > $REPORTS_DIR/tfsec.json \
+            || echo '{}' > $REPORTS_DIR/tfsec.json
+
+# ============================================================
+# JOB 6 – DAST
+# ============================================================
+
+  dast-scan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Run App
+        run: |
+          mvn spring-boot:run -f $APP_DIR/app/pom.xml &
+          sleep 40
+
+      - name: OWASP ZAP
+        run: |
+          docker run --rm \
+            --network=host \
+            -v $(pwd):/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:8080 \
+            -J zap.json || true
+
+          if [ -f zap.json ]; then
+            mv zap.json $REPORTS_DIR/zap.json
+          else
+            echo '{}' > $REPORTS_DIR/zap.json
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
           path: reports/*.json
           if-no-files-found: ignore
