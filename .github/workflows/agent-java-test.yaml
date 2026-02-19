@@ -1,4 +1,4 @@
-name: DevSecOps Agentic AI Pipeline (Enterprise Java Parallel - Stable)
+name: DevSecOps Agentic AI Pipeline (Enterprise Optimized)
 
 on:
   push:
@@ -12,18 +12,17 @@ env:
   PYTHON_VERSION: "3.12"
   APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
-  OUTPUT_DIR: "agent_output"
-  OLLAMA_MODEL: "qwen2.5-coder:1.5b"
   MIN_SEVERITY: "critical"
 
 # ============================================================
-# JOB 1 – BUILD JAVA
+# JOB 1 – BUILD ONCE (Artifact Producer)
 # ============================================================
 
 jobs:
 
   build-java:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -34,22 +33,19 @@ jobs:
           cache: maven
 
       - name: Build Java
-        run: |
-          mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+        run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
 
       - uses: actions/upload-artifact@v4
         with:
-          name: java-build
-          path: ${{ env.APP_DIR }}/app/target
-          if-no-files-found: ignore
+          name: app-jar
+          path: ${{ env.APP_DIR }}/app/target/enterprise-app-1.0.jar
 
 # ============================================================
-# JOB 2 – SAST
+# JOB 2 – SAST (Build for Bytecode + Static Scan)
 # ============================================================
 
-  sast-scan:
+  sast:
     runs-on: ubuntu-latest
-    needs: build-java
     continue-on-error: true
 
     steps:
@@ -66,7 +62,11 @@ jobs:
 
       - run: mkdir -p $REPORTS_DIR
 
-      - name: Run Semgrep (Java Only)
+      # Build required for SpotBugs bytecode analysis
+      - name: Build for SpotBugs
+        run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+
+      - name: Run Semgrep
         run: |
           pip install semgrep
           semgrep scan \
@@ -99,7 +99,7 @@ jobs:
 # JOB 3 – SCA
 # ============================================================
 
-  sca-scan:
+  sca:
     runs-on: ubuntu-latest
     continue-on-error: true
 
@@ -114,7 +114,7 @@ jobs:
             -DoutputDirectory=$REPORTS_DIR \
             -f $APP_DIR/app/pom.xml || true
 
-      - name: Trivy Filesystem
+      - name: Trivy Filesystem Scan
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
           ./bin/trivy fs \
@@ -129,21 +129,29 @@ jobs:
           if-no-files-found: ignore
 
 # ============================================================
-# JOB 4 – CONTAINER
+# JOB 4 – CONTAINER (Reuse JAR)
 # ============================================================
 
   container-scan:
     runs-on: ubuntu-latest
+    needs: build-java
     continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: ${{ env.APP_DIR }}/app/target
+
       - run: mkdir -p $REPORTS_DIR
 
       - name: Build Docker Image
         run: |
-          mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
-          docker build -t enterprise-app -f $APP_DIR/docker/Dockerfile .
+          docker build \
+            -t enterprise-app \
+            -f $APP_DIR/docker/Dockerfile .
 
       - name: Trivy Image Scan
         run: |
@@ -160,47 +168,30 @@ jobs:
           if-no-files-found: ignore
 
 # ============================================================
-# JOB 5 – INFRA
+# JOB 5 – DAST (Reuse JAR)
 # ============================================================
 
-  infra-scan:
+  dast:
     runs-on: ubuntu-latest
+    needs: build-java
     continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
 
-      - name: tfsec
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
-          tfsec $APP_DIR/terraform \
-            --format json > $REPORTS_DIR/tfsec.json \
-            || echo '{}' > $REPORTS_DIR/tfsec.json
-
-# ============================================================
-# JOB 6 – DAST
-# ============================================================
-
-  dast-scan:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-
-      - uses: actions/setup-java@v4
+      - uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          name: app-jar
+          path: ${{ env.APP_DIR }}/app/target
 
-      - name: Run App
+      - run: mkdir -p $REPORTS_DIR
+
+      - name: Start Application
         run: |
-          mvn spring-boot:run -f $APP_DIR/app/pom.xml &
+          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar &
           sleep 40
 
-      - name: OWASP ZAP
+      - name: OWASP ZAP Baseline
         run: |
           docker run --rm \
             --network=host \
