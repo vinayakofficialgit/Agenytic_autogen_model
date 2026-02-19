@@ -158,6 +158,20 @@ def main():
     # =======================
     decision = PolicyGate(cfg, output_dir).decide(grouped)
 
+    print("\n========== SECURITY GATE ==========")
+    print("Total findings:", decision["stats"]["total"])
+    
+    print("\nBy Severity:")
+    for s, c in decision["stats"]["by_severity"].items():
+        print(f"{s}: {c}")
+    
+    print("\nBy Tool:")
+    for t, c in decision["stats"]["by_tool"].items():
+        print(f"{t}: {c}")
+    
+    print("Gate Decision:", decision["decision"])
+    print("===================================\n")
+
     # normalize decision schema
     if "decision" not in decision:
         decision["decision"] = "FAIL" if decision.get("status") == "fail" else "PASS"

@@ -199,27 +199,37 @@ def gate(stats,findings,cfg):
     return False,"Within policy",[]
 
 class PolicyGate:
-    def __init__(self,cfg,output_dir):
-        self.cfg=cfg or {}
-        self.out_dir=Path(output_dir)
 
-    def decide(self,findings_input):
-        findings=_flatten_findings_input(findings_input)
-        policy_cfg=load_policy_config()
+    def decide(self, grouped):
+        stats = {
+            "total": 0,
+            "by_severity": {},
+            "by_tool": {}
+        }
 
-        stats=summarize(findings,policy_cfg)
-        fail,reason,violations=gate(stats,findings,policy_cfg)
+        min_sev = self.cfg["policy"]["min_severity_to_fail"]
+        min_rank = _sev_rank(min_sev)
 
-        decision=dict(
-            open_pr=bool(fail),
-            status="fail" if fail else "ok",
-            reason=reason,
-            stats=stats,
-            violations=violations[:10]
-        )
+        gate_fail = False
 
-        self.out_dir.mkdir(parents=True,exist_ok=True)
-        (self.out_dir/"decision.json").write_text(json.dumps(decision,indent=2))
+        for tool, items in grouped.items():
+            stats["by_tool"][tool] = len(items)
+            stats["total"] += len(items)
+
+            for item in items:
+                sev = (item.get("severity") or "medium").lower()
+
+                stats["by_severity"][sev] = stats["by_severity"].get(sev, 0) + 1
+
+                if _sev_rank(sev) >= min_rank:
+                    gate_fail = True
+
+        decision = {
+            "status": "fail" if gate_fail else "pass",
+            "decision": "FAIL" if gate_fail else "PASS",
+            "stats": stats
+        }
+
         return decision
 
 if __name__=="__main__":
