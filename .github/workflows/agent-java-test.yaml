@@ -232,10 +232,13 @@ jobs:
       # ⭐ Start Spring app
       - name: Start Application
         run: |
+          mkdir -p config/dummy
+          echo "server.port=8080" > config/dummy/application.properties
+      
           java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
-            --spring.config.import=optional: \
+            --spring.config.import=optional:file:./config/*/ \
+            --spring.profiles.active=pipeline \
             > app.log 2>&1 &
-          echo "App PID=$!"
   
       # ⭐ Wait for app (with debug logs)
       - name: Wait for app
@@ -245,12 +248,12 @@ jobs:
               echo "App started"
               exit 0
             fi
-            echo "Waiting..."
             sleep 5
           done
-          echo "App failed to start"
+          echo "App failed"
           cat app.log
           exit 1
+
   
       # ⭐ Run ZAP (CRITICAL FIX: host network)
       - name: Run ZAP Baseline
@@ -368,12 +371,12 @@ jobs:
       - name: Run Security Gate
         run: |
           mkdir -p agent_output
-  
-          export REPORTS_DIR=reports
-          export OUTPUT_DIR=agent_output
-          export MIN_SEVERITY=${MIN_SEVERITY}
-  
-          python main.py --mode real --verbose
+      
+          python main.py \
+            --reports-dir reports \
+            --output-dir agent_output \
+            --min-severity $MIN_SEVERITY
+
   
       - name: Enforce decision
         run: |

@@ -52,8 +52,10 @@ def suppress():
     else:
         old = sys.stdout
         sys.stdout = StringIO()
-        yield
-        sys.stdout = old
+        try:
+            yield
+        finally:
+            sys.stdout = old
 
 
 def _load_cfg():
@@ -87,34 +89,46 @@ def main():
     output_dir = Path(args.output_dir or cfg["inputs"]["output_dir"])
     min_sev = (args.min_severity or cfg["policy"]["min_severity_to_fail"]).lower()
 
-    reports_dir.mkdir(exist_ok=True)
-    output_dir.mkdir(exist_ok=True)
+    cfg["policy"]["min_severity_to_fail"] = min_sev
+
+    # mkdir fix
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # reports_dir.mkdir(exist_ok=True)
+    # output_dir.mkdir(exist_ok=True)
 
     # =======================
     # 1️⃣ Collector
     # =======================
-    with suppress():
-        collector = CollectorAgent(cfg, reports_dir, output_dir)
-        grouped = collector.load_all()
-
+    try:
+        with suppress():
+            collector = CollectorAgent(cfg, reports_dir, output_dir)
+            grouped = collector.load_all()
+    except Exception as e:
+        print("Collector error:", e)
+        grouped = {}
+    
+    grouped = grouped or {}
+    
     # remove meta
     grouped = {k: v for k, v in grouped.items() if not k.startswith("_")}
-
+    
     # flatten safety
     for tool in list(grouped.keys()):
-        grouped[tool] = [x for x in grouped[tool] if isinstance(x, dict)]
-
+        if isinstance(grouped[tool], list):
+            grouped[tool] = [x for x in grouped[tool] if isinstance(x, dict)]
+        else:
+            grouped[tool] = []
+    
+    # debug
+    print("Collected tools:", list(grouped.keys()))
+    for t, v in grouped.items():
+        print(f"{t}: {len(v)} findings")
+    
+    
     # =======================
-    # 2️⃣ Policy Gate
-    # =======================
-    decision = PolicyGate(cfg, output_dir).decide(grouped)
-
-    # normalize decision schema
-    if "decision" not in decision:
-        decision["decision"] = "FAIL" if decision.get("status") == "fail" else "PASS"
-
-    # =======================
-    # 3️⃣ AI analysis
+    # 2️⃣ AI analysis
     # =======================
     if not args.skip_llm:
         try:
@@ -122,6 +136,32 @@ def main():
                 run_autogen_layer(grouped, cfg, output_dir)
         except Exception:
             pass
+
+    # ⭐ Merge AI enrichment
+    ai_file = output_dir / "llm_report.json"
+    if ai_file.exists():
+        try:
+            ai_data = json.loads(ai_file.read_text())
+            for tool, items in ai_data.items():
+                if tool.startswith("_"):
+                    continue
+                if tool in grouped and isinstance(items, list):
+                    for i, ai_item in enumerate(items):
+                        if i < len(grouped[tool]) and isinstance(ai_item, dict):
+                            grouped[tool][i].update(ai_item)
+        except Exception:
+            pass
+
+
+    # =======================
+    # 3️⃣ Policy Gate
+    # =======================
+    decision = PolicyGate(cfg, output_dir).decide(grouped)
+
+    # normalize decision schema
+    if "decision" not in decision:
+        decision["decision"] = "FAIL" if decision.get("status") == "fail" else "PASS"
+
 
     # =======================
     # 4️⃣ Auto fix
@@ -136,7 +176,12 @@ def main():
     # =======================
     # 5️⃣ Reporting
     # =======================
-    Reporter(cfg, output_dir).emit(grouped, decision)
+    # Reporter(cfg, output_dir).emit(grouped, decision)
+
+    try:
+        Reporter(cfg, output_dir).emit(grouped, decision)
+    except Exception as e:
+        print("Reporter error:", e)
 
     # =======================
     # 6️⃣ Write decision.json
