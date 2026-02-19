@@ -229,13 +229,15 @@ jobs:
   
       - run: mkdir -p $REPORTS_DIR zap-output
   
-      # ⭐ Start app
+      # ⭐ Start Spring app
       - name: Start Application
         run: |
-          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar > app.log 2>&1 &
+          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
+            --spring.config.import=optional: \
+            > app.log 2>&1 &
           echo "App PID=$!"
   
-      # ⭐ Wait for health (reliable)
+      # ⭐ Wait for app (with debug logs)
       - name: Wait for app
         run: |
           for i in {1..30}; do
@@ -250,15 +252,19 @@ jobs:
           cat app.log
           exit 1
   
-      # ⭐ Run ZAP correctly with mounted volume
+      # ⭐ Run ZAP (CRITICAL FIX: host network)
       - name: Run ZAP Baseline
         run: |
           docker run --rm \
+            --network=host \
+            --memory=2g \
             -v $(pwd)/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://host.docker.internal:8080 \
-            -J zap.json || true
+            zap-baseline.py \            
+            -t http://localhost:8080 \
+            -m 2 \
+            -J zap.json \
+            -d || true
   
       # ⭐ Move report
       - name: Save ZAP report
@@ -274,6 +280,7 @@ jobs:
           name: dast-reports
           path: reports/*.json
           if-no-files-found: ignore
+
 
 # ============================================================
 # AGGREGATE
