@@ -71,6 +71,42 @@ def print_banner():
     print("=========================================\n")
 
 
+def deduplicate_findings(grouped):
+    seen = set()
+    deduped = {}
+
+    for tool, items in grouped.items():
+        deduped[tool] = []
+
+        for f in items:
+            if not isinstance(f, dict):
+                continue
+
+            key = (
+                f.get("cve")
+                or f.get("vulnerability_id")
+                or f.get("rule_id")
+                or f.get("check_id")
+                or (
+                    f.get("title"),
+                    f.get("file"),
+                    f.get("line")
+                )
+                or f.get("title")
+            )
+
+            if not key:
+                deduped[tool].append(f)
+                continue
+
+            key = str(key)
+
+            if key not in seen:
+                seen.add(key)
+                deduped[tool].append(f)
+
+    return deduped
+
 def main():
     load_env_from_file()
 
@@ -120,6 +156,13 @@ def main():
             grouped[tool] = [x for x in grouped[tool] if isinstance(x, dict)]
         else:
             grouped[tool] = []
+
+    # ⭐ DEDUPLICATION
+    before = sum(len(v) for v in grouped.values())
+    grouped = deduplicate_findings(grouped)
+    after = sum(len(v) for v in grouped.values())
+
+    print(f"\nDedup applied: {before} → {after}")        
     
     # debug
     print("Collected tools:", list(grouped.keys()))
