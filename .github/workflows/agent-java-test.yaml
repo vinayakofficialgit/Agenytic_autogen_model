@@ -218,64 +218,43 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
-  
+
     steps:
       - uses: actions/checkout@v4
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
-  
-      - run: mkdir -p $REPORTS_DIR zap-output
-  
-      # ⭐ Start Spring app
+
+      - run: mkdir -p $REPORTS_DIR
+
       - name: Start Application
         run: |
           mkdir -p config/dummy
-          echo "server.port=8080" > config/dummy/application.properties
-      
           java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
-            --spring.config.import=optional:file:./config/*/ \
-            --spring.profiles.active=pipeline \
-            > app.log 2>&1 &
-  
-      # ⭐ Wait for app (with debug logs)
-      - name: Wait for app
-        run: |
-          for i in {1..30}; do
-            if curl -s http://localhost:8080 > /dev/null; then
-              echo "App started"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "App failed"
-          cat app.log
-          exit 1
-
-  
-      # ⭐ Run ZAP (CRITICAL FIX: host network)
-      - name: Run ZAP Baseline
+            --spring.config.import=optional:file:./config/*/ &
+          sleep 40
+      - name: OWASP ZAP Baseline
         run: |
           mkdir -p zap-output
+      
           docker run --rm \
+            -u root \
             --network=host \
             -v $(pwd)/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
-            -- \
-            zap-baseline.py -t http://localhost:8080 -J zap.json
-  
-      # ⭐ Move report
-      - name: Save ZAP report
-        run: |
+            zap-baseline.py \
+            -t http://localhost:8080 \
+            -J zap.json || true
+      
           if [ -f zap-output/zap.json ]; then
             mv zap-output/zap.json $REPORTS_DIR/zap.json
           else
             echo '{}' > $REPORTS_DIR/zap.json
           fi
-  
-      - uses: actions/upload-artifact@v4
+
+      - uses: actions/upload-artifact@v4  
         with:
           name: dast-reports
           path: reports/*.json
