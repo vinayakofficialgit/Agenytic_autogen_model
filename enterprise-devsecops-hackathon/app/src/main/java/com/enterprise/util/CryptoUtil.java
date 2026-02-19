@@ -1,3 +1,7 @@
+package com.enterprise.util;
+
+import java.security.MessageDigest;
+
 public class CryptoUtil {
 
     public static String hashPassword(String password) throws Exception {
