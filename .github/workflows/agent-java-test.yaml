@@ -15,7 +15,7 @@ env:
   MIN_SEVERITY: "critical"
 
 # ============================================================
-# JOB 1 – BUILD ONCE (Artifact Producer)
+# JOB 1 – BUILD ONCE (Artifact_Producer)
 # ============================================================
 
 jobs:
@@ -213,7 +213,7 @@ jobs:
             echo '{}' > $REPORTS_DIR/zap.json
           fi
 
-      - uses: actions/upload-artifact@v4  
+      - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
           path: reports/*.json
