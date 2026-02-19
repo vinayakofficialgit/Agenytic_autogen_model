@@ -188,8 +188,10 @@ jobs:
 
       - name: Start Application
         run: |
+          mkdir -p config/dummy
+
           java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
-            --spring.config.location=classpath:/ &
+            --spring.config.import=optional:file:./config/*/ &
           sleep 40
 
       - name: OWASP ZAP Baseline
