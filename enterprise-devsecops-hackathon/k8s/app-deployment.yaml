@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enterprise-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: enterprise-app
+  template:
+    metadata:
+      labels:
+        app: enterprise-app
+    spec:
+      containers:
+        - name: app
+          image: enterprise-app:latest
+          securityContext:
+            privileged: true
+          ports:
+            - containerPort: 8080

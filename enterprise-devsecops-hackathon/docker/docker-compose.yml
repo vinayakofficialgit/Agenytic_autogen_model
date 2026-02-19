@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+
+  mysql:
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: test
+    ports:
+      - "3306:3306"
+
+  memcached:
+    image: memcached:latest
+    ports:
+      - "11211:11211"
+
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      DB_HOST: mysql
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - memcached
+
+  nginx:
+    image: nginx:latest
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - "80:80"
+    depends_on:
+      - app

@@ -10,7 +10,8 @@ on:
 env:
   JAVA_VERSION: "17"
   PYTHON_VERSION: "3.12"
-  APP_DIR: "Java-app-main"
+  # APP_DIR: "Java-app-main"
+  APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
   OUTPUT_DIR: "agent_output"
   OLLAMA_MODEL: "qwen2.5-coder:1.5b"
