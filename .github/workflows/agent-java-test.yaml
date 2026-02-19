@@ -71,12 +71,40 @@ jobs:
             --output $REPORTS_DIR/semgrep.json \
             $APP_DIR/app/src/main/java || echo '{}' > $REPORTS_DIR/semgrep.json
 
-      - run: |
-          mvn com.github.spotbugs:spotbugs-maven-plugin:4.9.8.2:spotbugs \
-            -Dspotbugs.outputFormat=json -f $APP_DIR/app/pom.xml || true
 
-          cp $(ls $APP_DIR/app/target/*spotbugs*.json | head -1) \
-             $REPORTS_DIR/spotbugs.json || echo '{}' > $REPORTS_DIR/spotbugs.json
+      - name: Run SpotBugs
+        run: |
+          mvn -B verify spotbugs:spotbugs
+     
+      - name: Collect SpotBugs report
+        run: |
+          if [ -f "$APP_DIR/app/target/spotbugsXml.xml" ]; then
+            cp "$APP_DIR/app/target/spotbugsXml.xml" reports/spotbugs.xml
+          else
+            echo "<BugCollection/>" > reports/spotbugs.xml
+          fi    
+
+      - name: Convert SpotBugs XML to JSON
+        run: |
+          pip install xmltodict
+          python - << 'EOF'
+          import xmltodict, json
+          import pathlib
+      
+          p = pathlib.Path("reports/spotbugs.xml")
+          if p.exists():
+              data = xmltodict.parse(p.read_text())
+              pathlib.Path("reports/spotbugs.json").write_text(json.dumps(data, indent=2))
+          else:
+              pathlib.Path("reports/spotbugs.json").write_text("{}")
+          EOF          
+
+      # - run: |
+      #     mvn com.github.spotbugs:spotbugs-maven-plugin:4.9.8.2:spotbugs \
+      #       -Dspotbugs.outputFormat=json -f $APP_DIR/app/pom.xml || true
+
+      #     cp $(ls $APP_DIR/app/target/*spotbugs*.json | head -1) \
+      #        $REPORTS_DIR/spotbugs.json || echo '{}' > $REPORTS_DIR/spotbugs.json
 
       - uses: actions/upload-artifact@v4
         with:
