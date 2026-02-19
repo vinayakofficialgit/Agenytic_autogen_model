@@ -79,12 +79,31 @@ jobs:
             --output $REPORTS_DIR/semgrep.json \
             $APP_DIR || echo '{}' > $REPORTS_DIR/semgrep.json
 
+      # - name: SpotBugs
+      #   run: |
+      #     cd $APP_DIR/app || exit 0
+      #     mvn com.github.spotbugs:spotbugs-maven-plugin:spotbugs \
+      #       -Dspotbugs.outputFormat=json || true
+      #     if [ -f target/spotbugsJson.json ]; then
+      #       cp target/spotbugsJson.json ../$REPORTS_DIR/spotbugs.json
+      #     else
+      #       echo '{}' > ../$REPORTS_DIR/spotbugs.json
+      #     fi
+
       - name: SpotBugs
         run: |
+          mkdir -p $REPORTS_DIR
+      
           cd $APP_DIR/app || exit 0
-          mvn com.github.spotbugs:spotbugs-maven-plugin:spotbugs \
+      
+          mvn com.github.spotbugs:spotbugs-maven-plugin:4.9.8.2:spotbugs \
             -Dspotbugs.outputFormat=json || true
-          if [ -f target/spotbugsJson.json ]; then
+      
+          if [ -f target/spotbugsXml.xml ]; then
+            # Convert XML to JSON fallback if needed
+            cp target/spotbugsXml.xml ../$REPORTS_DIR/spotbugs.xml
+            echo '{}' > ../$REPORTS_DIR/spotbugs.json
+          elif [ -f target/spotbugsJson.json ]; then
             cp target/spotbugsJson.json ../$REPORTS_DIR/spotbugs.json
           else
             echo '{}' > ../$REPORTS_DIR/spotbugs.json
