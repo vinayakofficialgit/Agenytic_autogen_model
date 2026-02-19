@@ -41,6 +41,11 @@ public class UserController {
         return "<h1>Welcome " + name + "</h1>";
     }
 
+    // @GetMapping("")
+    // public String home() {
+    //     return "Enterprise DevSecOps App Running";
+    // }
+
     @PostMapping("/deserialize")
     public String deserialize(@RequestBody byte[] data) throws Exception {
         ObjectInputStream ois = new ObjectInputStream(
