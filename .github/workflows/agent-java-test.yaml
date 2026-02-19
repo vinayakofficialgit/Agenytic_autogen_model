@@ -75,6 +75,7 @@ jobs:
           semgrep scan \
             --config=p/java \
             --config=p/owasp-top-ten \
+            --include=*/*.java \
             --json \
             --output $REPORTS_DIR/semgrep.json \
             $APP_DIR || echo '{}' > $REPORTS_DIR/semgrep.json
