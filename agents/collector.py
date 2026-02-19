@@ -58,6 +58,8 @@ try:
         parse_gitleaks,
         parse_conftest,
         parse_zap,
+        parse_dependency_check,
+        parse_spotbugs
     )
 except Exception:
     try:
@@ -72,6 +74,8 @@ except Exception:
             parse_gitleaks,
             parse_conftest,
             parse_zap,
+            parse_dependency_check,
+            parse_spotbugs
         )
     except Exception as _e:
         # Create stub parsers that return empty lists
@@ -85,6 +89,8 @@ except Exception:
         def parse_gitleaks(path): return []
         def parse_conftest(path): return []
         def parse_zap(path): return []
+        def parse_dependency_check(path): return []
+        def parse_spotbugs(path): return []
 
 
 def _llm_ask(name: str, system: str, user: str, temperature: float = 0.2) -> Optional[str]:
@@ -257,7 +263,7 @@ class CollectorAgent:
 
     def _norm_trivy_fs_item(self, f: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Normalize trivy-fs/config finding for LLM:
+        Normalize trivy_fs/config finding for LLM:
         Expected keys: file, id, severity, summary, snippet
         """
         file = self._first_nonempty(
@@ -303,7 +309,7 @@ class CollectorAgent:
         }
 
     def _norm_trivy_image_item(self, f: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize trivy-image finding."""
+        """Normalize trivy_image finding."""
         return {
             "package": self._first_nonempty(f.get("package"), f.get("PkgName"), default=""),
             "version": self._first_nonempty(f.get("version"), f.get("InstalledVersion"), default=""),
@@ -343,16 +349,16 @@ class CollectorAgent:
         findings += semgrep_items
 
         # Trivy FS
-        trivy_fs_items = self._safe_parse(parse_trivy_fs, self.reports / "trivy.json", "trivy-fs")
+        trivy_fs_items = self._safe_parse(parse_trivy_fs, self.reports / "trivy_fs.json", "trivy_fs")
         for it in trivy_fs_items:
-            it.setdefault("tool", "trivy-fs")
+            it.setdefault("tool", "trivy_fs")
             it.setdefault("category", "infra")
         findings += trivy_fs_items
 
         # Trivy Image
-        trivy_image_items = self._safe_parse(parse_trivy_image, self.reports / "trivy-image.json", "trivy-image")
+        trivy_image_items = self._safe_parse(parse_trivy_image, self.reports / "trivy_image.json", "trivy_image")
         for it in trivy_image_items:
-            it.setdefault("tool", "trivy-image")
+            it.setdefault("tool", "trivy_image")
             it.setdefault("category", "image")
         findings += trivy_image_items
 
@@ -362,6 +368,20 @@ class CollectorAgent:
             it.setdefault("tool", "tfsec")
             it.setdefault("category", "infra")
         findings += tfsec_items
+
+        # Dependency Checks
+        dep_items = self._safe_parse(parse_dependency_check, self.reports / "dependency-check.json", "dependency-check")
+        for it in dep_items:
+            it.setdefault("tool", "dependency-check")
+            it.setdefault("category", "sca")
+        findings += dep_items
+
+        # Spotbugs Parser
+        spotbugs_items = self._safe_parse(parse_spotbugs, self.reports / "spotbugs.json", "spotbugs")
+        for it in spotbugs_items:
+            it.setdefault("tool", "spotbugs")
+            it.setdefault("category", "code")
+        findings += spotbugs_items
 
         # Gitleaks
         gitleaks_items = self._safe_parse(parse_gitleaks, self.reports / "gitleaks.json", "gitleaks")
@@ -373,8 +393,8 @@ class CollectorAgent:
         # Conftest family
         conftest_files = [
             ("conftest-dockerfile.json", "dockerfile"),
-            ("conftest-k8s.json", "kubernetes"),
-            ("conftest-terraform.json", "terraform"),
+            ("conftest_k8s.json", "kubernetes"),
+            ("conftest_tf.json", "terraform"),
             ("conftest-remote.json", "remote"),
         ]
         for name, subtype in conftest_files:
@@ -432,6 +452,8 @@ class CollectorAgent:
             "gitleaks": [],
             "conftest": [],
             "zap": [],
+            "dependency_check": [],
+            "spotbugs": []
         }
 
         for f in flat:
@@ -443,9 +465,9 @@ class CollectorAgent:
 
             if tool == "semgrep":
                 grouped["semgrep"].append(self._norm_semgrep_item(f))
-            elif tool in ("trivy-fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
+            elif tool in ("trivy_fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
                 grouped["trivy_fs"].append(self._norm_trivy_fs_item(f))
-            elif tool in ("trivy-image", "trivy_image"):
+            elif tool in ("trivy_image", "trivy-image"):
                 grouped["trivy_image"].append(self._norm_trivy_image_item(f))
             elif tool == "tfsec":
                 grouped["tfsec"].append(f)
@@ -455,9 +477,14 @@ class CollectorAgent:
                 grouped["conftest"].append(f)
             elif tool == "zap":
                 grouped["zap"].append(f)
+            elif tool in ("dependency-check","dependency_check"):
+                grouped["dependency_check"].append(f)
+            elif tool == "spotbugs":
+                grouped["spotbugs"].append(f)
             else:
                 # Put unknown tool outputs in 'conftest' bucket to avoid losing them
                 grouped["conftest"].append(f)
+                # grouped["unknown"].append
 
         return grouped
 
