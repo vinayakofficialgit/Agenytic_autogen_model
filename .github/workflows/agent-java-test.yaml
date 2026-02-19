@@ -197,23 +197,23 @@ jobs:
       - name: OWASP ZAP Baseline
         run: |
           mkdir -p zap-output
-          chmod -R 777 zap-output
-
+      
           docker run --rm \
+            -u root \
             --network=host \
-            -v $(pwd):/zap/wrk:rw \
+            -v $(pwd)/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://localhost:8080 \
             -J zap.json || true
-
-          if [ -f zap.json ]; then
-            mv zap.json $REPORTS_DIR/zap.json
+      
+          if [ -f zap-output/zap.json ]; then
+            mv zap-output/zap.json $REPORTS_DIR/zap.json
           else
             echo '{}' > $REPORTS_DIR/zap.json
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4  
         with:
           name: dast-reports
           path: reports/*.json
