@@ -160,22 +160,55 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
+  
     steps:
       - uses: actions/checkout@v4
+  
+      # Download built jar
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
+  
+      # Debug jar presence
+      - name: Verify jar
+        run: |
+          echo "Listing target folder:"
+          ls -la $APP_DIR/app/target
+  
+          if [ ! -f "$APP_DIR/app/target/enterprise-app-1.0.jar" ]; then
+            echo "❌ JAR missing"
+            exit 1
+          fi
+  
       - run: mkdir -p $REPORTS_DIR
-      - run: docker build -t enterprise-app -f $APP_DIR/docker/Dockerfile $APP_DIR
-      - run: |
+  
+      # ⭐ FIXED docker build context (repo root)
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t enterprise-app \
+            -f $APP_DIR/docker/Dockerfile \
+            .
+  
+      # Install trivy
+      - name: Install Trivy
+        run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          ./bin/trivy image enterprise-app --format json \
-          --output $REPORTS_DIR/trivy_image.json || echo '{}' > $REPORTS_DIR/trivy_image.json
+  
+      # Scan image
+      - name: Trivy Image Scan
+        run: |
+          ./bin/trivy image enterprise-app \
+            --format json \
+            --output $REPORTS_DIR/trivy_image.json \
+            || echo '{}' > $REPORTS_DIR/trivy_image.json
+  
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
           path: reports/*.json
+          if-no-files-found: ignore
 
 # ============================================================
 # DAST
@@ -185,25 +218,62 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
+  
     steps:
       - uses: actions/checkout@v4
+  
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
-      - run: mkdir -p $REPORTS_DIR
-      - run: |
-          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar &
-          sleep 40
-      - run: |
-          docker run --rm -u root --network=host \
-          ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
-          -t http://localhost:8080 -J zap.json || true
-          mv zap.json $REPORTS_DIR/zap.json || echo '{}' > $REPORTS_DIR/zap.json
+  
+      - run: mkdir -p $REPORTS_DIR zap-output
+  
+      # ⭐ Start app
+      - name: Start Application
+        run: |
+          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar > app.log 2>&1 &
+          echo "App PID=$!"
+  
+      # ⭐ Wait for health (reliable)
+      - name: Wait for app
+        run: |
+          for i in {1..30}; do
+            if curl -s http://localhost:8080 > /dev/null; then
+              echo "App started"
+              exit 0
+            fi
+            echo "Waiting..."
+            sleep 5
+          done
+          echo "App failed to start"
+          cat app.log
+          exit 1
+  
+      # ⭐ Run ZAP correctly with mounted volume
+      - name: Run ZAP Baseline
+        run: |
+          docker run --rm \
+            -v $(pwd)/zap-output:/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://host.docker.internal:8080 \
+            -J zap.json || true
+  
+      # ⭐ Move report
+      - name: Save ZAP report
+        run: |
+          if [ -f zap-output/zap.json ]; then
+            mv zap-output/zap.json $REPORTS_DIR/zap.json
+          else
+            echo '{}' > $REPORTS_DIR/zap.json
+          fi
+  
       - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
           path: reports/*.json
+          if-no-files-found: ignore
 
 # ============================================================
 # AGGREGATE
@@ -263,28 +333,53 @@ jobs:
   security-gate:
     runs-on: ubuntu-latest
     needs: ai-analysis
+  
     steps:
       - uses: actions/checkout@v4
+  
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+  
       - run: sudo apt-get update && sudo apt-get install -y jq
+  
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: reports
+  
       - uses: actions/download-artifact@v4
         with:
           name: ai-analysis
           path: agent_output
-      - run: |
+  
+      - name: Install deps
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - run: |
-          python main.py \
-          --reports-dir reports \
-          --output-dir agent_output \
-          --min-severity $MIN_SEVERITY
-      - run: |
+  
+      - name: Run Security Gate
+        run: |
+          mkdir -p agent_output
+  
+          export REPORTS_DIR=reports
+          export OUTPUT_DIR=agent_output
+          export MIN_SEVERITY=${MIN_SEVERITY}
+  
+          python main.py --mode real --verbose
+  
+      - name: Enforce decision
+        run: |
+          if [ ! -f agent_output/decision.json ]; then
+            echo "❌ decision.json missing"
+            exit 1
+          fi
+  
           STATUS=$(jq -r '.decision' agent_output/decision.json)
-          if [ "$STATUS" = "FAIL" ]; then exit 1; fi
+  
+          if [ "$STATUS" = "FAIL" ]; then
+            echo "❌ Security Gate FAILED"
+            exit 1
+          fi
+  
+          echo "✅ Security Gate PASSED"
