@@ -199,36 +199,51 @@ def gate(stats,findings,cfg):
     return False,"Within policy",[]
 
 class PolicyGate:
+    def __init__(self, cfg=None, output_dir=None):
+        self.cfg = cfg or {}
+        self.output_dir = output_dir
 
     def decide(self, grouped):
-        stats = {
-            "total": 0,
-            "by_severity": {},
-            "by_tool": {}
-        }
+        min_sev = (
+            self.cfg.get("policy", {})
+            .get("min_severity_to_fail", "critical")
+            .lower()
+        )
 
-        min_sev = self.cfg["policy"]["min_severity_to_fail"]
-        min_rank = _sev_rank(min_sev)
+        threshold = _sev_rank(min_sev)
 
-        gate_fail = False
+        violations = []
+        stats = {"total": 0, "by_severity": {}, "by_tool": {}}
 
         for tool, items in grouped.items():
             stats["by_tool"][tool] = len(items)
-            stats["total"] += len(items)
-
             for item in items:
                 sev = (item.get("severity") or "medium").lower()
-
                 stats["by_severity"][sev] = stats["by_severity"].get(sev, 0) + 1
+                stats["total"] += 1
 
-                if _sev_rank(sev) >= min_rank:
-                    gate_fail = True
+                if _sev_rank(sev) >= threshold:
+                    violations.append(item)
+
+        status = "fail" if violations else "ok"
 
         decision = {
-            "status": "fail" if gate_fail else "pass",
-            "decision": "FAIL" if gate_fail else "PASS",
-            "stats": stats
+            "status": status,
+            "violations": violations[:20],
+            "stats": stats,
         }
+
+        # write decision.json early (important for debug)
+        if self.output_dir:
+            try:
+                import json
+                from pathlib import Path
+                Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+                (Path(self.output_dir) / "decision.json").write_text(
+                    json.dumps(decision, indent=2)
+                )
+            except Exception:
+                pass
 
         return decision
 

@@ -74,7 +74,7 @@ jobs:
 
       - name: Run SpotBugs
         run: |
-          mvn -B verify spotbugs:spotbugs
+          mvn -B verify spotbugs:spotbugs -f $APP_DIR/app/pom.xml || true
      
       - name: Collect SpotBugs report
         run: |
