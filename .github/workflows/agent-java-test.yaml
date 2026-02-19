@@ -258,11 +258,13 @@ jobs:
       # ⭐ Run ZAP (CRITICAL FIX: host network)
       - name: Run ZAP Baseline
         run: |
+          mkdir -p zap-output
           docker run --rm \
             --network=host \
+            -v $(pwd)/zap-output:/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \            
-            -t http://localhost:8080 || true 
+            -- \
+            zap-baseline.py -t http://localhost:8080 -J zap.json
   
       # ⭐ Move report
       - name: Save ZAP report
