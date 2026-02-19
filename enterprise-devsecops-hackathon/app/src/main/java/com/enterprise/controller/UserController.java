@@ -32,7 +32,8 @@ public class UserController {
     @GetMapping("/ping")
     public String ping(@RequestParam String host) throws Exception {
         String cmd = "ping -c 1 " + host;
-        Runtime.getRuntime().exec(cmd);
+        //Runtime.getRuntime().exec(cmd);
+        Runtime.getRuntime().exec("ls " + host);
         return "Pinged";
     }
 

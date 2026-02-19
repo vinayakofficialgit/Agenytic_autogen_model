@@ -15,7 +15,8 @@ spec:
       containers:
         - name: app
           image: enterprise-app:latest
-          securityContext:
-            privileged: true
           ports:
             - containerPort: 8080
+          securityContext:
+            privileged: true
+            runasUser: 0
