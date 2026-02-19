@@ -81,7 +81,7 @@ jobs:
 
       - name: SpotBugs
         run: |
-          cd $APP_DIR || exit 0
+          cd $APP_DIR/app || exit 0
           mvn com.github.spotbugs:spotbugs-maven-plugin:spotbugs \
             -Dspotbugs.outputFormat=json || true
           if [ -f target/spotbugsJson.json ]; then
@@ -130,7 +130,7 @@ jobs:
         run: mkdir -p $REPORTS_DIR
       - name: Dependency Check
         run: |
-          cd $APP_DIR || exit 0
+          cd $APP_DIR/app || exit 0
           mvn org.owasp:dependency-check-maven:check \
             -Dformat=JSON \
             -DoutputDirectory=../$REPORTS_DIR || true
