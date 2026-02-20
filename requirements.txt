@@ -2,7 +2,8 @@ pyyaml
 autogen-agentchat
 rich
 requests
-
+openai>=1.0.0
+xmltodict
 # pyyaml
 # autogen-agentchat
 # # autogen-ext[ollama]

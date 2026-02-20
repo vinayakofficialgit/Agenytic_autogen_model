@@ -1,9 +1,4 @@
     
-    
-    
-    
-    
-    
  # collector.py
 """
 Enhanced CollectorAgent for DevSecOps Agentic AI Pipeline
