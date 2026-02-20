@@ -163,40 +163,179 @@ def summarize(findings,cfg):
         weighted_score=score
     )
 
-def gate(stats,findings,cfg):
-    violations=[]
-    min_rank=_sev_rank(cfg.min_severity)
-    allow=set(cfg.allow_tools)
-    deny=set(cfg.deny_tools)
+# def gate(stats,findings,cfg):
+#     violations=[]
+#     min_rank=_sev_rank(cfg.min_severity)
+#     allow=set(cfg.allow_tools)
+#     deny=set(cfg.deny_tools)
+
+#     for f in findings:
+#         tool=f.get("tool")
+#         sev_rank=_sev_rank(f.get("severity"))
+
+#         if tool in allow and tool not in deny: continue
+
+#         if sev_rank>=min_rank:
+#             violations.append({
+#                 "tool":tool,
+#                 "severity":f.get("severity"),
+#                 "category":f.get("category"),
+#                 "location":f.get("location"),
+#                 "id":f.get("id"),
+#                 "message":f.get("message")
+#             })
+
+#     if violations:
+#         return True,f"{violations[0]['severity']} violation detected",violations
+
+#     if cfg.max_total and stats["total"]>cfg.max_total:
+#         return True,"Total findings exceed cap",[]
+
+#     if cfg.max_per_category:
+#         for c,cap in cfg.max_per_category.items():
+#             if stats["by_category"].get(c,0)>cap:
+#                 return True,f"{c} cap exceeded",[]
+
+#     return False,"Within policy",[]
+
+def _ai_risk_score(f):
+    """
+    Enterprise AI risk scoring.
+    Uses enrichment fields when available.
+    """
+    sev = _sev_rank(f.get("severity"))
+
+    exploit = 2 if f.get("exploitability") == "high" else 1
+    reach = 2 if f.get("reachability") == "public" else 1
+    biz = 2 if f.get("business_impact") == "high" else 1
+
+    # chain detection
+    chain = 2 if f.get("chain") else 1
+
+    return sev * exploit * reach * biz * chain
+
+
+# def gate(stats, findings, cfg):
+#     violations = []
+#     allow = set(cfg.allow_tools)
+#     deny = set(cfg.deny_tools)
+
+#     for f in findings:
+#         tool = f.get("tool")
+
+#         if tool in allow and tool not in deny:
+#             continue
+
+#         # ⭐ noise suppression
+#         if f.get("noise") is True:
+#             continue
+
+#         # ⭐ AI risk score
+#         risk = _ai_risk_score(f)
+
+#         # ⭐ severity fallback threshold
+#         sev_rank = _sev_rank(f.get("severity"))
+#         min_rank = _sev_rank(cfg.min_severity)
+
+#         # ⭐ FAIL conditions
+#         if risk >= 12 or sev_rank >= min_rank:
+#             violations.append({
+#                 "tool": tool,
+#                 "severity": f.get("severity"),
+#                 "risk": risk,
+#                 "category": f.get("category"),
+#                 "location": f.get("location"),
+#                 "id": f.get("id"),
+#                 "message": f.get("message")
+#             })
+
+#     # ⭐ exploit chain detection
+#     chain_detected = any(f.get("chain") for f in findings)
+#     if chain_detected:
+#         return True, "Exploit chain detected", violations
+
+#     if violations:
+#         return True, f"{violations[0]['severity']} violation detected", violations
+
+#     if cfg.max_total and stats["total"] > cfg.max_total:
+#         return True, "Total findings exceed cap", []
+
+#     if cfg.max_per_category:
+#         for c, cap in cfg.max_per_category.items():
+#             if stats["by_category"].get(c, 0) > cap:
+#                 return True, f"{c} cap exceeded", []
+
+#     return False, "Within policy", []
+
+def _ai_risk_score(f):
+    """
+    Enterprise AI risk scoring.
+    Uses enrichment fields when available.
+    """
+    sev = _sev_rank(f.get("severity"))
+
+    exploit = 2 if f.get("exploitability") == "high" else 1
+    reach = 2 if f.get("reachability") == "public" else 1
+    biz = 2 if f.get("business_impact") == "high" else 1
+
+    # chain detection
+    chain = 2 if f.get("chain") else 1
+
+    return sev * exploit * reach * biz * chain
+
+
+def gate(stats, findings, cfg):
+    violations = []
+    allow = set(cfg.allow_tools)
+    deny = set(cfg.deny_tools)
 
     for f in findings:
-        tool=f.get("tool")
-        sev_rank=_sev_rank(f.get("severity"))
+        tool = f.get("tool")
 
-        if tool in allow and tool not in deny: continue
+        if tool in allow and tool not in deny:
+            continue
 
-        if sev_rank>=min_rank:
+        # ⭐ noise suppression
+        if f.get("noise") is True:
+            continue
+
+        # ⭐ AI risk score
+        risk = _ai_risk_score(f)
+
+        # ⭐ severity fallback threshold
+        sev_rank = _sev_rank(f.get("severity"))
+        min_rank = _sev_rank(cfg.min_severity)
+
+        # ⭐ FAIL conditions
+        if risk >= 12 or sev_rank >= min_rank:
             violations.append({
-                "tool":tool,
-                "severity":f.get("severity"),
-                "category":f.get("category"),
-                "location":f.get("location"),
-                "id":f.get("id"),
-                "message":f.get("message")
+                "tool": tool,
+                "severity": f.get("severity"),
+                "risk": risk,
+                "category": f.get("category"),
+                "location": f.get("location"),
+                "id": f.get("id"),
+                "message": f.get("message")
             })
 
-    if violations:
-        return True,f"{violations[0]['severity']} violation detected",violations
+    # ⭐ exploit chain detection
+    chain_detected = any(f.get("chain") for f in findings)
+    if chain_detected:
+        return True, "Exploit chain detected", violations
 
-    if cfg.max_total and stats["total"]>cfg.max_total:
-        return True,"Total findings exceed cap",[]
+    if violations:
+        return True, f"{violations[0]['severity']} violation detected", violations
+
+    if cfg.max_total and stats["total"] > cfg.max_total:
+        return True, "Total findings exceed cap", []
 
     if cfg.max_per_category:
-        for c,cap in cfg.max_per_category.items():
-            if stats["by_category"].get(c,0)>cap:
-                return True,f"{c} cap exceeded",[]
+        for c, cap in cfg.max_per_category.items():
+            if stats["by_category"].get(c, 0) > cap:
+                return True, f"{c} cap exceeded", []
 
-    return False,"Within policy",[]
+    return False, "Within policy", []
+
 
 class PolicyGate:
     def __init__(self, cfg=None, output_dir=None):
@@ -204,47 +343,56 @@ class PolicyGate:
         self.output_dir = output_dir
 
     def decide(self, grouped):
-        min_sev = (
-            self.cfg.get("policy", {})
-            .get("min_severity_to_fail", "critical")
-            .lower()
-        )
-
-        threshold = _sev_rank(min_sev)
-
-        violations = []
-        stats = {"total": 0, "by_severity": {}, "by_tool": {}}
-
-        for tool, items in grouped.items():
-            stats["by_tool"][tool] = len(items)
-            for item in items:
-                sev = (item.get("severity") or "medium").lower()
-                stats["by_severity"][sev] = stats["by_severity"].get(sev, 0) + 1
-                stats["total"] += 1
-
-                if _sev_rank(sev) >= threshold:
-                    violations.append(item)
-
-        status = "fail" if violations else "ok"
-
-        decision = {
-            "status": status,
-            "violations": violations[:20],
-            "stats": stats,
-        }
-
-        # write decision.json early (important for debug)
+        # ---------- load AI enrichment if exists ----------
+        ai_path = None
         if self.output_dir:
+            from pathlib import Path
+            ai_path = Path(self.output_dir) / "llm_report.json"
+    
+        ai_data = {}
+        if ai_path and ai_path.exists():
             try:
-                import json
-                from pathlib import Path
-                Path(self.output_dir).mkdir(parents=True, exist_ok=True)
-                (Path(self.output_dir) / "decision.json").write_text(
-                    json.dumps(decision, indent=2)
-                )
+                ai_data = json.loads(ai_path.read_text())
             except Exception:
-                pass
-
+                ai_data = {}
+    
+        # ---------- flatten grouped findings ----------
+        flat = _flatten_findings_input(grouped)
+    
+        # ---------- enrich with AI risk ----------
+        enriched = []
+        ai_enriched = ai_data.get("enriched_findings", [])
+    
+        for f in flat:
+            match = next(
+                (x for x in ai_enriched if x.get("id") == f.get("id")),
+                None,
+            )
+            if match:
+                f.update(match)
+            enriched.append(f)
+    
+        # ---------- policy config ----------
+        policy_cfg = load_policy_config()
+    
+        stats = summarize(enriched, policy_cfg)
+    
+        violated, reason, violations = gate(stats, enriched, policy_cfg)
+    
+        decision = {
+            "decision": "FAIL" if violated else "PASS",
+            "reason": reason,
+            "stats": stats,
+            "violations": violations[:20],
+        }
+    
+        # ---------- write decision ----------
+        if self.output_dir:
+            Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+            (Path(self.output_dir) / "decision.json").write_text(
+                json.dumps(decision, indent=2)
+            )
+    
         return decision
 
 if __name__=="__main__":
