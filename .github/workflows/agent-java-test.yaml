@@ -19,7 +19,7 @@ env:
   PYTHON_VERSION: "3.12"
   APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
-  MIN_SEVERITY: "critical"
+  MIN_SEVERITY: "high"
   OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
   LLM_ENABLED: "true"
   LLM_EXPLAIN: "0"
