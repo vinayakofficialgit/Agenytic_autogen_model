@@ -9,9 +9,10 @@ concurrency:
   group: devsecops-${{ github.ref }}
   cancel-in-progress: true
 
-# permissions:
-#   contents: write
-#   pull-requests: write  
+# 🔧 Recommended for AutoFix + PR job
+permissions:
+  contents: write
+  pull-requests: write
 
 env:
   JAVA_VERSION: "17"
@@ -24,14 +25,11 @@ env:
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"
 
-
-
 jobs:
 
-# ============================================================
-# BUILD
-# ============================================================
-
+  # ============================================================
+  # BUILD
+  # ============================================================
   build-java:
     runs-on: ubuntu-latest
     steps:
@@ -51,10 +49,9 @@ jobs:
           path: ${{ env.APP_DIR }}/app/target/enterprise-app-1.0.jar
           retention-days: 7
 
-# ============================================================
-# SAST
-# ============================================================
-
+  # ============================================================
+  # SAST
+  # ============================================================
   sast:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -81,7 +78,6 @@ jobs:
             --output $REPORTS_DIR/semgrep.json \
             $APP_DIR/app/src/main/java || echo '{}' > $REPORTS_DIR/semgrep.json
 
-
       - name: Run SpotBugs
         run: |
           mvn -B verify spotbugs:spotbugs -f $APP_DIR/app/pom.xml || true
@@ -94,15 +90,12 @@ jobs:
             echo "<BugCollection/>" > reports/spotbugs.xml
           fi
       
-      # ⭐ BULLETPROOF CONVERSION
       - name: Convert SpotBugs XML → JSON
         run: |
           pip install xmltodict
           cat <<'EOF' > convert_spotbugs.py
           import xmltodict, json, pathlib
-      
           p = pathlib.Path("reports/spotbugs.xml")
-      
           if p.exists():
               data = xmltodict.parse(p.read_text())
               pathlib.Path("reports/spotbugs.json").write_text(json.dumps(data, indent=2))
@@ -111,23 +104,15 @@ jobs:
           EOF
           python convert_spotbugs.py
 
-      # - run: |
-      #     mvn com.github.spotbugs:spotbugs-maven-plugin:4.9.8.2:spotbugs \
-      #       -Dspotbugs.outputFormat=json -f $APP_DIR/app/pom.xml || true
-
-      #     cp $(ls $APP_DIR/app/target/*spotbugs*.json | head -1) \
-      #        $REPORTS_DIR/spotbugs.json || echo '{}' > $REPORTS_DIR/spotbugs.json          
-
       - uses: actions/upload-artifact@v4
         with:
           name: sast-reports
           path: reports/*.json
-          if-no-files-found: ignore          
+          if-no-files-found: ignore
 
-# ============================================================
-# SECRETS
-# ============================================================
-
+  # ============================================================
+  # SECRETS
+  # ============================================================
   secrets-scan:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -148,21 +133,14 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-# ============================================================
-# SCA
-# ============================================================
-
+  # ============================================================
+  # SCA
+  # ============================================================
   sca:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      # - run: mkdir -p $REPORTS_DIR
-      # - run: |
-      #     mvn org.owasp:dependency-check-maven:check \
-      #     -Dformat=JSON -f $APP_DIR/app/pom.xml || true
-      #     cp $APP_DIR/app/target/dependency-check-report.json \
-      #        $REPORTS_DIR/dependency-check.json || echo '{}' > $REPORTS_DIR/dependency-check.json
       - run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
           ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
@@ -172,10 +150,9 @@ jobs:
           name: sca-reports
           path: reports/*.json
 
-# ============================================================
-# IAC
-# ============================================================
-
+  # ============================================================
+  # IAC
+  # ============================================================
   IAC-scan:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -192,83 +169,63 @@ jobs:
           name: iac-reports
           path: reports/*.json
 
-# ============================================================
-# CONTAINER
-# ============================================================
-
+  # ============================================================
+  # CONTAINER
+  # ============================================================
   container-scan:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
-  
     steps:
       - uses: actions/checkout@v4
-  
-      # Download built jar
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
-  
-      # Debug jar presence
       - name: Verify jar
         run: |
           echo "Listing target folder:"
           ls -la $APP_DIR/app/target
-  
           if [ ! -f "$APP_DIR/app/target/enterprise-app-1.0.jar" ]; then
             echo "❌ JAR missing"
             exit 1
           fi
-  
       - run: mkdir -p $REPORTS_DIR
-  
-      # ⭐ FIXED docker build context (repo root)
       - name: Build Docker image
         run: |
           docker build \
             -t enterprise-app \
             -f $APP_DIR/docker/Dockerfile \
             .
-  
-      # Install trivy
       - name: Install Trivy
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-  
-      # Scan image
       - name: Trivy Image Scan
         run: |
           ./bin/trivy image enterprise-app \
             --format json \
             --output $REPORTS_DIR/trivy_image.json \
             || echo '{}' > $REPORTS_DIR/trivy_image.json
-  
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
           path: reports/*.json
           if-no-files-found: ignore
 
-# ============================================================
-# DAST
-# ============================================================
-
+  # ============================================================
+  # DAST
+  # ============================================================
   dast:
     runs-on: ubuntu-latest
     needs: build-java
     continue-on-error: true
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: ${{ env.APP_DIR }}/app/target
-
       - run: mkdir -p $REPORTS_DIR
-
       - name: Start Application
         run: |
           mkdir -p config/dummy
@@ -278,7 +235,6 @@ jobs:
       - name: OWASP ZAP Baseline
         run: |
           mkdir -p zap-output
-      
           docker run --rm \
             -u root \
             --network=host \
@@ -287,24 +243,20 @@ jobs:
             zap-baseline.py \
             -t http://localhost:8080 \
             -J zap.json || true
-      
           if [ -f zap-output/zap.json ]; then
             mv zap-output/zap.json $REPORTS_DIR/zap.json
           else
             echo '{}' > $REPORTS_DIR/zap.json
           fi
-
       - uses: actions/upload-artifact@v4  
         with:
           name: dast-reports
           path: reports/*.json
           if-no-files-found: ignore
 
-
-# ============================================================
-# AGGREGATE
-# ============================================================
-
+  # ============================================================
+  # AGGREGATE
+  # ============================================================
   aggregate-reports:
     runs-on: ubuntu-latest
     needs: [sast,secrets-scan,sca,IAC-scan,container-scan,dast]
@@ -321,126 +273,135 @@ jobs:
           name: all-scan-reports
           path: final-reports/*.json
 
-# ============================================================
-# AI ANALYSIS
-# ============================================================
-
-
+  # ============================================================
+  # AI ANALYSIS (pre-gate generation of decision.json)
+  # ============================================================
   llm-agent-analysis:
     runs-on: ubuntu-latest
     needs: aggregate-reports
     continue-on-error: true
-  
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  
     steps:
       - uses: actions/checkout@v4
-  
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-  
       - run: pip install -r requirements.txt
-  
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: tmp-reports/
-  
       - run: |
           mkdir -p reports
           find tmp-reports -name "*.json" -exec cp {} reports/ \;
-  
-      - run: |
-          echo "DEBUG reports:"
-          ls -R reports || true
-  
       - run: mkdir -p agent_output
-
-      - run: |
-          echo "DEBUG agent_output_PRE:"
-          ls -R agent_output || true
-          echo "Debug Repo Tree"
-          ls -la
-          echo "Debug agent"
-          ls -la agents || true
-          echo "Debug Reports"
-          ls -la reports || true
-
       - run: |
           python main.py --reports-dir reports --output-dir agent_output --skip-llm
-  
-      - run: |
-          echo "DEBUG agent_output_POST:"
-          ls -R agent_output || true
-          echo "Debug Repo Tree"
-          ls -la
-          echo "Debug agent"
-          ls -la agents || true
-          echo "Debug Reports"
-          ls -la reports || true
-  
       - uses: actions/upload-artifact@v4
         with:
           name: ai-results
           path: agent_output/
 
-# ============================================================
-# SECURITY GATE
-# ============================================================
-
+  # ============================================================
+  # SECURITY GATE (exposes gate_failed output)
+  # ============================================================
   security-gate:
     runs-on: ubuntu-latest
     needs: llm-agent-analysis
-  
+    outputs:                     # 🔧 expose the flag for downstream jobs
+      gate_failed: ${{ steps.read.outputs.gate_failed }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: ai-results
           path: agent_output
-  
       - run: sudo apt-get update && sudo apt-get install -y jq
-  
-      - name: Read gate decision
+      - id: read                 # 🔧 give step an id and write to GITHUB_OUTPUT
+        name: Read gate decision
         run: |
           STATUS=$(jq -r '.decision' agent_output/decision.json)
           echo "Gate decision = $STATUS"
-      
           if [ "$STATUS" = "FAIL" ]; then
-            echo "gate_failed=true" >> $GITHUB_ENV
+            echo "gate_failed=true" >> $GITHUB_OUTPUT
           else
-            echo "gate_failed=false" >> $GITHUB_ENV
+            echo "gate_failed=false" >> $GITHUB_OUTPUT
           fi
 
-  remediation:
+  # ============================================================
+  # ANALYSIS & REMEDIATION SUGGESTIONS (LLM)
+  # ============================================================
+  remediation:                   # keeping your job id; now does analysis/suggestions
     runs-on: ubuntu-latest
     needs: security-gate
     if: always()
-  
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-  
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-  
       - run: pip install -r requirements.txt
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: reports
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: ai-results
           path: agent_output
-  
-      - run: |
-          python main.py --reports-dir reports --output-dir agent_output --skip-llm
-  
+
+      # 🔧 Enable LLM so it generates analysis + remediation suggestions
+      - name: Generate analysis & remediation suggestions
+        run: |
+          python main.py --reports-dir reports --output-dir agent_output
+        # ^ no --skip-llm here
+
       - uses: actions/upload-artifact@v4
         with:
           name: remediation-output
-          path: agent_output/ 
+          path: agent_output/
+
+  # ============================================================
+  # AUTOFIX & PR (only when gate failed)
+  # ============================================================
+  autofix-pr:
+    runs-on: ubuntu-latest
+    needs: remediation
+    if: needs.security-gate.outputs.gate_failed == 'true'   # 🔧 only on FAIL
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-scan-reports
+          path: reports
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-results
+          path: agent_output
+
+      - name: Run AutoFix + PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # GitHub-provided token
+        run: |
+          # Avoid re-running the LLM (we just need Fixer + PR now)
+          python main.py --reports-dir reports --output-dir agent_output --skip-llm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: autofix-output
+          path: agent_output/
