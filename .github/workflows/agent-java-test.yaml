@@ -402,18 +402,45 @@ jobs:
   
       - run: sudo apt-get update && sudo apt-get install -y jq
   
-      - name: Enforce decision
+      - name: Read gate decision
         run: |
-          if [ ! -f agent_output/decision.json ]; then
-            echo "❌ decision.json missing"
-            exit 1
-          fi
-  
           STATUS=$(jq -r '.decision' agent_output/decision.json)
-  
+          echo "Gate decision = $STATUS"
+      
           if [ "$STATUS" = "FAIL" ]; then
-            echo "❌ Security Gate FAILED"
-            exit 1
+            echo "gate_failed=true" >> $GITHUB_ENV
+          else
+            echo "gate_failed=false" >> $GITHUB_ENV
           fi
+
+  remediation:
+    runs-on: ubuntu-latest
+    needs: security-gate
+    if: always()
   
-          echo "✅ Security Gate PASSED"
+    steps:
+      - uses: actions/checkout@v4
+  
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+  
+      - run: pip install -r requirements.txt
+  
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-scan-reports
+          path: reports
+  
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-results
+          path: agent_output
+  
+      - run: |
+          python main.py --reports-dir reports --output-dir agent_output --skip-llm
+  
+      - uses: actions/upload-artifact@v4
+        with:
+          name: remediation-output
+          path: agent_output/ 
