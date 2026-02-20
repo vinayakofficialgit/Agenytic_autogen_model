@@ -287,25 +287,25 @@ class Fixer:
             return []
 
     def apply(self, findings=None):
-    violations = self.load_violations()
+        violations = self.load_violations()
 
-    if violations:
-        print(f"[fixer] Using {len(violations)} violations from gate")
-        findings = violations
+        if violations:
+            print(f"[fixer] Using {len(violations)} violations from gate")
+            findings = violations
 
-    if not findings:
-        return []
+        if not findings:
+            return []
 
-    notes, changed = self._apply_llm_autofixes(findings)
+        notes, changed = self._apply_llm_autofixes(findings)
 
-    try:
-        (self.out / "patch_manifest.json").write_text(
-            json.dumps({"files": changed}, indent=2)
-        )
-    except Exception:
-        pass
+        try:
+            (self.out / "patch_manifest.json").write_text(
+                json.dumps({"files": changed}, indent=2)
+            )
+        except Exception:
+            pass
 
-    return changed
+        return changed
         
     # -------------------------
     # Internals
