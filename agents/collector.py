@@ -1,8 +1,6 @@
-    
- # collector.py
+# collector.py
 """
 Enhanced CollectorAgent for DevSecOps Agentic AI Pipeline
-
 Key Enhancements:
 - Better error handling and logging
 - Improved LLM integration with fallback support
@@ -12,7 +10,7 @@ Key Enhancements:
 
 from __future__ import annotations
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import json
 import os
 import sys
@@ -54,7 +52,7 @@ try:
         parse_conftest,
         parse_zap,
         parse_dependency_check,
-        parse_spotbugs
+        parse_spotbugs,
     )
 except Exception:
     try:
@@ -70,21 +68,29 @@ except Exception:
             parse_conftest,
             parse_zap,
             parse_dependency_check,
-            parse_spotbugs
+            parse_spotbugs,
         )
     except Exception as _e:
         # Create stub parsers that return empty lists
         print(f"[collector] Warning: Could not import tools.parsers: {_e}")
         print("[collector] Using stub parsers that return empty lists")
-        
+
         def parse_semgrep(path): return []
+
         def parse_trivy_fs(path): return []
+
         def parse_trivy_image(path): return []
+
         def parse_tfsec(path): return []
+
         def parse_gitleaks(path): return []
+
         def parse_conftest(path): return []
+
         def parse_zap(path): return []
+
         def parse_dependency_check(path): return []
+
         def parse_spotbugs(path): return []
 
 
@@ -95,7 +101,6 @@ def _llm_ask(name: str, system: str, user: str, temperature: float = 0.2) -> Opt
     """
     if assistant_factory is None:
         return None
-    
     try:
         agent = assistant_factory(name=name, system_message=system, temperature=temperature)
         messages = [
@@ -113,7 +118,7 @@ def _llm_banner() -> str:
     url = os.getenv("OLLAMA_URL", "(unset)")
     model = os.getenv("OLLAMA_MODEL", "(unset)")
     mode = os.getenv("LLM_MODE", "ollama")
-    return f"> LLM mode: {mode} | Model: {model} | URL: {url}\n\n"
+    return f"> LLM mode: {mode}  Model: {model}  URL: {url}\n\n"
 
 
 class CollectorAgent:
@@ -121,16 +126,16 @@ class CollectorAgent:
     CollectorAgent aggregates raw findings from scanning tools under `reports/`.
 
     Enhancements:
-      - Safe handling of missing/malformed files with detailed logging
-      - Optional deduplication (cfg["dedup_keys"])
-      - Optional normalization of severity to lowercase
-      - Emits BOTH flat and grouped outputs:
-          * flat list (backward compatible)
-          * grouped dict (normalized for LLM layer)
-      - Optional LLM summarization via llm_bridge if LLM_EXPLAIN=1
-      - Writes merged JSON dumps to:
-          * output_dir/findings.json (flat)
-          * output_dir/findings_grouped.json (grouped & normalized)
+    - Safe handling of missing/malformed files with detailed logging
+    - Optional deduplication (cfg["dedup_keys"])
+    - Optional normalization of severity to lowercase
+    - Emits BOTH flat and grouped outputs:
+        * flat list (backward compatible)
+        * grouped dict (normalized for LLM layer)
+    - Optional LLM summarization via llm_bridge if LLM_EXPLAIN=1
+    - Writes merged JSON dumps to:
+        * output_dir/findings.json (flat)
+        * output_dir/findings_grouped.json (grouped & normalized)
     """
 
     def __init__(self, config: Dict[str, Any], reports_dir: Path, output_dir: Path):
@@ -151,29 +156,25 @@ class CollectorAgent:
             if not file.exists():
                 # Not an error - file may simply not exist if scanner wasn't run
                 return []
-            
             result = fn(file)
-            
             if result is None:
                 self._parse_errors.append(f"{tool_name}: Parser returned None for {file}")
                 return []
-            
             if not isinstance(result, list):
-                self._parse_errors.append(f"{tool_name}: Parser returned {type(result).__name__} instead of list for {file}")
+                self._parse_errors.append(
+                    f"{tool_name}: Parser returned {type(result).__name__} instead of list for {file}"
+                )
                 return []
-            
             # Guard: keep only dict entries
             valid_items = [x for x in result if isinstance(x, dict)]
             invalid_count = len(result) - len(valid_items)
-            
             if invalid_count > 0:
-                self._parse_errors.append(f"{tool_name}: Skipped {invalid_count} non-dict items from {file}")
-            
+                self._parse_errors.append(
+                    f"{tool_name}: Skipped {invalid_count} non-dict items from {file}"
+                )
             if valid_items:
                 print(f"[collector] Parsed {len(valid_items)} findings from {tool_name} ({file.name})")
-            
             return valid_items
-            
         except json.JSONDecodeError as e:
             self._parse_errors.append(f"{tool_name}: JSON decode error in {file}: {e}")
             return []
@@ -204,49 +205,42 @@ class CollectorAgent:
             f.get("file"),
             (f.get("location") or {}).get("file") if isinstance(f.get("location"), dict) else None,
             f.get("path"),
-            default="(unknown)"
+            default="(unknown)",
         )
-        
         line = self._first_nonempty(
             f.get("line"),
             (f.get("location") or {}).get("line") if isinstance(f.get("location"), dict) else None,
             (f.get("start") or {}).get("line"),
             f.get("start_line"),
-            default=""
+            default="",
         )
-        
         rule_id = self._first_nonempty(
             f.get("rule_id"),
             f.get("check_id"),
             f.get("id"),
-            default=""
+            default="",
         )
-        
         message = self._first_nonempty(
             f.get("message"),
             f.get("title"),
             f.get("description"),
-            default=""
+            default="",
         )
-        
         severity = (f.get("severity") or "low")
         if isinstance(severity, str):
             severity = severity.strip().lower()
-        
         snippet = self._first_nonempty(
             f.get("snippet"),
             f.get("code"),
             f.get("content"),
             (f.get("extra") or {}).get("lines") if isinstance(f.get("extra"), dict) else None,
-            default=""
+            default="",
         )
-
         # Cast line to int if possible
         try:
             line = int(line) if (line != "" and line is not None) else ""
         except Exception:
             pass
-
         return {
             "file": file,
             "line": line,
@@ -265,36 +259,31 @@ class CollectorAgent:
             f.get("file"),
             f.get("target"),
             f.get("path"),
-            default="(unknown)"
+            default="(unknown)",
         )
-        
         fid = self._first_nonempty(
             f.get("id"),
             f.get("rule_id"),
             f.get("vulnerability_id"),
             f.get("class_id"),
-            default=""
+            default="",
         )
-        
         severity = (f.get("severity") or "low")
         if isinstance(severity, str):
             severity = severity.strip().lower()
-        
         summary = self._first_nonempty(
             f.get("summary"),
             f.get("message"),
             f.get("title"),
             f.get("description"),
-            default=""
+            default="",
         )
-        
         snippet = self._first_nonempty(
             f.get("snippet"),
             f.get("code"),
             f.get("content"),
-            default=""
+            default="",
         )
-
         return {
             "file": file,
             "id": fid,
@@ -309,7 +298,9 @@ class CollectorAgent:
             "package": self._first_nonempty(f.get("package"), f.get("PkgName"), default=""),
             "version": self._first_nonempty(f.get("version"), f.get("InstalledVersion"), default=""),
             "fixed_version": self._first_nonempty(f.get("fixed_version"), f.get("FixedVersion"), default=""),
-            "vulnerability_id": self._first_nonempty(f.get("vulnerability_id"), f.get("VulnerabilityID"), f.get("id"), default=""),
+            "vulnerability_id": self._first_nonempty(
+                f.get("vulnerability_id"), f.get("VulnerabilityID"), f.get("id"), default=""
+            ),
             "severity": (f.get("severity") or f.get("Severity") or "low").lower(),
             "title": self._first_nonempty(f.get("title"), f.get("Title"), f.get("description"), default=""),
             "target": self._first_nonempty(f.get("target"), f.get("Target"), default=""),
@@ -317,11 +308,13 @@ class CollectorAgent:
 
     def _norm_gitleaks_item(self, f: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize gitleaks finding."""
+        secret = self._first_nonempty(f.get("secret"), f.get("Secret"), default="[REDACTED]")
+        secret_masked = (secret[:20] + "...") if isinstance(secret, str) and len(secret) > 20 else secret
         return {
             "file": self._first_nonempty(f.get("file"), f.get("File"), default=""),
             "line": f.get("line") or f.get("StartLine") or "",
             "rule_id": self._first_nonempty(f.get("rule_id"), f.get("RuleID"), f.get("rule"), default=""),
-            "secret": self._first_nonempty(f.get("secret"), f.get("Secret"), default="[REDACTED]")[:20] + "...",
+            "secret": secret_masked,
             "commit": self._first_nonempty(f.get("commit"), f.get("Commit"), default=""),
             "severity": "high",  # Secrets are always high severity
         }
@@ -428,77 +421,59 @@ class CollectorAgent:
         if self._parse_errors:
             print(f"[collector] Encountered {len(self._parse_errors)} parsing issue(s):")
             for err in self._parse_errors[:5]:  # Show first 5
-                print(f"  - {err}")
+                print(f" - {err}")
             if len(self._parse_errors) > 5:
-                print(f"  - ... and {len(self._parse_errors) - 5} more")
+                print(f" - ... and {len(self._parse_errors) - 5} more")
 
         return findings
 
     def _group_for_llm(self, flat: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-
-    grouped: Dict[str, List[Dict[str, Any]]] = {
-        "semgrep": [],
-        "trivy_fs": [],
-        "trivy_image": [],
-        "tfsec": [],
-        "gitleaks": [],
-        "conftest": [],
-        "zap": [],
-        "dependency_check": [],
-        "spotbugs": []
-    }
-
-    for f in flat:
-
-        if not isinstance(f, dict):
-            continue
-
-        tool = (f.get("tool") or f.get("source") or "").lower()
-
-        if tool == "semgrep":
-            item = self._norm_semgrep_item(f)
-            item["id"] = item.get("rule_id")
-            grouped["semgrep"].append(item)
-
-        elif tool in ("trivy_fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
-            item = self._norm_trivy_fs_item(f)
-            item["id"] = item.get("id")
-            grouped["trivy_fs"].append(item)
-
-        elif tool in ("trivy_image", "trivy-image"):
-            item = self._norm_trivy_image_item(f)
-            item["id"] = item.get("vulnerability_id")
-            grouped["trivy_image"].append(item)
-
-        elif tool == "tfsec":
-            f["id"] = f.get("rule_id") or f.get("check_id")
-            grouped["tfsec"].append(f)
-
-        elif tool == "gitleaks":
-            item = self._norm_gitleaks_item(f)
-            item["id"] = item.get("rule_id")
-            grouped["gitleaks"].append(item)
-
-        elif tool == "conftest":
-            f["id"] = f.get("id") or f.get("rule_id")
-            grouped["conftest"].append(f)
-
-        elif tool == "zap":
-            f["id"] = f.get("alertRef") or f.get("pluginId")
-            grouped["zap"].append(f)
-
-        elif tool in ("dependency-check","dependency_check"):
-            f["id"] = f.get("vulnerability_id") or f.get("cve")
-            grouped["dependency_check"].append(f)
-
-        elif tool == "spotbugs":
-            f["id"] = f.get("bug_id") or f.get("type")
-            grouped["spotbugs"].append(f)
-
-        else:
-            grouped["conftest"].append(f)
-
-    return grouped
+        grouped: Dict[str, List[Dict[str, Any]]] = {
+            "semgrep": [],
+            "trivy_fs": [],
+            "trivy_image": [],
+            "tfsec": [],
+            "gitleaks": [],
+            "conftest": [],
+            "zap": [],
+            "dependency_check": [],
+            "spotbugs": [],
+        }
+        for f in flat:
+            if not isinstance(f, dict):
+                continue
+            tool = (f.get("tool") or f.get("source") or "").lower()
+            if tool == "semgrep":
+                item = self._norm_semgrep_item(f)
+                item["id"] = item.get("rule_id")
+                grouped["semgrep"].append(item)
+            elif tool in ("trivy_fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
+                item = self._norm_trivy_fs_item(f)
+                grouped["trivy_fs"].append(item)
+            elif tool in ("trivy_image", "trivy-image"):
+                item = self._norm_trivy_image_item(f)
+                grouped["trivy_image"].append(item)
+            elif tool == "tfsec":
+                f["id"] = f.get("rule_id") or f.get("check_id")
+                grouped["tfsec"].append(f)
+            elif tool == "gitleaks":
+                item = self._norm_gitleaks_item(f)
+                grouped["gitleaks"].append(item)
+            elif tool == "conftest":
+                f["id"] = f.get("id") or f.get("rule_id")
+                grouped["conftest"].append(f)
+            elif tool == "zap":
+                f["id"] = f.get("alertRef") or f.get("pluginId")
+                grouped["zap"].append(f)
+            elif tool in ("dependency-check", "dependency_check"):
+                f["id"] = f.get("vulnerability_id") or f.get("cve")
+                grouped["dependency_check"].append(f)
+            elif tool == "spotbugs":
+                f["id"] = f.get("bug_id") or f.get("type")
+                grouped["spotbugs"].append(f)
+            else:
+                grouped["conftest"].append(f)
+        return grouped
 
     def load_all(self) -> Dict[str, Any]:
         """
@@ -528,7 +503,6 @@ class CollectorAgent:
             "by_tool": {k: len(v) for k, v in grouped.items() if not k.startswith("_")},
             "parse_errors": len(self._parse_errors),
         }
-        
         return grouped
 
     # --------------------------
@@ -585,7 +559,6 @@ class CollectorAgent:
                 continue
             t = (f.get("tool") or f.get("source") or "unknown")
             by_tool[t] = by_tool.get(t, 0) + 1
-
         if not by_tool:
             return None
 
@@ -594,7 +567,6 @@ class CollectorAgent:
             "Be concise, factual, and avoid hallucinations. Highlight critical/high severity items. "
             "Keep it under 200 words."
         )
-
         user_msg = (
             "Summaries needed from aggregated scan findings.\n\n"
             "Counts by tool:\n"
@@ -609,7 +581,6 @@ class CollectorAgent:
             user=user_msg,
             temperature=0.2,
         )
-        
         if summary:
             self.out.mkdir(parents=True, exist_ok=True)
             path = self.out / "collector_summary.md"
@@ -619,7 +590,6 @@ class CollectorAgent:
                 return str(path)
             except Exception as e:
                 print(f"[collector] Error writing summary: {e}")
-        
         return None
 
     def get_parse_errors(self) -> List[str]:

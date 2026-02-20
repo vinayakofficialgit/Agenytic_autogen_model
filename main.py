@@ -8,10 +8,8 @@ from datetime import datetime
 from io import StringIO
 import contextlib
 
-# try:
-#     from agents.git_pr import GitPRAgent
-# except Exception:
-#     from git_pr import GitPRAgent
+# Ensure repo root import works in GitHub Actions
+sys.path.append(os.getcwd())
 
 # Optional PR agent (do not fail pipeline if missing)
 try:
