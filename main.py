@@ -8,10 +8,19 @@ from datetime import datetime
 from io import StringIO
 import contextlib
 
+# try:
+#     from agents.git_pr import GitPRAgent
+# except Exception:
+#     from git_pr import GitPRAgent
+
+# Optional PR agent (do not fail pipeline if missing)
 try:
     from agents.git_pr import GitPRAgent
 except Exception:
-    from git_pr import GitPRAgent
+    try:
+        from git_pr import GitPRAgent
+    except Exception:
+        GitPRAgent = None
 
 try:
     import yaml

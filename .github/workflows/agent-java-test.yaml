@@ -335,6 +335,7 @@ jobs:
   
     steps:
       - uses: actions/checkout@v4
+  
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -348,20 +349,36 @@ jobs:
   
       - run: |
           mkdir -p reports
-          find tmp-reports -type f -name "*.json" -exec cp {} reports/ \; || true
+          find tmp-reports -name "*.json" -exec cp {} reports/ \;
   
       - run: |
-          python main.py --reports-dir reports --output-dir agent_output --skip-llm || true
+          echo "DEBUG reports:"
+          ls -R reports || true
+  
+      - run: mkdir -p agent_output
+
+      - run: |
+          echo "DEBUG agent_output_PRE:"
+          ls -R agent_output || true
+          echo "Debug Repo Tree"
+          ls -la
+          echo "Debug agent"
+          ls -la agents || true
+          echo "Debug Reports"
+          ls -la reports || true
+
+      - run: |
+          python main.py --reports-dir reports --output-dir agent_output --skip-llm
   
       - run: |
-          echo "DEBUG agent_output:"
-          ls -la agent_output
-  
-      - run: |
-          test -f agent_output/findings_grouped.json || (echo "❌ findings_grouped missing" && exit 1)
-  
-      - run: |
-          python agents/ai_analysis.py --output-dir agent_output
+          echo "DEBUG agent_output_POST:"
+          ls -R agent_output || true
+          echo "Debug Repo Tree"
+          ls -la
+          echo "Debug agent"
+          ls -la agents || true
+          echo "Debug Reports"
+          ls -la reports || true
   
       - uses: actions/upload-artifact@v4
         with:
