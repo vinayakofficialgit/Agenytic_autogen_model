@@ -248,6 +248,15 @@ def main():
         json.dump(decision, f, indent=2)
 
     # =======================
+    # ⭐ AI Remediation Advisor
+    # =======================
+    try:
+        from agents.advisor import AdvisorAgent
+        AdvisorAgent(output_dir).generate(grouped)
+    except Exception as e:
+        print("Advisor error:", e)        
+
+    # =======================
     # 4️⃣ Auto fix + PR
     # =======================
     changed_files = []
