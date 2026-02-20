@@ -126,6 +126,7 @@ def main():
     parser.add_argument("--reports-dir")
     parser.add_argument("--output-dir")
     parser.add_argument("--min-severity")
+    parser.add_argument("--mode", default="all", help="gate | advise | fix | all")
     parser.add_argument("--skip-llm", action="store_true")
     args = parser.parse_args()
 
@@ -136,15 +137,13 @@ def main():
     reports_dir = Path(args.reports_dir or cfg["inputs"]["reports_dir"])
     output_dir = Path(args.output_dir or cfg["inputs"]["output_dir"])
     min_sev = (args.min_severity or cfg["policy"]["min_severity_to_fail"]).lower()
+    mode = (args.mode or "all").lower()
 
     cfg["policy"]["min_severity_to_fail"] = min_sev
 
     # mkdir fix
     reports_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # reports_dir.mkdir(exist_ok=True)
-    # output_dir.mkdir(exist_ok=True)
 
     # =======================
     # 1️⃣ Collector
@@ -243,25 +242,29 @@ def main():
     print("Gate Decision:", decision["decision"])
     print("===================================\n")
 
-    # ⭐ WRITE decision.json BEFORE fixer
-    with open(output_dir / "decision.json", "w") as f:
-        json.dump(decision, f, indent=2)
-
-    # =======================
-    # ⭐ AI Remediation Advisor
-    # =======================
+    # ⭐ WRITE decision.json BEFORE advisor/fixer
     try:
-        from agents.advisor import AdvisorAgent
-        AdvisorAgent(output_dir).generate(grouped)
+        with open(output_dir / "decision.json", "w") as f:
+            json.dump(decision, f, indent=2)
     except Exception as e:
-        print("Advisor error:", e)        
+        print("Error writing decision.json:", e)
 
     # =======================
-    # 4️⃣ Auto fix + PR
+    # ⭐ AI Remediation Advisor (mode=advise|all)
+    # =======================
+    if mode in ("advise", "all"):
+        try:
+            from agents.advisor import AdvisorAgent
+            AdvisorAgent(output_dir).generate(grouped)
+        except Exception as e:
+            print("Advisor error:", e)        
+
+    # =======================
+    # 4️⃣ Auto fix + PR (mode=fix|all)
     # =======================
     changed_files = []
 
-    if decision.get("decision") == "FAIL":
+    if mode in ("fix", "all") and decision.get("decision") == "FAIL":
         try:
             with suppress():
                 Fixer(cfg, output_dir, repo_root=Path(".")).apply(grouped)
