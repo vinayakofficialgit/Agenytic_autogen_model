@@ -440,53 +440,70 @@ class CollectorAgent:
         return findings
 
     def _group_for_llm(self, flat: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Build grouped + normalized structure suitable for LLM prompts.
-        Keys present even if empty to simplify downstream logic.
-        """
-        grouped: Dict[str, List[Dict[str, Any]]] = {
-            "semgrep": [],
-            "trivy_fs": [],
-            "trivy_image": [],
-            "tfsec": [],
-            "gitleaks": [],
-            "conftest": [],
-            "zap": [],
-            "dependency_check": [],
-            "spotbugs": []
-        }
 
-        for f in flat:
-            # Guard: skip non-dict entries
-            if not isinstance(f, dict):
-                continue
+    grouped: Dict[str, List[Dict[str, Any]]] = {
+        "semgrep": [],
+        "trivy_fs": [],
+        "trivy_image": [],
+        "tfsec": [],
+        "gitleaks": [],
+        "conftest": [],
+        "zap": [],
+        "dependency_check": [],
+        "spotbugs": []
+    }
 
-            tool = (f.get("tool") or f.get("source") or "").lower()
+    for f in flat:
 
-            if tool == "semgrep":
-                grouped["semgrep"].append(self._norm_semgrep_item(f))
-            elif tool in ("trivy_fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
-                grouped["trivy_fs"].append(self._norm_trivy_fs_item(f))
-            elif tool in ("trivy_image", "trivy-image"):
-                grouped["trivy_image"].append(self._norm_trivy_image_item(f))
-            elif tool == "tfsec":
-                grouped["tfsec"].append(f)
-            elif tool == "gitleaks":
-                grouped["gitleaks"].append(self._norm_gitleaks_item(f))
-            elif tool == "conftest":
-                grouped["conftest"].append(f)
-            elif tool == "zap":
-                grouped["zap"].append(f)
-            elif tool in ("dependency-check","dependency_check"):
-                grouped["dependency_check"].append(f)
-            elif tool == "spotbugs":
-                grouped["spotbugs"].append(f)
-            else:
-                # Put unknown tool outputs in 'conftest' bucket to avoid losing them
-                grouped["conftest"].append(f)
-                # grouped["unknown"].append
+        if not isinstance(f, dict):
+            continue
 
-        return grouped
+        tool = (f.get("tool") or f.get("source") or "").lower()
+
+        if tool == "semgrep":
+            item = self._norm_semgrep_item(f)
+            item["id"] = item.get("rule_id")
+            grouped["semgrep"].append(item)
+
+        elif tool in ("trivy_fs", "trivy", "trivy_config", "trivy-config", "trivyfs"):
+            item = self._norm_trivy_fs_item(f)
+            item["id"] = item.get("id")
+            grouped["trivy_fs"].append(item)
+
+        elif tool in ("trivy_image", "trivy-image"):
+            item = self._norm_trivy_image_item(f)
+            item["id"] = item.get("vulnerability_id")
+            grouped["trivy_image"].append(item)
+
+        elif tool == "tfsec":
+            f["id"] = f.get("rule_id") or f.get("check_id")
+            grouped["tfsec"].append(f)
+
+        elif tool == "gitleaks":
+            item = self._norm_gitleaks_item(f)
+            item["id"] = item.get("rule_id")
+            grouped["gitleaks"].append(item)
+
+        elif tool == "conftest":
+            f["id"] = f.get("id") or f.get("rule_id")
+            grouped["conftest"].append(f)
+
+        elif tool == "zap":
+            f["id"] = f.get("alertRef") or f.get("pluginId")
+            grouped["zap"].append(f)
+
+        elif tool in ("dependency-check","dependency_check"):
+            f["id"] = f.get("vulnerability_id") or f.get("cve")
+            grouped["dependency_check"].append(f)
+
+        elif tool == "spotbugs":
+            f["id"] = f.get("bug_id") or f.get("type")
+            grouped["spotbugs"].append(f)
+
+        else:
+            grouped["conftest"].append(f)
+
+    return grouped
 
     def load_all(self) -> Dict[str, Any]:
         """

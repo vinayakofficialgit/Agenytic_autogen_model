@@ -9,6 +9,11 @@ from io import StringIO
 import contextlib
 
 try:
+    from agents.git_pr import GitPRAgent
+except Exception:
+    from git_pr import GitPRAgent
+
+try:
     import yaml
 except Exception:
     yaml = None
@@ -257,14 +262,32 @@ def main():
     print("===================================\n")
 
     # =======================
-    # 4️⃣ Auto fix
+    # 4️⃣ Auto fix + PR
     # =======================
+    changed_files = []
+    
     if decision.get("decision") == "FAIL":
         try:
             with suppress():
                 Fixer(cfg, output_dir).apply(grouped)
         except Exception:
             pass
+    
+        # ⭐ read changed files from fixer manifest
+        manifest = output_dir / "patch_manifest.json"
+        if manifest.exists():
+            try:
+                data = json.loads(manifest.read_text())
+                changed_files = data.get("files", [])
+            except Exception:
+                changed_files = []
+    
+        # ⭐ trigger PR agent
+        if changed_files:
+            try:
+                GitPRAgent().create_pr(changed_files)
+            except Exception as e:
+                print("PR agent error:", e)
 
     # =======================
     # 5️⃣ Reporting

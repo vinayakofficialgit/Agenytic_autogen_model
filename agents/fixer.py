@@ -1,9 +1,4 @@
 
-    
-    
- 
- 
- 
  # fixer.py
 """
 Enhanced Fixer for DevSecOps Agentic AI Pipeline
@@ -188,6 +183,9 @@ def _parse_diff_changed_files(patch_text: str) -> List[str]:
     return files
 
 
+
+
+
 def _git_apply_patch(patch_text: str) -> Tuple[bool, str]:
     """
     Try to apply a unified diff using git apply with a dry-run first.
@@ -235,6 +233,19 @@ def _git_apply_patch(patch_text: str) -> Tuple[bool, str]:
             pass
 
 
+
+from openai import OpenAI
+
+def openai_patch(prompt):
+    client = OpenAI()
+    resp = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=[{"role":"user","content":prompt}],
+        temperature=0.2
+    )
+    return resp.choices[0].message.content
+
+
 class Fixer:
     """
     Deterministic auto-remediation for Dockerfile, Kubernetes YAML, and Terraform .tf files.
@@ -262,123 +273,40 @@ class Fixer:
         self.k8s_default_mem_limit = self.defaults.get("k8s_default_mem_limit", "256Mi")
         self.terraform_allowed_cidr = self.defaults.get("terraform_allowed_cidr", "10.0.0.0/24")
 
-    def apply(self, findings: Any) -> Dict[str, Any]:
-        """
-        Apply in-place remediations across known folders:
-          - app/Dockerfile
-          - k8s/*.yaml|*.yml (multi-doc supported)
-          - terraform/**/*.tf
+    
+    
+    def load_violations(self):
+        decision = self.out / "decision.json"
+        if not decision.exists():
+            return []
+    
+        try:
+            data = json.loads(decision.read_text())
+            return data.get("violations", [])
+        except Exception:
+            return []
 
-        Also (optionally) call the LLM to propose/apply patches for code/config findings.
+    def apply(self, findings=None):
+    violations = self.load_violations()
 
-        Returns:
-          {
-            'changed': bool,
-            'files': List[str],
-            'notes': List[str],
-            'llm_report': Optional[str],
-            'llm_report_path': Optional[str],
-          }
-        """
-        changed_files: List[str] = []
-        notes: List[str] = []
-        llm_report_path: Optional[str] = None
+    if violations:
+        print(f"[fixer] Using {len(violations)} violations from gate")
+        findings = violations
 
-        print("[fixer] Starting remediation...")
+    if not findings:
+        return []
 
-        # --- Phase 1: Deterministic remediations ---
-        # Dockerfile
-        dockerfile = self.repo / "app" / "Dockerfile"
-        if dockerfile.exists():
-            try:
-                txt = dockerfile.read_text(encoding="utf-8")
-                new_txt = self._fix_dockerfile(txt, notes)
-                if new_txt != txt:
-                    self._backup_file(dockerfile)
-                    dockerfile.write_text(new_txt, encoding="utf-8")
-                    changed_files.append(str(dockerfile))
-                    print(f"[fixer] Fixed: {dockerfile}")
-            except Exception as e:
-                notes.append(f"Error fixing Dockerfile: {e}")
+    notes, changed = self._apply_llm_autofixes(findings)
 
-        # Kubernetes
-        kdir = self.repo / "k8s"
-        if kdir.exists():
-            for p in sorted(list(kdir.glob("*.yaml")) + list(kdir.glob("*.yml"))):
-                try:
-                    original = p.read_text(encoding="utf-8")
-                    docs = list(yaml.safe_load_all(original))
-                    if not docs:
-                        continue
-                    
-                    changed_any = False
-                    fixed_docs: List[Any] = []
-                    for d in docs:
-                        if d is None:
-                            fixed_docs.append(d)
-                            continue
-                        fixed, ch = self._fix_k8s_obj(d)
-                        fixed_docs.append(fixed)
-                        changed_any = changed_any or ch
-                    
-                    if changed_any:
-                        self._backup_file(p)
-                        p.write_text(yaml.safe_dump_all(fixed_docs, sort_keys=False), encoding="utf-8")
-                        changed_files.append(str(p))
-                        print(f"[fixer] Fixed: {p}")
-                except Exception as e:
-                    notes.append(f"Error fixing {p}: {e}")
+    try:
+        (self.out / "patch_manifest.json").write_text(
+            json.dumps({"files": changed}, indent=2)
+        )
+    except Exception:
+        pass
 
-        # Terraform
-        tdir = self.repo / "terraform"
-        if tdir.exists():
-            for p in sorted(tdir.rglob("*.tf")):
-                try:
-                    orig = p.read_text(encoding="utf-8")
-                    new_tf = self._fix_tf(orig, notes)
-                    if new_tf != orig:
-                        self._backup_file(p)
-                        p.write_text(new_tf, encoding="utf-8")
-                        changed_files.append(str(p))
-                        print(f"[fixer] Fixed: {p}")
-                except Exception as e:
-                    notes.append(f"Error fixing {p}: {e}")
-
-        # Record deterministic changes
-        if changed_files or notes:
-            self.out.mkdir(parents=True, exist_ok=True)
-            try:
-                (self.out / "remediation_changes.txt").write_text(
-                    "\n".join([*changed_files, "", *notes]),
-                    encoding="utf-8"
-                )
-            except Exception as e:
-                print(f"[fixer] Error writing remediation_changes.txt: {e}")
-
-        # --- Phase 2: LLM autofix (optional) ---
-        llm_autofix_enabled = (os.getenv("LLM_AUTOFIX", "").strip() == "1")
-        if llm_autofix_enabled:
-            print("[fixer] LLM autofix enabled, processing findings...")
-            llm_notes, llm_files = self._apply_llm_autofixes(findings)
-            notes.extend(llm_notes)
-            for f in llm_files:
-                if f not in changed_files:
-                    changed_files.append(f)
-
-        # Optional LLM explanation (for deterministic edits)
-        if self.cfg.get("llm", {}).get("enabled", False) or os.getenv("LLM_EXPLAIN", "") == "1":
-            llm_report_path = self._maybe_generate_llm_report(changed_files, notes, findings)
-
-        print(f"[fixer] Completed. Changed {len(changed_files)} file(s)")
-
-        return {
-            "changed": bool(changed_files),
-            "files": changed_files,
-            "notes": notes,
-            "llm_report": llm_report_path,
-            "llm_report_path": llm_report_path,
-        }
-
+    return changed
+        
     # -------------------------
     # Internals
     # -------------------------
@@ -579,10 +507,26 @@ class Fixer:
         Ask the LLM for a suggestion for a single finding.
         Returns (suggestion_text, used_fallback).
         """
-        if assistant_factory is None:
-            fallback = _get_fallback_for_item(item, tool_group)
-            return f"[Fallback - LLM unavailable]\n\n{fallback}" if fallback else "[LLM unavailable]", True
+        # if assistant_factory is None:
+        #     fallback = _get_fallback_for_item(item, tool_group)
+        #     return f"[Fallback - LLM unavailable]\n\n{fallback}" if fallback else "[LLM unavailable]", True
         
+        if assistant_factory is None:
+            try:
+                # ⭐ user var was undefined
+                if tool_group == "semgrep":
+                    user = _build_semgrep_prompt(item)
+                elif tool_group == "trivy_fs":
+                    user = _build_trivy_fs_prompt(item)
+                else:
+                    user = str(item)
+
+                return openai_patch(user), False
+            except:
+                fallback = _get_fallback_for_item(item, tool_group)
+                return fallback, True
+
+
         # Choose prompt
         if tool_group == "semgrep":
             user = _build_semgrep_prompt(item)
@@ -629,10 +573,20 @@ class Fixer:
         suggestions_md: List[str] = [_llm_banner(), "# LLM Autofix Suggestions\n"]
 
         patch_dir = self.out / "llm_autofix_patches"
+        # ⭐ patch manifest for PR agent
+        try:
+            (self.out / "patch_manifest.json").write_text(
+                json.dumps({"files": llm_changed_files}, indent=2)
+            )
+        except Exception:
+            pass
+
+        
         patch_dir.mkdir(parents=True, exist_ok=True)
 
         counter = 0
         fallback_count = 0
+        
 
         for group in ("semgrep", "trivy_fs"):
             if group not in enabled_groups:
@@ -640,8 +594,21 @@ class Fixer:
             items = grouped.get(group, [])
             
             for item in items:
+                # ⭐ severity guard (enterprise safe autofix)
+                if item.get("severity","low").lower() not in ["high","critical"]:
+                    continue
+
                 counter += 1
                 resp, used_fallback = self._llm_propose_patch_for_item(item, tool_group=group, temperature=temperature)
+
+                # ⭐ diff validation (your confusion point)
+                if not resp:
+                    notes.append("Empty LLM response")
+                    continue
+
+                if "```diff" not in resp and "--- " not in resp:
+                    notes.append("LLM response has no valid diff")
+                    continue
                 
                 if used_fallback:
                     fallback_count += 1
