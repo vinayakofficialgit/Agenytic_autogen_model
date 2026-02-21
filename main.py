@@ -1,4 +1,15 @@
 # main.py
+"""
+DevSecOps Agentic AI Orchestrator
+
+Modes:
+    gate   → deterministic security decision
+    triage → explain findings
+    advise → remediation suggestions
+    fix    → autofix + PR (only if gate FAIL)
+    all    → full pipeline
+"""
+
 import argparse
 import os
 import json
@@ -8,30 +19,16 @@ from datetime import datetime
 from io import StringIO
 import contextlib
 
-# Ensure repo root import works in GitHub Actions
 sys.path.append(os.getcwd())
 
-# Optional PR agent (do not fail pipeline if missing)
+# =====================================================
+# Optional agents
+# =====================================================
 try:
     from agents.git_pr import GitPRAgent
 except Exception:
-    try:
-        from git_pr import GitPRAgent
-    except Exception:
-        GitPRAgent = None
+    GitPRAgent = None
 
-try:
-    import yaml
-except Exception:
-    yaml = None
-
-# severity ranking
-try:
-    from agents.policy_gate import _sev_rank
-except Exception:
-    from policy_gate import _sev_rank
-
-# core imports
 try:
     from agents.collector import CollectorAgent
     from agents.policy_gate import PolicyGate
@@ -44,6 +41,17 @@ except Exception:
     from reporter import Reporter
     from fixer import Fixer
     from autogen_runtime import run_autogen_layer
+
+
+# =====================================================
+# Utilities
+# =====================================================
+DEBUG = os.getenv("DEBUG") == "1"
+
+
+def debug(*args):
+    if DEBUG:
+        print("[DEBUG]", *args)
 
 
 def load_env_from_file(env_file=".env", override=False):
@@ -59,7 +67,7 @@ def load_env_from_file(env_file=".env", override=False):
 
 @contextlib.contextmanager
 def suppress():
-    if os.getenv("LLM_VERBOSE") == "1":
+    if DEBUG or os.getenv("LLM_VERBOSE") == "1":
         yield
     else:
         old = sys.stdout
@@ -83,13 +91,15 @@ def print_banner():
     print("=========================================\n")
 
 
+# =====================================================
+# Deduplication
+# =====================================================
 def deduplicate_findings(grouped):
     seen = set()
     deduped = {}
 
     for tool, items in grouped.items():
         deduped[tool] = []
-
         for f in items:
             if not isinstance(f, dict):
                 continue
@@ -99,11 +109,7 @@ def deduplicate_findings(grouped):
                 or f.get("vulnerability_id")
                 or f.get("rule_id")
                 or f.get("check_id")
-                or (
-                    f.get("title"),
-                    f.get("file"),
-                    f.get("line")
-                )
+                or (f.get("title"), f.get("file"), f.get("line"))
                 or f.get("title")
             )
 
@@ -112,13 +118,16 @@ def deduplicate_findings(grouped):
                 continue
 
             key = str(key)
-
             if key not in seen:
                 seen.add(key)
                 deduped[tool].append(f)
 
     return deduped
 
+
+# =====================================================
+# MAIN
+# =====================================================
 def main():
     load_env_from_file()
 
@@ -126,7 +135,7 @@ def main():
     parser.add_argument("--reports-dir")
     parser.add_argument("--output-dir")
     parser.add_argument("--min-severity")
-    parser.add_argument("--mode", default="all", help="gate | advise | fix | all")
+    parser.add_argument("--mode", default="all", help="gate | triage | advise | fix | all")
     parser.add_argument("--skip-llm", action="store_true")
     args = parser.parse_args()
 
@@ -141,13 +150,12 @@ def main():
 
     cfg["policy"]["min_severity_to_fail"] = min_sev
 
-    # mkdir fix
     reports_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # =======================
+    # =====================================================
     # 1️⃣ Collector
-    # =======================
+    # =====================================================
     try:
         with suppress():
             collector = CollectorAgent(cfg, reports_dir, output_dir)
@@ -155,148 +163,103 @@ def main():
     except Exception as e:
         print("Collector error:", e)
         grouped = {}
-    
-    grouped = grouped or {}
-    
-    # remove meta
-    grouped = {k: v for k, v in grouped.items() if not k.startswith("_")}
-    
-    # flatten safety
-    for tool in list(grouped.keys()):
-        if isinstance(grouped[tool], list):
-            grouped[tool] = [x for x in grouped[tool] if isinstance(x, dict)]
-        else:
-            grouped[tool] = []
 
-    # ⭐ DEDUPLICATION
+    grouped = grouped or {}
+    grouped = {k: v for k, v in grouped.items() if not k.startswith("_")}
+
+    for tool in list(grouped.keys()):
+        grouped[tool] = [x for x in grouped[tool] if isinstance(x, dict)]
+
     before = sum(len(v) for v in grouped.values())
     grouped = deduplicate_findings(grouped)
     after = sum(len(v) for v in grouped.values())
 
-    print(f"\nDedup applied: {before} → {after}")        
-    
-    # debug
-    print("Collected tools:", list(grouped.keys()))
-    for t, v in grouped.items():
-        print(f"{t}: {len(v)} findings")
-    
-    
-    # =======================
-    # 2️⃣ AI analysis
-    # =======================
+    debug("Dedup:", before, "→", after)
+
+    # =====================================================
+    # 2️⃣ LLM ENRICHMENT
+    # =====================================================
     if not args.skip_llm:
         try:
             with suppress():
                 run_autogen_layer(grouped, cfg, output_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            debug("LLM enrichment error:", e)
 
-    # ⭐ Merge AI enrichment
-    ai_file = output_dir / "llm_report.json"
-    if ai_file.exists():
-        try:
-            ai_data = json.loads(ai_file.read_text())
-            for tool, items in ai_data.items():
-                if tool.startswith("_"):
-                    continue
-                if tool in grouped and isinstance(items, list):
-                    for i, ai_item in enumerate(items):
-                        if i < len(grouped[tool]) and isinstance(ai_item, dict):
-                            grouped[tool][i].update(ai_item)
-        except Exception:
-            pass
-
-    # =======================
-    # 3️⃣ Policy Gate
-    # =======================
-    decision = PolicyGate(cfg, output_dir).decide(grouped) or {}
-
-    if "decision" not in decision:
-        decision["decision"] = "FAIL" if decision.get("status") == "fail" else "PASS"
-
-    print("\n========== SECURITY GATE TABLE ==========")
-
-    matrix = {}
-    for tool, items in grouped.items():
-        for item in items:
-            sev = (item.get("severity") or "unknown").lower()
-            matrix.setdefault(tool, {})
-            matrix[tool][sev] = matrix[tool].get(sev, 0) + 1
-
-    all_sev = ["critical", "high", "medium", "low"]
-    header = ["Tool"] + all_sev + ["Total"]
-    print("{:<18} {:>8} {:>8} {:>8} {:>8} {:>8}".format(*header))
-    print("-" * 70)
-
-    for tool in matrix:
-        row = [tool]
-        total = 0
-        for s in all_sev:
-            c = matrix[tool].get(s, 0)
-            row.append(c)
-            total += c
-        row.append(total)
-        print("{:<18} {:>8} {:>8} {:>8} {:>8} {:>8}".format(*row))
-
-    print("=" * 70)
-    print("Gate Decision:", decision["decision"])
-    print("===================================\n")
-
-    # ⭐ WRITE decision.json BEFORE advisor/fixer
+    # =====================================================
+    # 3️⃣ POLICY GATE
+    # =====================================================
     try:
-        with open(output_dir / "decision.json", "w") as f:
-            json.dump(decision, f, indent=2)
+        decision = PolicyGate(cfg, output_dir).decide(grouped) or {}
     except Exception as e:
-        print("Error writing decision.json:", e)
+        print("PolicyGate error:", e)
+        decision = {"decision": "FAIL"}
 
-    # =======================
-    # ⭐ AI Remediation Advisor (mode=advise|all)
-    # =======================
+    decision.setdefault("decision", "PASS")
+
+    with open(output_dir / "decision.json", "w") as f:
+        json.dump(decision, f, indent=2)
+
+    print("Gate Decision:", decision["decision"])
+
+    # =====================================================
+    # 4️⃣ TRIAGE
+    # =====================================================
+    if mode in ("triage", "all"):
+        try:
+            from agents.triage import TriageAgent
+            TriageAgent(output_dir).generate(grouped)
+            debug("Triage completed")
+        except Exception as e:
+            debug("Triage skipped:", e)
+
+    # =====================================================
+    # 5️⃣ ADVISOR
+    # =====================================================
     if mode in ("advise", "all"):
         try:
             from agents.advisor import AdvisorAgent
             AdvisorAgent(output_dir).generate(grouped)
+            debug("Advisor completed")
         except Exception as e:
-            print("Advisor error:", e)        
+            debug("Advisor skipped:", e)
 
-    # =======================
-    # 4️⃣ Auto fix + PR (mode=fix|all)
-    # =======================
-    changed_files = []
-
-    if mode in ("fix", "all") and decision.get("decision") == "FAIL":
+    # =====================================================
+    # 6️⃣ AUTOFIX
+    # =====================================================
+    if mode in ("fix", "all") and decision["decision"] == "FAIL":
         try:
             with suppress():
                 Fixer(cfg, output_dir, repo_root=Path(".")).apply(grouped)
         except Exception as e:
-            print("Fixer error:", e)
+            debug("Fixer error:", e)
 
         manifest = output_dir / "patch_manifest.json"
+        changed_files = []
         if manifest.exists():
             try:
                 changed_files = json.loads(manifest.read_text()).get("files", [])
             except Exception:
-                changed_files = []
+                pass
 
         if changed_files and GitPRAgent:
             try:
                 GitPRAgent().create_pr(changed_files)
+                debug("PR created")
             except Exception as e:
-                print("PR agent error:", e)
+                debug("PR error:", e)
 
-    # =======================
-    # 5️⃣ Reporting
-    # =======================
+    # =====================================================
+    # 7️⃣ REPORT
+    # =====================================================
     try:
         Reporter(cfg, output_dir).emit(grouped, decision)
     except Exception as e:
-        print("Reporter error:", e)
+        debug("Reporter skipped:", e)
 
-    print("\nPipeline:", decision["decision"])
+    print("Pipeline:", decision["decision"])
     return 0
-    # return 1 if decision["decision"] == "FAIL" else 0
 
 
 if __name__ == "__main__":
     main()
-    # sys.exit(main())
