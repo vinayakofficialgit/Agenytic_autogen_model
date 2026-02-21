@@ -2,7 +2,7 @@ name: DevSecOps Agentic AI Pipeline (Enterprise Optimize)
 
 on:
   push:
-    branches: [test-homee-sachin]
+    branches: [test-home-sachin]
   workflow_dispatch:
 
 concurrency:
