@@ -242,12 +242,36 @@ def main():
             except Exception:
                 pass
 
-        if changed_files and GitPRAgent:
-            try:
+        # fallback: always try PR if repo dirty
+        try:
+            dirty = subprocess.check_output(["git", "status", "--porcelain"]).decode()
+            if dirty and GitPRAgent:
                 GitPRAgent().create_pr(changed_files)
-                debug("PR created")
-            except Exception as e:
-                debug("PR error:", e)
+                debug("PR attempted")
+        except Exception as e:
+            debug("PR error:", e)
+
+    # if mode in ("fix", "all") and decision["decision"] == "FAIL":
+    #     try:
+    #         with suppress():
+    #             Fixer(cfg, output_dir, repo_root=Path(".")).apply(grouped)
+    #     except Exception as e:
+    #         debug("Fixer error:", e)
+
+    #     manifest = output_dir / "patch_manifest.json"
+    #     changed_files = []
+    #     if manifest.exists():
+    #         try:
+    #             changed_files = json.loads(manifest.read_text()).get("files", [])
+    #         except Exception:
+    #             pass
+
+    #     if changed_files and GitPRAgent:
+    #         try:
+    #             GitPRAgent().create_pr(changed_files)
+    #             debug("PR created")
+    #         except Exception as e:
+    #             debug("PR error:", e)
 
     # =====================================================
     # 7️⃣ REPORT
