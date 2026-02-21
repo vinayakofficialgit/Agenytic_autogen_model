@@ -1,133 +1,88 @@
-# agents/advisor.py
+# advisor.py
 """
-AI Remediation Advisor
-
-Provides:
-✅ root cause explanation
-✅ exploitability
-✅ business impact
-✅ step-by-step remediation
-✅ config fix
-✅ code fix guidance
-✅ verification steps
-✅ prevention guidance
+Advisor Agent
+-------------
+Generates AI remediation intelligence.
 """
 
 import os
 import json
 from pathlib import Path
+from typing import Dict
 from openai import OpenAI
 
 
 class AdvisorAgent:
 
     def __init__(self, output_dir: Path):
+        """Initialize advisor with output directory."""
         self.out = Path(output_dir)
-        self.client = OpenAI()
+        self.client = OpenAI() if os.getenv("OPENAI_API_KEY") else None
 
+    # -------------------------
+    def _safe_json(self, txt):
+        """Safely parse JSON from LLM output."""
+        try:
+            return json.loads(txt)
+        except Exception:
+            try:
+                txt = txt.split("```json")[-1].split("```")[0]
+                return json.loads(txt)
+            except Exception:
+                return {"raw": txt}
+
+    # -------------------------
     def _build_prompt(self, finding):
-
+        """Construct remediation intelligence prompt."""
         return f"""
-You are a senior DevSecOps security architect.
-
-Provide structured remediation intelligence.
-
-Return STRICT JSON with keys:
-- root_cause
-- exploitability
-- business_impact
-- remediation_steps
-- config_fix
-- code_fix
-- verification_steps
-- prevention_guidance
-- patch_diff_if_possible
+Provide remediation intelligence as JSON.
 
 Finding:
 {json.dumps(finding)[:4000]}
 """
 
-    def generate(self, grouped):
-
+    # -------------------------
+    def generate(self, grouped: Dict):
+        """Generate remediation suggestions for findings."""
         enriched = {}
 
         for tool, findings in grouped.items():
-
             enriched[tool] = []
 
-            for f in findings[:20]:  # avoid token explosion
+            for f in findings[:20]:
+                f_copy = dict(f)
+
+                if not self.client:
+                    f_copy["ai_remediation"] = {"error": "no api key"}
+                    enriched[tool].append(f_copy)
+                    continue
 
                 try:
-                    prompt = self._build_prompt(f)
-
                     resp = self.client.chat.completions.create(
                         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                        messages=[{"role": "user", "content": prompt}],
+                        messages=[{"role": "user", "content": self._build_prompt(f)}],
                         temperature=0.2,
                     )
 
-                    data = resp.choices[0].message.content
-
-                    try:
-                        ai = json.loads(data)
-                        f.update({"ai_remediation": ai})
-                    except:
-                        f["ai_remediation"] = {"raw": data}
+                    ai = self._safe_json(resp.choices[0].message.content)
+                    f_copy["ai_remediation"] = ai
 
                 except Exception as e:
-                    f["ai_remediation"] = {"error": str(e)}
+                    f_copy["ai_remediation"] = {"error": str(e)}
 
-                enriched[tool].append(f)
+                enriched[tool].append(f_copy)
 
         self.out.mkdir(exist_ok=True)
 
-        (self.out / "ai_remediation.json").write_text(
-            json.dumps(enriched, indent=2)
-        )
+        (self.out / "ai_remediation.json").write_text(json.dumps(enriched, indent=2))
 
-        # ⭐ also human readable md
         md = []
         for tool, items in enriched.items():
-            md.append(f"## {tool}\n")
+            md.append(f"## {tool}")
             for it in items:
-                md.append(f"- {it.get('title')}\n")
+                md.append(f"- {it.get('title')}")
                 md.append(json.dumps(it.get("ai_remediation"), indent=2))
-                md.append("\n")
 
         (self.out / "ai_remediation.md").write_text("\n".join(md))
 
         return enriched
-
-
-# #advisor.py
-# ADVISOR_SYSTEM = """You are a senior secure-coding reviewer.
-# Given scanner findings and code snippets, you will:
-# 1) Prioritize by severity and exploitability.
-# 2) Explain root cause and the minimal safe fix.
-# 3) Propose unified diffs (git patch format) per file when possible.
-# 4) Keep changes minimal and compatible with Python {python_version}.
-# 5) Avoid speculative edits—if unsure, say so.
-
-# Return exactly TWO parts in this order:
-# [PART 1: MARKDOWN]
-# A concise, human-readable plan with bullets and small code blocks.
-
-# [PART 2: JSON]
-# A single JSON object with this schema:
-# {{
-#   "schema": "advisor.v1",
-#   "suggestions": [
-#     {{
-#       "id": "string",
-#       "title": "string",
-#       "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO",
-#       "targets": [{{"file":"path","start_line":int|null,"end_line":int|null}}],
-#       "rationale": "string",
-#       "fix": {{
-#         "summary": "string",
-#         "diff": "string|null"  // unified diff or null
-#       }}
-#     }}
-#   ]
-# }}
-# """

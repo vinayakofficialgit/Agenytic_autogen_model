@@ -255,9 +255,9 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # ============================================================
-  # AGGREGATE
-  # ============================================================
+# ============================================================
+# AGGREGATE
+# ============================================================
   Aggregate-Scanning-Reports:
     runs-on: ubuntu-latest
     needs: [SAST-Scanning,Secrets-Scanning,SCA-Scanning,IAC-Scanning,Container-Scanning,DAST-Scanning]
@@ -266,79 +266,87 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: collected-reports
+
       - run: |
           mkdir -p final-reports
           find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
+
+          echo "DEBUG: Aggregated files"
+          ls -la final-reports || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: all-scan-reports
           path: final-reports/*.json
 
-  # ============================================================
-  # AI ANALYSIS (pre-gate generation of decision.json)
-  # ============================================================
+# ============================================================
+# AI GATE
+# ============================================================
   AI-Gate-Analysis:
     runs-on: ubuntu-latest
     needs: Aggregate-Scanning-Reports
-    continue-on-error: true
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
       - run: pip install -r requirements.txt
+
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
-          path: tmp-reports/
-      - run: |
-          mkdir -p reports
-          find tmp-reports -name "*.json" -exec cp {} reports/ \;
+          path: reports
+
       - run: mkdir -p agent_output
+
       - run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=gate --skip-llm
+
+      - name: Debug Gate Output
+        run: |
+          echo "DEBUG decision.json"
+          cat agent_output/decision.json || true
+          echo "DEBUG files"
+          ls -la agent_output || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: ai-results
           path: agent_output/
-  
-  # ============================================================
-  # SECURITY GATE (exposes gate_failed output)
-  # ============================================================
+
+# ============================================================
+# SECURITY GATE
+# ============================================================
   Security-Gate:
     runs-on: ubuntu-latest
     needs: AI-Gate-Analysis
-    outputs:                     # 🔧 expose the flag for downstream jobs
+    outputs:
       gate_failed: ${{ steps.read.outputs.gate_failed }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: ai-results
           path: agent_output
+
       - run: sudo apt-get update && sudo apt-get install -y jq
-      - id: read                 # 🔧 give step an id and write to GITHUB_OUTPUT
-        name: Read gate decision
+
+      - id: read
         run: |
           STATUS=$(jq -r '.decision' agent_output/decision.json)
-          echo "Gate decision = $STATUS"
+          echo "DEBUG Gate decision = $STATUS"
           if [ "$STATUS" = "FAIL" ]; then
             echo "gate_failed=true" >> $GITHUB_OUTPUT
           else
             echo "gate_failed=false" >> $GITHUB_OUTPUT
           fi
 
-
-  # ============================================================
-  # TRIAGE-EXPLAIN-DESCRIBE (LLM)
-  # ============================================================
+# ============================================================
+# TRIAGE
+# ============================================================
   LLM-Triage:
     runs-on: ubuntu-latest
     needs: Security-Gate
-    if: always()
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -357,24 +365,26 @@ jobs:
           name: ai-results
           path: agent_output
 
-      - name: Run TRIAGE analysis
-        run: |
+      - run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=triage
+
+      - name: Debug triage
+        run: |
+          echo "DEBUG triage output"
+          ls -la agent_output
+          cat agent_output/* || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: triage-output
           path: agent_output/
 
-  # ============================================================
-  # SUGGESTIONS-RECOMMENDATION (LLM)
-  # ============================================================
+# ============================================================
+# SUGGESTIONS
+# ============================================================
   LLM-Suggestions:
     runs-on: ubuntu-latest
     needs: LLM-Triage
-    if: always()
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -382,39 +392,40 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - run: pip install -r requirements.txt
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-scan-reports
-          path: reports
 
       - uses: actions/download-artifact@v4
         with:
           name: triage-output
           path: agent_output
 
-      - name: Run Suggestions generation
-        run: |
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-scan-reports
+          path: reports
+
+      - run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=advise
+
+      - name: Debug suggestions
+        run: |
+          echo "DEBUG suggestions"
+          ls -la agent_output
+          cat agent_output/* || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: suggestions-output
           path: agent_output/
 
-  # ============================================================
-  # AUTOFIX & PR
-  # ============================================================
+# ============================================================
+# AUTOFIX
+# ============================================================
   AutoFix-PR:
     runs-on: ubuntu-latest
-    needs: LLM-Suggestions
+    needs: [LLM-Suggestions, Security-Gate]
     if: needs.Security-Gate.outputs.gate_failed == 'true'
-    permissions:
-      contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -431,11 +442,14 @@ jobs:
           name: all-scan-reports
           path: reports
 
-      - name: Run AutoFix
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+      - run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=fix --skip-llm
+
+      - name: Debug autofix
+        run: |
+          echo "DEBUG autofix"
+          ls -la agent_output
+          cat agent_output/* || true
 
       - uses: actions/upload-artifact@v4
         with:
