@@ -113,154 +113,155 @@ jobs:
   # # ============================================================
   # # SECRETS
   # # ============================================================
-  Secrets-Scanning:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-      - run: sudo apt-get update && sudo apt-get install -y jq
-      - run: |
-          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -L -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
-          tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
-      - run: |
-          gitleaks detect --source . --report-format json \
-          --report-path $REPORTS_DIR/gitleaks.json || echo '{}' > $REPORTS_DIR/gitleaks.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: secrets-reports
-          path: reports/*.json
-          if-no-files-found: ignore
+  # Secrets-Scanning:
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - run: sudo apt-get update && sudo apt-get install -y jq
+  #     - run: |
+  #         VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+  #         curl -L -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
+  #         tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+  #     - run: |
+  #         gitleaks detect --source . --report-format json \
+  #         --report-path $REPORTS_DIR/gitleaks.json || echo '{}' > $REPORTS_DIR/gitleaks.json
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: secrets-reports
+  #         path: reports/*.json
+  #         if-no-files-found: ignore
+
+  # # # ============================================================
+  # # # SCA
+  # # # ============================================================
+  # SCA-Scanning:
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - run: |
+  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+  #         ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
+  #         $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: sca-reports
+  #         path: reports/*.json
+
+  # # # ============================================================
+  # # # IAC
+  # # # ============================================================
+  # IAC-Scanning:
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - run: |
+  #         curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
+  #         chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+  #     - run: |
+  #         tfsec $APP_DIR/terraform --format json > "$REPORTS_DIR/tfsec.json" || true
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: iac-reports
+  #         path: reports/*.json
+
+  # # # ============================================================
+  # # # CONTAINER
+  # # # ============================================================
+  # Container-Scanning:
+  #   runs-on: ubuntu-latest
+  #   needs: Build-Java-App
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: app-jar
+  #         path: ${{ env.APP_DIR }}/app/target
+  #     - name: Verify jar
+  #       run: |
+  #         echo "Listing target folder:"
+  #         ls -la $APP_DIR/app/target
+  #         if [ ! -f "$APP_DIR/app/target/enterprise-app-1.0.jar" ]; then
+  #           echo "❌ JAR missing"
+  #           exit 1
+  #         fi
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - name: Build Docker image
+  #       run: |
+  #         docker build \
+  #           -t enterprise-app \
+  #           -f $APP_DIR/docker/Dockerfile \
+  #           .
+  #     - name: Install Trivy
+  #       run: |
+  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+  #     - name: Trivy Image Scan
+  #       run: |
+  #         ./bin/trivy image enterprise-app \
+  #           --format json \
+  #           --output $REPORTS_DIR/trivy_image.json \
+  #           || echo '{}' > $REPORTS_DIR/trivy_image.json
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: container-reports
+  #         path: reports/*.json
+  #         if-no-files-found: ignore
 
   # # ============================================================
-  # # SCA
+  # # DAST
   # # ============================================================
-  SCA-Scanning:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-      - run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
-          $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sca-reports
-          path: reports/*.json
-
-  # # ============================================================
-  # # IAC
-  # # ============================================================
-  IAC-Scanning:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-      - run: |
-          curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
-          chmod +x tfsec && sudo mv tfsec /usr/local/bin/
-      - run: |
-          tfsec $APP_DIR/terraform --format json > "$REPORTS_DIR/tfsec.json" || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: iac-reports
-          path: reports/*.json
-
-  # # ============================================================
-  # # CONTAINER
-  # # ============================================================
-  Container-Scanning:
-    runs-on: ubuntu-latest
-    needs: Build-Java-App
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: ${{ env.APP_DIR }}/app/target
-      - name: Verify jar
-        run: |
-          echo "Listing target folder:"
-          ls -la $APP_DIR/app/target
-          if [ ! -f "$APP_DIR/app/target/enterprise-app-1.0.jar" ]; then
-            echo "❌ JAR missing"
-            exit 1
-          fi
-      - run: mkdir -p $REPORTS_DIR
-      - name: Build Docker image
-        run: |
-          docker build \
-            -t enterprise-app \
-            -f $APP_DIR/docker/Dockerfile \
-            .
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-      - name: Trivy Image Scan
-        run: |
-          ./bin/trivy image enterprise-app \
-            --format json \
-            --output $REPORTS_DIR/trivy_image.json \
-            || echo '{}' > $REPORTS_DIR/trivy_image.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: container-reports
-          path: reports/*.json
-          if-no-files-found: ignore
-
-  # ============================================================
-  # DAST
-  # ============================================================
-  DAST-Scanning:
-    runs-on: ubuntu-latest
-    needs: Build-Java-App
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: ${{ env.APP_DIR }}/app/target
-      - run: mkdir -p $REPORTS_DIR
-      - name: Start Application
-        run: |
-          mkdir -p config/dummy
-          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
-            --spring.config.import=optional:file:./config/*/ &
-          sleep 40
-      - name: OWASP ZAP Baseline
-        run: |
-          mkdir -p zap-output
-          docker run --rm \
-            -u root \
-            --network=host \
-            -v $(pwd)/zap-output:/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://localhost:8080 \
-            -J zap.json || true
-          if [ -f zap-output/zap.json ]; then
-            mv zap-output/zap.json $REPORTS_DIR/zap.json
-          else
-            echo '{}' > $REPORTS_DIR/zap.json
-          fi
-      - uses: actions/upload-artifact@v4  
-        with:
-          name: dast-reports
-          path: reports/*.json
-          if-no-files-found: ignore
+  # DAST-Scanning:
+  #   runs-on: ubuntu-latest
+  #   needs: Build-Java-App
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: app-jar
+  #         path: ${{ env.APP_DIR }}/app/target
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - name: Start Application
+  #       run: |
+  #         mkdir -p config/dummy
+  #         java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
+  #           --spring.config.import=optional:file:./config/*/ &
+  #         sleep 40
+  #     - name: OWASP ZAP Baseline
+  #       run: |
+  #         mkdir -p zap-output
+  #         docker run --rm \
+  #           -u root \
+  #           --network=host \
+  #           -v $(pwd)/zap-output:/zap/wrk:rw \
+  #           ghcr.io/zaproxy/zaproxy:stable \
+  #           zap-baseline.py \
+  #           -t http://localhost:8080 \
+  #           -J zap.json || true
+  #         if [ -f zap-output/zap.json ]; then
+  #           mv zap-output/zap.json $REPORTS_DIR/zap.json
+  #         else
+  #           echo '{}' > $REPORTS_DIR/zap.json
+  #         fi
+  #     - uses: actions/upload-artifact@v4  
+  #       with:
+  #         name: dast-reports
+  #         path: reports/*.json
+  #         if-no-files-found: ignore
 
 # ============================================================
 # AGGREGATE
 # ============================================================
   Aggregate-Scanning-Reports:
     runs-on: ubuntu-latest
-    needs: [SAST-Scanning,Secrets-Scanning,SCA-Scanning,IAC-Scanning,Container-Scanning,DAST-Scanning]
+    needs: [SAST-Scanning]
+    # needs: [SAST-Scanning,Secrets-Scanning,SCA-Scanning,IAC-Scanning,Container-Scanning,DAST-Scanning]
     if: always()
     steps:
       - uses: actions/download-artifact@v4

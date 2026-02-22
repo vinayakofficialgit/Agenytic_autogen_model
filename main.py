@@ -225,31 +225,62 @@ def main():
             debug("Advisor skipped:", e)
 
     # =====================================================
-    # 6️⃣ AUTOFIX
+    # 6️⃣ AUTOFIX + PR
     # =====================================================
     if mode in ("fix", "all") and decision["decision"] == "FAIL":
+    
+        patch_manifest = output_dir / "patch_manifest.json"
+        patches = []
+    
+        # Apply fixes
         try:
             with suppress():
                 Fixer(cfg, output_dir, repo_root=Path(".")).apply(grouped)
+    
+            # Load generated patches
+            if patch_manifest.exists():
+                patches = json.loads(patch_manifest.read_text())
+                print(f"[autofix] patches generated: {len(patches)}")
+            else:
+                print("[autofix] no patch manifest found")
+    
         except Exception as e:
-            debug("Fixer error:", e)
-
-        manifest = output_dir / "patch_manifest.json"
-        changed_files = []
-        if manifest.exists():
+            print("Fixer error:", e)
+    
+        # Create PR
+        if GitPRAgent and patches:
             try:
-                changed_files = json.loads(manifest.read_text()).get("files", [])
-            except Exception:
-                pass
+                GitPRAgent(repo_root=Path(".")).create_pr(patches)
+                print("[autofix] PR created")
+            except Exception as e:
+                print("PR creation failed:", e)
 
-        # fallback: always try PR if repo dirty
-        try:
-            dirty = subprocess.check_output(["git", "status", "--porcelain"]).decode()
-            if dirty and GitPRAgent:
-                GitPRAgent().create_pr(changed_files)
-                debug("PR attempted")
-        except Exception as e:
-            debug("PR error:", e)
+    # # =====================================================
+    # # 6️⃣ AUTOFIX
+    # # =====================================================
+    # if mode in ("fix", "all") and decision["decision"] == "FAIL":
+    #     try:
+    #         with suppress():
+    #             Fixer(cfg, output_dir, repo_root=Path(".")).apply(grouped)
+    #     except Exception as e:
+    #         debug("Fixer error:", e)
+
+    #     manifest = output_dir / "patch_manifest.json"
+    #     changed_files = []
+    #     if manifest.exists():
+    #         try:
+    #             changed_files = json.loads(manifest.read_text()).get("files", [])
+    #         except Exception:
+    #             pass
+
+    #     # fallback: always try PR if repo dirty
+    #     try:
+    #         dirty = subprocess.check_output(["git", "status", "--porcelain"]).decode()
+    #         if dirty and GitPRAgent:
+    #             GitPRAgent().create_pr(changed_files)
+    #             debug("PR attempted")
+    #     except Exception as e:
+    #         debug("PR error:", e)
 
     # if mode in ("fix", "all") and decision["decision"] == "FAIL":
     #     try:
