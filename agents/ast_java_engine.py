@@ -42,8 +42,8 @@ class ASTJavaEngine:
     # -------------------------
     def _auto_detect_app_pom(self) -> Optional[Path]:
         candidates = [
-            self.repo_root / "pom.xml",
-            self.repo_root / "enterprise-devsecops-hackathon" / "app" / "pom.xml",
+            # self.repo_root / "pom.xml",
+            self.repo_root / "hackathon-vuln-app" / "pom.xml",
         ]
         for c in candidates:
             if c.exists():
@@ -103,7 +103,8 @@ class ASTJavaEngine:
     # -------------------------
     def _run_java_tool(self, payload: Dict[str, Any]) -> AstFixResult:
         if not self.tool_pom.exists():
-            return AstFixResult([], [f"[ast] tool missing: {self.tool_pom}"], False, {"error": "tool_missing"})
+            return AstFixResult([], [f"[ast] tool missing ->skip AST"],True,{"skipped":True})
+            # return AstFixResult([], [f"[ast] tool missing: {self.tool_pom}"], False, {"error": "tool_missing"})
 
         tmp_dir = self.repo_root / "agent_output"
         tmp_dir.mkdir(parents=True, exist_ok=True)

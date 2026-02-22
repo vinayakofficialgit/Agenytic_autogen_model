@@ -99,47 +99,125 @@ class Fixer:
         except Exception as e:
             print("[fixer] LLM error:", e)
             return "", True
-
-    # -------------------------------------------------
+        
     def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:
         notes, changed_files = [], []
-
+    
         for tool, items in grouped.items():
             for item in items:
-
+    
+                # ----------------------------------------
+                # Severity filter
+                # ----------------------------------------
                 if not _is_autofix_severity(item.get("severity")):
                     continue
-
+    
                 file_path = item.get("file") or item.get("path") or ""
-                print(f"[fixer] vulnerability in: {file_path} -> {item.get('title')}")
-
+                title = item.get("title", "unknown")
+    
+                print(f"[fixer] vulnerability in: {file_path} -> {title}")
+    
+                # ----------------------------------------
+                # LLM patch attempt
+                # ----------------------------------------
                 diff, fallback = self._llm_propose_patch_for_item(item)
-
-                # ===== LLM invalid → AST fallback =====
+    
+                # =========================================================
+                # ⭐ LLM invalid → AST fallback ONLY for Java files
+                # =========================================================
                 if fallback or not diff or "--- a/" not in diff:
-                    notes.append("[fixer] LLM patch invalid → AST fallback")
-
+    
+                    # ⭐ AST safe guard
+                    if not file_path or not file_path.endswith(".java"):
+                        notes.append(f"[fixer] AST skipped (non-java finding): {title}")
+                        continue
+    
+                    notes.append(f"[fixer] LLM patch invalid → AST fallback: {title}")
+    
                     ast_result = self.ast_engine.apply_for_finding(item)
-                    notes.extend(ast_result.notes)
-                    changed_files.extend(ast_result.changed_files)
+    
+                    if getattr(ast_result, "ok", True):
+                        notes.extend(ast_result.notes)
+                        changed_files.extend(ast_result.changed_files)
+                    else:
+                        notes.append("[fixer] AST fallback failed")
+    
                     continue
-
+    
+                # ----------------------------------------
+                # Patch validation
+                # ----------------------------------------
                 targets = _parse_diff_changed_files(diff)
-
+    
                 if not _patch_targets_repo(self.repo, targets):
                     notes.append("[fixer] patch rejected outside repo")
                     continue
-
+    
+                # ----------------------------------------
+                # Apply patch
+                # ----------------------------------------
                 if _git_apply_patch(self.repo, diff):
-                    notes.append("[fixer] LLM patch applied")
+                    notes.append(f"[fixer] LLM patch applied: {title}")
                     changed_files.extend(targets)
+    
                 else:
-                    notes.append("[fixer] LLM patch failed → AST fallback")
+                    # ⭐ fallback only for Java
+                    if not file_path.endswith(".java"):
+                        notes.append(f"[fixer] AST skipped after LLM failure (non-java): {title}")
+                        continue
+    
+                    notes.append(f"[fixer] LLM patch failed → AST fallback: {title}")
+    
                     ast_result = self.ast_engine.apply_for_finding(item)
-                    notes.extend(ast_result.notes)
-                    changed_files.extend(ast_result.changed_files)
-
+    
+                    if getattr(ast_result, "ok", True):
+                        notes.extend(ast_result.notes)
+                        changed_files.extend(ast_result.changed_files)
+                    else:
+                        notes.append("[fixer] AST fallback failed")
+    
         return notes, list(set(changed_files))
+
+    # # -------------------------------------------------
+    # def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:
+    #     notes, changed_files = [], []
+
+    #     for tool, items in grouped.items():
+    #         for item in items:
+
+    #             if not _is_autofix_severity(item.get("severity")):
+    #                 continue
+
+    #             file_path = item.get("file") or item.get("path") or ""
+    #             print(f"[fixer] vulnerability in: {file_path} -> {item.get('title')}")
+
+    #             diff, fallback = self._llm_propose_patch_for_item(item)
+
+    #             # ===== LLM invalid → AST fallback =====
+    #             if fallback or not diff or "--- a/" not in diff:
+    #                 notes.append("[fixer] LLM patch invalid → AST fallback")
+
+    #                 ast_result = self.ast_engine.apply_for_finding(item)
+    #                 notes.extend(ast_result.notes)
+    #                 changed_files.extend(ast_result.changed_files)
+    #                 continue
+
+    #             targets = _parse_diff_changed_files(diff)
+
+    #             if not _patch_targets_repo(self.repo, targets):
+    #                 notes.append("[fixer] patch rejected outside repo")
+    #                 continue
+
+    #             if _git_apply_patch(self.repo, diff):
+    #                 notes.append("[fixer] LLM patch applied")
+    #                 changed_files.extend(targets)
+    #             else:
+    #                 notes.append("[fixer] LLM patch failed → AST fallback")
+    #                 ast_result = self.ast_engine.apply_for_finding(item)
+    #                 notes.extend(ast_result.notes)
+    #                 changed_files.extend(ast_result.changed_files)
+
+    #     return notes, list(set(changed_files))
 
     # -------------------------------------------------
     def apply(self, grouped):
