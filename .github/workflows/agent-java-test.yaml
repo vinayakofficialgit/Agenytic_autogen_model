@@ -136,7 +136,7 @@ jobs:
 
       - name: Run SpotBugs
         run: |
-          mvn -B verify spotbugs:spotbugs -f $APP_DIR/src/main/java/com/demo/pom.xml || true
+          mvn -B verify spotbugs:spotbugs -f $APP_DIR/pom.xml || true
       
       - name: Collect SpotBugs XML
         run: |
@@ -181,7 +181,7 @@ jobs:
           curl -L -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
           tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
       - run: |
-          gitleaks detect --source . --report-format json \
+          gitleaks detect --source $APP_DIR --report-format json \
           --report-path $REPORTS_DIR/gitleaks.json || echo '{}' > $REPORTS_DIR/gitleaks.json
       - uses: actions/upload-artifact@v4
         with:
@@ -252,7 +252,7 @@ jobs:
         run: |
           docker build \
             -t hackathon-vuln-app \
-            -f $APP_DIR/docker/Dockerfile \
+            -f $APP_DIR/Dockerfile \
             .
       - name: Install Trivy
         run: |

@@ -106,37 +106,34 @@ class Fixer:
         for tool, items in grouped.items():
             for item in items:
     
-                # ----------------------------------------
-                # Severity filter
-                # ----------------------------------------
                 if not _is_autofix_severity(item.get("severity")):
                     continue
     
                 file_path = item.get("file") or item.get("path") or ""
-                title = item.get("title", "unknown")
+                title = str(item.get("title", "")).lower()
     
-                print(f"[fixer] vulnerability in: {file_path} -> {title}")
+                print(f"[fixer] vulnerability in: {file_path} -> {item.get('title')}")
     
-                # ----------------------------------------
-                # LLM patch attempt
-                # ----------------------------------------
+                # ⭐ Skip non-Java files early (CRITICAL FIX)
+                if not file_path.endswith(".java"):
+                    notes.append(f"[fixer] AST skipped (non-java finding): {item.get('title')}")
+                    continue
+    
                 diff, fallback = self._llm_propose_patch_for_item(item)
     
-                # =========================================================
-                # ⭐ LLM invalid → AST fallback ONLY for Java files
-                # =========================================================
+                # ===== LLM invalid → AST fallback =====
                 if fallback or not diff or "--- a/" not in diff:
+                    notes.append(f"[fixer] LLM patch invalid → AST fallback: {item.get('title')}")
     
-                    # ⭐ AST safe guard
-                    if not file_path or not file_path.endswith(".java"):
-                        notes.append(f"[fixer] AST skipped (non-java finding): {title}")
-                        continue
-    
-                    notes.append(f"[fixer] LLM patch invalid → AST fallback: {title}")
+                    # ⭐ Improve classifier compatibility
+                    if "sql" in title:
+                        item["title"] = "SQL injection"
+                    elif "command" in title or "exec" in title:
+                        item["title"] = "command injection"
     
                     ast_result = self.ast_engine.apply_for_finding(item)
     
-                    if getattr(ast_result, "ok", True):
+                    if ast_result.ok:
                         notes.extend(ast_result.notes)
                         changed_files.extend(ast_result.changed_files)
                     else:
@@ -144,39 +141,100 @@ class Fixer:
     
                     continue
     
-                # ----------------------------------------
-                # Patch validation
-                # ----------------------------------------
                 targets = _parse_diff_changed_files(diff)
     
                 if not _patch_targets_repo(self.repo, targets):
                     notes.append("[fixer] patch rejected outside repo")
                     continue
     
-                # ----------------------------------------
-                # Apply patch
-                # ----------------------------------------
                 if _git_apply_patch(self.repo, diff):
-                    notes.append(f"[fixer] LLM patch applied: {title}")
+                    notes.append("[fixer] LLM patch applied")
                     changed_files.extend(targets)
-    
                 else:
-                    # ⭐ fallback only for Java
-                    if not file_path.endswith(".java"):
-                        notes.append(f"[fixer] AST skipped after LLM failure (non-java): {title}")
-                        continue
-    
-                    notes.append(f"[fixer] LLM patch failed → AST fallback: {title}")
-    
+                    notes.append("[fixer] LLM patch failed → AST fallback")
                     ast_result = self.ast_engine.apply_for_finding(item)
-    
-                    if getattr(ast_result, "ok", True):
-                        notes.extend(ast_result.notes)
-                        changed_files.extend(ast_result.changed_files)
-                    else:
-                        notes.append("[fixer] AST fallback failed")
+                    notes.extend(ast_result.notes)
+                    changed_files.extend(ast_result.changed_files)
     
         return notes, list(set(changed_files))
+        
+    # def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:
+    #     notes, changed_files = [], []
+    
+    #     for tool, items in grouped.items():
+    #         for item in items:
+    
+    #             # ----------------------------------------
+    #             # Severity filter
+    #             # ----------------------------------------
+    #             if not _is_autofix_severity(item.get("severity")):
+    #                 continue
+    
+    #             file_path = item.get("file") or item.get("path") or ""
+    #             title = item.get("title", "unknown")
+    
+    #             print(f"[fixer] vulnerability in: {file_path} -> {title}")
+    
+    #             # ----------------------------------------
+    #             # LLM patch attempt
+    #             # ----------------------------------------
+    #             diff, fallback = self._llm_propose_patch_for_item(item)
+    
+    #             # =========================================================
+    #             # ⭐ LLM invalid → AST fallback ONLY for Java files
+    #             # =========================================================
+    #             if fallback or not diff or "--- a/" not in diff:
+    
+    #                 # ⭐ AST safe guard
+    #                 if not file_path or not file_path.endswith(".java"):
+    #                     notes.append(f"[fixer] AST skipped (non-java finding): {title}")
+    #                     continue
+    
+    #                 notes.append(f"[fixer] LLM patch invalid → AST fallback: {title}")
+    
+    #                 ast_result = self.ast_engine.apply_for_finding(item)
+    
+    #                 if getattr(ast_result, "ok", True):
+    #                     notes.extend(ast_result.notes)
+    #                     changed_files.extend(ast_result.changed_files)
+    #                 else:
+    #                     notes.append("[fixer] AST fallback failed")
+    
+    #                 continue
+    
+    #             # ----------------------------------------
+    #             # Patch validation
+    #             # ----------------------------------------
+    #             targets = _parse_diff_changed_files(diff)
+    
+    #             if not _patch_targets_repo(self.repo, targets):
+    #                 notes.append("[fixer] patch rejected outside repo")
+    #                 continue
+    
+    #             # ----------------------------------------
+    #             # Apply patch
+    #             # ----------------------------------------
+    #             if _git_apply_patch(self.repo, diff):
+    #                 notes.append(f"[fixer] LLM patch applied: {title}")
+    #                 changed_files.extend(targets)
+    
+    #             else:
+    #                 # ⭐ fallback only for Java
+    #                 if not file_path.endswith(".java"):
+    #                     notes.append(f"[fixer] AST skipped after LLM failure (non-java): {title}")
+    #                     continue
+    
+    #                 notes.append(f"[fixer] LLM patch failed → AST fallback: {title}")
+    
+    #                 ast_result = self.ast_engine.apply_for_finding(item)
+    
+    #                 if getattr(ast_result, "ok", True):
+    #                     notes.extend(ast_result.notes)
+    #                     changed_files.extend(ast_result.changed_files)
+    #                 else:
+    #                     notes.append("[fixer] AST fallback failed")
+    
+    #     return notes, list(set(changed_files))
 
     # # -------------------------------------------------
     # def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:

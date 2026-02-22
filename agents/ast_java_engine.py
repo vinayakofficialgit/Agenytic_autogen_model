@@ -121,8 +121,17 @@ class ASTJavaEngine:
             "-f",
             str(self.tool_pom),
             "exec:java",
-            f"-Dexec.args={in_file} {out_file}",
-        ]
+            f'-Dexec.args="{in_file} {out_file}"',
+        ]       
+        
+        # cmd = [
+        #     "mvn",
+        #     "-q",
+        #     "-f",
+        #     str(self.tool_pom),
+        #     "exec:java",
+        #     f"-Dexec.args={in_file} {out_file}",
+        # ]
 
         if self.debug:
             print("[ast] running:", " ".join(cmd))
