@@ -565,10 +565,10 @@ jobs:
       #   run: |
       #     echo "$GH_TOKEN" | gh auth login --with-token
 
-      ## To Debug authentication issue.
-      - name: Verify gh auth
-        run: |
-          gh auth status
+      # ## To Debug authentication issue.
+      # - name: Verify gh auth
+      #   run: |
+      #     gh auth status
   
       - run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=fix --skip-llm
