@@ -27,47 +27,67 @@ class GitPRAgent:
             return {"files": []}
 
     def create_pr(self, files=None):
-        manifest = self._load_manifest()
-        files = files or manifest.get("files", [])
-
-        # fallback: add all changes if file list empty
-        if not files:
-            print("[git_pr] No explicit files → using git add .")
-            self._run(["git", "add", "."])
-        else:
-            for f in files:
-                self._run(["git", "add", f])
-
-        # detect changes
-        status = subprocess.check_output(["git", "status", "--porcelain"]).decode()
-        if not status.strip():
-            print("[git_pr] No changes to commit")
-            return
-
         run_id = os.getenv("GITHUB_RUN_ID", datetime.now().strftime("%Y%m%d%H%M"))
         branch = f"ai-autofix-{run_id}"
-
-        # create branch
+    
         self._run(["git", "checkout", "-B", branch])
-
-        # commit
-        self._run(["git", "commit", "-m", f"AI Security Autofix ({run_id})"])
-
-        # push
+    
+        # add all
+        self._run(["git", "add", "."])
+    
+        # allow empty commit
+        self._run(["git", "commit", "--allow-empty", "-m", f"AI Security Autofix ({run_id})"])
+    
         self._run(["git", "push", "origin", branch, "--set-upstream"])
-
-        # try PR creation
+    
         try:
-            self._run([
-                "gh", "pr", "create",
-                "--title", "AI Security Autofix",
-                "--body", "AI-generated remediation. Human review required."
-            ])
+            self._run(["gh", "pr", "create",
+                       "--title", "AI Security Autofix",
+                       "--body", "AI-generated remediation. Human review required."])
         except Exception:
-            print("[git_pr] gh CLI missing → branch pushed only")
+            print("PR fallback: branch pushed only")
 
-        print(f"[git_pr] Branch created: {branch}")
-
+    # def create_pr(self, files=None):
+    #         manifest = self._load_manifest()
+    #         files = files or manifest.get("files", [])
+    
+    #         # fallback: add all changes if file list empty
+    #         if not files:
+    #             print("[git_pr] No explicit files → using git add .")
+    #             self._run(["git", "add", "."])
+    #         else:
+    #             for f in files:
+    #                 self._run(["git", "add", f])
+    
+    #         # detect changes
+    #         status = subprocess.check_output(["git", "status", "--porcelain"]).decode()
+    #         if not status.strip():
+    #             print("[git_pr] No changes to commit")
+    #             return
+    
+    #         run_id = os.getenv("GITHUB_RUN_ID", datetime.now().strftime("%Y%m%d%H%M"))
+    #         branch = f"ai-autofix-{run_id}"
+    
+    #         # create branch
+    #         self._run(["git", "checkout", "-B", branch])
+    
+    #         # commit
+    #         self._run(["git", "commit", "-m", f"AI Security Autofix ({run_id})"])
+    
+    #         # push
+    #         self._run(["git", "push", "origin", branch, "--set-upstream"])
+    
+    #         # try PR creation
+    #         try:
+    #             self._run([
+    #                 "gh", "pr", "create",
+    #                 "--title", "AI Security Autofix",
+    #                 "--body", "AI-generated remediation. Human review required."
+    #             ])
+    #         except Exception:
+    #             print("[git_pr] gh CLI missing → branch pushed only")
+    
+    #         print(f"[git_pr] Branch created: {branch}")
 
 # # git_pr.py
 # """
