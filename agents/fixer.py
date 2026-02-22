@@ -1,100 +1,4 @@
-"""
-Fixer Agent
------------
-Applies deterministic + LLM autofixes and writes patch manifest.
-Ensures repo changes so GitPRAgent can create branch.
-"""
 
-from __future__ import annotations
-import os
-import json
-import subprocess
-from pathlib import Path
-from typing import Dict, List, Tuple, Any
-
-# ⭐ NEW — AST engine import
-from agents.ast_java_engine import ASTJavaEngine
-
-
-# -------------------------------------------------
-# Utility: severity filter for autofix
-# -------------------------------------------------
-def _is_autofix_severity(sev):
-    return str(sev or "").lower() in ["high", "critical"]
-
-
-# -------------------------------------------------
-# Utility: parse changed files from unified diff
-# -------------------------------------------------
-def _parse_diff_changed_files(diff: str) -> List[str]:
-    files = []
-    for line in diff.splitlines():
-        if line.startswith("+++ b/"):
-            files.append(line.replace("+++ b/", "").strip())
-    return list(set(files))
-
-
-# -------------------------------------------------
-# Utility: prevent patch escaping repo
-# -------------------------------------------------
-def _patch_targets_repo(repo_root: Path, files: List[str]) -> bool:
-    repo_root = repo_root.resolve()
-    for f in files:
-        p = (repo_root / f).resolve()
-        if not str(p).startswith(str(repo_root)):
-            return False
-    return True
-
-
-# -------------------------------------------------
-# Utility: sanitize LLM diff
-# -------------------------------------------------
-def _sanitize_diff(diff: str) -> str:
-    if not diff:
-        return diff
-
-    diff = diff.replace("```diff", "").replace("```", "").strip()
-
-    if "--- a/" not in diff and "+++" in diff:
-        lines = diff.splitlines()
-        for i, l in enumerate(lines):
-            if l.startswith("+++"):
-                lines.insert(i, "--- a/unknown")
-                diff = "\n".join(lines)
-                break
-
-    return diff
-
-
-# -------------------------------------------------
-# Utility: apply patch via git
-# -------------------------------------------------
-def _git_apply_patch(repo: Path, diff: str) -> bool:
-    try:
-        proc = subprocess.run(
-            ["git", "apply", "--check", "-"],
-            cwd=repo,
-            input=diff.encode(),
-        )
-        if proc.returncode != 0:
-            print("[fixer] patch check failed")
-            return False
-
-        proc = subprocess.run(
-            ["git", "apply", "-"],
-            cwd=repo,
-            input=diff.encode(),
-        )
-        return proc.returncode == 0
-
-    except Exception as e:
-        print("[fixer] patch error:", e)
-        return False
-
-
-# =========================================================
-# FIXER CLASS
-# =========================================================
 class Fixer:
     """
     Applies deterministic fixes + LLM generated patches.
@@ -106,11 +10,11 @@ class Fixer:
         self.out = Path(output_dir)
         self.repo = Path(repo_root)
 
-        # ⭐ AST engine initialized once
+        # AST engine
         self.ast_engine = ASTJavaEngine(repo_root=self.repo, debug=False)
 
     # -------------------------------------------------
-    # Deterministic fixes (safe hardcoded fixes)
+    # Deterministic fixes
     # -------------------------------------------------
     def _apply_deterministic_fixes(self) -> Tuple[List[str], List[str]]:
         notes, changed = [], []
@@ -120,7 +24,7 @@ class Fixer:
             text = dockerfile.read_text()
             if "USER root" in text:
                 dockerfile.write_text(text.replace("USER root", "USER appuser"))
-                notes.append("Dockerfile hardened")
+                notes.append("[deterministic] Dockerfile hardened")
                 changed.append("Dockerfile")
 
         return notes, changed
@@ -141,7 +45,7 @@ Fix vulnerability:
             diff = assistant_factory().generate_patch(prompt)
             diff = _sanitize_diff(diff)
 
-            print("[fixer] raw patch:", diff[:300])
+            print("[fixer] raw patch:", diff[:200])
             return diff, False
 
         except Exception as e:
@@ -149,7 +53,7 @@ Fix vulnerability:
             return "", True
 
     # -------------------------------------------------
-    # Apply LLM patches safely + AST fallback
+    # Apply autofixes
     # -------------------------------------------------
     def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:
         notes, changed_files = [], []
@@ -161,44 +65,49 @@ Fix vulnerability:
                     continue
 
                 file_path = item.get("file") or item.get("path") or ""
+
                 print(f"[fixer] vulnerability in: {file_path} -> {item.get('title')}")
 
+                # ========== LLM attempt ==========
                 diff, fallback = self._llm_propose_patch_for_item(item)
 
-                # =================================================
-                # ⭐ LLM PATCH INVALID → AST fallback (PRODUCTION)
-                # =================================================
                 if fallback or not diff or "--- a/" not in diff:
-                    notes.append(f"LLM patch invalid → AST fallback: {item.get('title')}")
+                    notes.append(f"[fixer] LLM patch invalid → AST fallback: {item.get('title')}")
 
-                    ast_result = self.ast_engine.apply_for_finding(item)
+                    if file_path:
+                        ast_result = self.ast_engine.apply_for_finding(item)
 
-                    notes.extend(ast_result.notes)
-                    changed_files.extend(ast_result.changed_files)
+                        if ast_result.ok:
+                            notes.extend(ast_result.notes)
+                            changed_files.extend(ast_result.changed_files)
+                        else:
+                            notes.append("[fixer] AST fallback failed")
 
                     continue
 
-                # =================================================
-                # LLM PATCH VALIDATION
-                # =================================================
+                # ========== Patch validation ==========
                 targets = _parse_diff_changed_files(diff)
 
                 if not _patch_targets_repo(self.repo, targets):
-                    notes.append("Patch rejected outside repo")
+                    notes.append("[fixer] patch rejected outside repo")
                     continue
 
-                # =================================================
-                # APPLY LLM PATCH
-                # =================================================
+                # ========== Patch apply ==========
                 if _git_apply_patch(self.repo, diff):
-                    notes.append(f"Patch applied: {item.get('title')}")
+                    notes.append(f"[fixer] LLM patch applied: {item.get('title')}")
                     changed_files.extend(targets)
 
                 else:
-                    notes.append("LLM patch failed → AST fallback")
-                    ast_result = self.ast_engine.apply_for_finding(item)
-                    notes.extend(ast_result.notes)
-                    changed_files.extend(ast_result.changed_files)
+                    notes.append("[fixer] LLM patch failed → AST fallback")
+
+                    if file_path:
+                        ast_result = self.ast_engine.apply_for_finding(item)
+
+                        if ast_result.ok:
+                            notes.extend(ast_result.notes)
+                            changed_files.extend(ast_result.changed_files)
+                        else:
+                            notes.append("[fixer] AST fallback failed")
 
         return notes, list(set(changed_files))
 
@@ -216,6 +125,8 @@ Fix vulnerability:
         notes += n2
         changed += c2
 
+        changed = list(set(changed))
+
         self.out.mkdir(parents=True, exist_ok=True)
 
         (self.out / "patch_manifest.json").write_text(
@@ -225,6 +136,237 @@ Fix vulnerability:
         print("[fixer] changed files:", changed)
 
         return notes, changed
+
+
+
+
+# """
+# Fixer Agent
+# -----------
+# Applies deterministic + LLM autofixes and writes patch manifest.
+# Ensures repo changes so GitPRAgent can create branch.
+# """
+
+# from __future__ import annotations
+# import os
+# import json
+# import subprocess
+# from pathlib import Path
+# from typing import Dict, List, Tuple, Any
+
+# # ⭐ NEW — AST engine import
+# from agents.ast_java_engine import ASTJavaEngine
+
+
+# # -------------------------------------------------
+# # Utility: severity filter for autofix
+# # -------------------------------------------------
+# def _is_autofix_severity(sev):
+#     return str(sev or "").lower() in ["high", "critical"]
+
+
+# # -------------------------------------------------
+# # Utility: parse changed files from unified diff
+# # -------------------------------------------------
+# def _parse_diff_changed_files(diff: str) -> List[str]:
+#     files = []
+#     for line in diff.splitlines():
+#         if line.startswith("+++ b/"):
+#             files.append(line.replace("+++ b/", "").strip())
+#     return list(set(files))
+
+
+# # -------------------------------------------------
+# # Utility: prevent patch escaping repo
+# # -------------------------------------------------
+# def _patch_targets_repo(repo_root: Path, files: List[str]) -> bool:
+#     repo_root = repo_root.resolve()
+#     for f in files:
+#         p = (repo_root / f).resolve()
+#         if not str(p).startswith(str(repo_root)):
+#             return False
+#     return True
+
+
+# # -------------------------------------------------
+# # Utility: sanitize LLM diff
+# # -------------------------------------------------
+# def _sanitize_diff(diff: str) -> str:
+#     if not diff:
+#         return diff
+
+#     diff = diff.replace("```diff", "").replace("```", "").strip()
+
+#     if "--- a/" not in diff and "+++" in diff:
+#         lines = diff.splitlines()
+#         for i, l in enumerate(lines):
+#             if l.startswith("+++"):
+#                 lines.insert(i, "--- a/unknown")
+#                 diff = "\n".join(lines)
+#                 break
+
+#     return diff
+
+
+# # -------------------------------------------------
+# # Utility: apply patch via git
+# # -------------------------------------------------
+# def _git_apply_patch(repo: Path, diff: str) -> bool:
+#     try:
+#         proc = subprocess.run(
+#             ["git", "apply", "--check", "-"],
+#             cwd=repo,
+#             input=diff.encode(),
+#         )
+#         if proc.returncode != 0:
+#             print("[fixer] patch check failed")
+#             return False
+
+#         proc = subprocess.run(
+#             ["git", "apply", "-"],
+#             cwd=repo,
+#             input=diff.encode(),
+#         )
+#         return proc.returncode == 0
+
+#     except Exception as e:
+#         print("[fixer] patch error:", e)
+#         return False
+
+
+# # =========================================================
+# # FIXER CLASS
+# # =========================================================
+# class Fixer:
+#     """
+#     Applies deterministic fixes + LLM generated patches.
+#     Guarantees patch manifest + repo modifications.
+#     """
+
+#     def __init__(self, cfg, output_dir, repo_root=Path(".")):
+#         self.cfg = cfg or {}
+#         self.out = Path(output_dir)
+#         self.repo = Path(repo_root)
+
+#         # ⭐ AST engine initialized once
+#         self.ast_engine = ASTJavaEngine(repo_root=self.repo, debug=False)
+
+#     # -------------------------------------------------
+#     # Deterministic fixes (safe hardcoded fixes)
+#     # -------------------------------------------------
+#     def _apply_deterministic_fixes(self) -> Tuple[List[str], List[str]]:
+#         notes, changed = [], []
+
+#         dockerfile = self.repo / "Dockerfile"
+#         if dockerfile.exists():
+#             text = dockerfile.read_text()
+#             if "USER root" in text:
+#                 dockerfile.write_text(text.replace("USER root", "USER appuser"))
+#                 notes.append("Dockerfile hardened")
+#                 changed.append("Dockerfile")
+
+#         return notes, changed
+
+#     # -------------------------------------------------
+#     # LLM patch generator
+#     # -------------------------------------------------
+#     def _llm_propose_patch_for_item(self, item: Dict[str, Any]) -> Tuple[str, bool]:
+#         prompt = f"""
+# You MUST output ONLY unified git diff patch.
+# NO explanation.
+
+# Fix vulnerability:
+# {item}
+# """
+#         try:
+#             from agents.llm_bridge import assistant_factory
+#             diff = assistant_factory().generate_patch(prompt)
+#             diff = _sanitize_diff(diff)
+
+#             print("[fixer] raw patch:", diff[:300])
+#             return diff, False
+
+#         except Exception as e:
+#             print("[fixer] LLM error:", e)
+#             return "", True
+
+#     # -------------------------------------------------
+#     # Apply LLM patches safely + AST fallback
+#     # -------------------------------------------------
+#     def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:
+#         notes, changed_files = [], []
+
+#         for tool, items in grouped.items():
+#             for item in items:
+
+#                 if not _is_autofix_severity(item.get("severity")):
+#                     continue
+
+#                 file_path = item.get("file") or item.get("path") or ""
+#                 print(f"[fixer] vulnerability in: {file_path} -> {item.get('title')}")
+
+#                 diff, fallback = self._llm_propose_patch_for_item(item)
+
+#                 # =================================================
+#                 # ⭐ LLM PATCH INVALID → AST fallback (PRODUCTION)
+#                 # =================================================
+#                 if fallback or not diff or "--- a/" not in diff:
+#                     notes.append(f"LLM patch invalid → AST fallback: {item.get('title')}")
+
+#                     ast_result = self.ast_engine.apply_for_finding(item)
+
+#                     notes.extend(ast_result.notes)
+#                     changed_files.extend(ast_result.changed_files)
+
+#                     continue
+
+#                 # =================================================
+#                 # LLM PATCH VALIDATION
+#                 # =================================================
+#                 targets = _parse_diff_changed_files(diff)
+
+#                 if not _patch_targets_repo(self.repo, targets):
+#                     notes.append("Patch rejected outside repo")
+#                     continue
+
+#                 # =================================================
+#                 # APPLY LLM PATCH
+#                 # =================================================
+#                 if _git_apply_patch(self.repo, diff):
+#                     notes.append(f"Patch applied: {item.get('title')}")
+#                     changed_files.extend(targets)
+
+#                 else:
+#                     notes.append("LLM patch failed → AST fallback")
+#                     ast_result = self.ast_engine.apply_for_finding(item)
+#                     notes.extend(ast_result.notes)
+#                     changed_files.extend(ast_result.changed_files)
+
+#         return notes, list(set(changed_files))
+
+#     # -------------------------------------------------
+#     # Main entry
+#     # -------------------------------------------------
+#     def apply(self, grouped):
+#         notes, changed = [], []
+
+#         n1, c1 = self._apply_deterministic_fixes()
+#         notes += n1
+#         changed += c1
+
+#         n2, c2 = self._apply_llm_autofixes(grouped)
+#         notes += n2
+#         changed += c2
+
+#         self.out.mkdir(parents=True, exist_ok=True)
+
+#         (self.out / "patch_manifest.json").write_text(
+#             json.dumps({"files": changed, "notes": notes}, indent=2)
+#         )
+
+#         print("[fixer] changed files:", changed)
+
+#         return notes, changed
 
 
 
