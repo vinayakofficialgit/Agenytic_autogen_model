@@ -239,8 +239,12 @@ def main():
     
             # Load generated patches
             if patch_manifest.exists():
-                patches = json.loads(patch_manifest.read_text())
-                print(f"[autofix] patches generated: {len(patches)}")
+                manifest = json.loads(patch_manifest.read_text())
+                patches = manifest.get("files", [])
+                print(f"[autofix] files patched: {patches}")
+    
+                # safe debug
+                print("patch manifest content:", manifest)
             else:
                 print("[autofix] no patch manifest found")
     
@@ -248,12 +252,46 @@ def main():
             print("Fixer error:", e)
     
         # Create PR
-        if GitPRAgent and patches:
+        if GitPRAgent and len(patches) > 0:
             try:
                 GitPRAgent(repo_root=Path(".")).create_pr(patches)
                 print("[autofix] PR created")
             except Exception as e:
                 print("PR creation failed:", e)
+        else:
+            print("[autofix] no files changed — skipping PR")
+
+
+    # # =====================================================
+    # # 6️⃣ AUTOFIX + PR
+    # # =====================================================
+    # if mode in ("fix", "all") and decision["decision"] == "FAIL":
+    
+    #     patch_manifest = output_dir / "patch_manifest.json"
+    #     patches = []
+    
+    #     # Apply fixes
+    #     try:
+    #         with suppress():
+    #             Fixer(cfg, output_dir, repo_root=Path(".")).apply(grouped)
+    
+    #         # Load generated patches
+    #         if patch_manifest.exists():
+    #             patches = json.loads(patch_manifest.read_text())
+    #             print(f"[autofix] patches generated: {len(patches)}")
+    #         else:
+    #             print("[autofix] no patch manifest found")
+    
+    #     except Exception as e:
+    #         print("Fixer error:", e)
+    
+    #     # Create PR
+    #     if GitPRAgent and patches:
+    #         try:
+    #             GitPRAgent(repo_root=Path(".")).create_pr(patches)
+    #             print("[autofix] PR created")
+    #         except Exception as e:
+    #             print("PR creation failed:", e)
 
     # # =====================================================
     # # 6️⃣ AUTOFIX

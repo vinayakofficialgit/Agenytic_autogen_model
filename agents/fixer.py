@@ -44,6 +44,28 @@ def _patch_targets_repo(repo_root: Path, files: List[str]) -> bool:
 
 
 # -------------------------------------------------
+# Utility: sanitize LLM diff
+# -------------------------------------------------
+def _sanitize_diff(diff: str) -> str:
+    """Remove markdown wrappers and explanations"""
+    if not diff:
+        return diff
+
+    diff = diff.replace("```diff", "").replace("```", "").strip()
+
+    # Try auto-prefix if missing
+    if "--- a/" not in diff and "+++" in diff:
+        lines = diff.splitlines()
+        for i, l in enumerate(lines):
+            if l.startswith("+++"):
+                lines.insert(i, "--- a/unknown")
+                diff = "\n".join(lines)
+                break
+
+    return diff
+
+
+# -------------------------------------------------
 # Utility: apply patch via git
 # -------------------------------------------------
 def _git_apply_patch(repo: Path, diff: str) -> bool:
@@ -106,18 +128,28 @@ class Fixer:
     # -------------------------------------------------
     def _llm_propose_patch_for_item(self, item: Dict[str, Any]) -> Tuple[str, bool]:
         prompt = f"""
-Generate ONLY unified diff patch.
-Format:
+You MUST output ONLY unified git diff patch.
+NO explanation.
+
+Format example:
 --- a/file
 +++ b/file
 @@
-...
+-old
++new
+
 Fix vulnerability:
 {item}
 """
         try:
             from agents.llm_bridge import assistant_factory
-            return assistant_factory().generate_patch(prompt), False
+            diff = assistant_factory().generate_patch(prompt)
+            diff = _sanitize_diff(diff)
+
+            # debug visibility
+            print("[fixer] raw patch:", diff[:300])
+
+            return diff, False
         except Exception as e:
             print("[fixer] LLM error:", e)
             return "", True
@@ -186,6 +218,197 @@ Fix vulnerability:
         print("[fixer] changed files:", changed)
 
         return notes, changed
+
+
+
+# """
+# Fixer Agent
+# -----------
+# Applies deterministic + LLM autofixes and writes patch manifest.
+# Ensures repo changes so GitPRAgent can create branch.
+# """
+
+# from __future__ import annotations
+# import os
+# import json
+# import subprocess
+# from pathlib import Path
+# from typing import Dict, List, Tuple, Any
+
+
+# # -------------------------------------------------
+# # Utility: severity filter for autofix
+# # -------------------------------------------------
+# def _is_autofix_severity(sev):
+#     return str(sev or "").lower() in ["high", "critical"]
+
+
+# # -------------------------------------------------
+# # Utility: parse changed files from unified diff
+# # -------------------------------------------------
+# def _parse_diff_changed_files(diff: str) -> List[str]:
+#     files = []
+#     for line in diff.splitlines():
+#         if line.startswith("+++ b/"):
+#             files.append(line.replace("+++ b/", "").strip())
+#     return list(set(files))
+
+
+# # -------------------------------------------------
+# # Utility: prevent patch escaping repo
+# # -------------------------------------------------
+# def _patch_targets_repo(repo_root: Path, files: List[str]) -> bool:
+#     repo_root = repo_root.resolve()
+#     for f in files:
+#         p = (repo_root / f).resolve()
+#         if not str(p).startswith(str(repo_root)):
+#             return False
+#     return True
+
+
+# # -------------------------------------------------
+# # Utility: apply patch via git
+# # -------------------------------------------------
+# def _git_apply_patch(repo: Path, diff: str) -> bool:
+#     try:
+#         # patch validation
+#         proc = subprocess.run(
+#             ["git", "apply", "--check", "-"],
+#             cwd=repo,
+#             input=diff.encode(),
+#         )
+#         if proc.returncode != 0:
+#             print("[fixer] patch check failed")
+#             return False
+
+#         # patch apply
+#         proc = subprocess.run(
+#             ["git", "apply", "-"],
+#             cwd=repo,
+#             input=diff.encode(),
+#         )
+#         return proc.returncode == 0
+
+#     except Exception as e:
+#         print("[fixer] patch error:", e)
+#         return False
+
+
+# # =========================================================
+# # FIXER CLASS
+# # =========================================================
+# class Fixer:
+#     """
+#     Applies deterministic fixes + LLM generated patches.
+#     Guarantees patch manifest + repo modifications.
+#     """
+
+#     def __init__(self, cfg, output_dir, repo_root=Path(".")):
+#         self.cfg = cfg or {}
+#         self.out = Path(output_dir)
+#         self.repo = Path(repo_root)
+
+#     # -------------------------------------------------
+#     # Deterministic fixes (safe hardcoded fixes)
+#     # -------------------------------------------------
+#     def _apply_deterministic_fixes(self) -> Tuple[List[str], List[str]]:
+#         notes, changed = [], []
+
+#         dockerfile = self.repo / "Dockerfile"
+#         if dockerfile.exists():
+#             text = dockerfile.read_text()
+#             if "USER root" in text:
+#                 dockerfile.write_text(text.replace("USER root", "USER appuser"))
+#                 notes.append("Dockerfile hardened")
+#                 changed.append("Dockerfile")
+
+#         return notes, changed
+
+#     # -------------------------------------------------
+#     # LLM patch generator (strong prompt)
+#     # -------------------------------------------------
+#     def _llm_propose_patch_for_item(self, item: Dict[str, Any]) -> Tuple[str, bool]:
+#         prompt = f"""
+# Generate ONLY unified diff patch.
+# Format:
+# --- a/file
+# +++ b/file
+# @@
+# ...
+# Fix vulnerability:
+# {item}
+# """
+#         try:
+#             from agents.llm_bridge import assistant_factory
+#             return assistant_factory().generate_patch(prompt), False
+#         except Exception as e:
+#             print("[fixer] LLM error:", e)
+#             return "", True
+
+#     # -------------------------------------------------
+#     # Apply LLM patches safely
+#     # -------------------------------------------------
+#     def _apply_llm_autofixes(self, grouped: Dict[str, List[Dict]]) -> Tuple[List[str], List[str]]:
+#         notes, changed_files = [], []
+
+#         for tool, items in grouped.items():
+#             for item in items:
+#                 if not _is_autofix_severity(item.get("severity")):
+#                     continue
+
+#                 diff, fallback = self._llm_propose_patch_for_item(item)
+
+#                 # invalid diff
+#                 if fallback or not diff or "--- a/" not in diff:
+#                     notes.append(f"Invalid patch: {item.get('title')}")
+#                     continue
+
+#                 targets = _parse_diff_changed_files(diff)
+
+#                 # safety guard
+#                 if not _patch_targets_repo(self.repo, targets):
+#                     notes.append("Patch rejected outside repo")
+#                     continue
+
+#                 # apply patch
+#                 if _git_apply_patch(self.repo, diff):
+#                     notes.append(f"Patch applied: {item.get('title')}")
+#                     changed_files.extend(targets)
+#                 else:
+#                     # fallback manual patch save
+#                     patch_file = self.out / f"patch_{item.get('id','x')}.diff"
+#                     patch_file.write_text(diff)
+#                     notes.append(f"Patch saved (manual review): {item.get('title')}")
+
+#         return notes, list(set(changed_files))
+
+#     # -------------------------------------------------
+#     # Main apply entry
+#     # -------------------------------------------------
+#     def apply(self, grouped):
+#         notes, changed = [], []
+
+#         # deterministic fixes
+#         n1, c1 = self._apply_deterministic_fixes()
+#         notes += n1
+#         changed += c1
+
+#         # llm fixes
+#         n2, c2 = self._apply_llm_autofixes(grouped)
+#         notes += n2
+#         changed += c2
+
+#         # ensure output dir
+#         self.out.mkdir(parents=True, exist_ok=True)
+
+#         # patch manifest
+#         (self.out / "patch_manifest.json").write_text(
+#             json.dumps({"files": changed, "notes": notes}, indent=2)
+#         )
+
+#         print("[fixer] changed files:", changed)
+
+#         return notes, changed
 
 
 

@@ -578,7 +578,12 @@ jobs:
         run: |
           echo "Patch manifest"
           cat agent_output/patch_manifest.json || true
-  
+
+      - name: Debug git diff before commit
+        run: |
+          git status
+          git diff
+    
       - name: Debug autofix
         run: |
           git status
