@@ -474,12 +474,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install gh -y
   
-      # ⭐ REQUIRED (auth)
-      - name: Authenticate gh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ⭐ REQUIRED (auth)  ## In GitHub Actions you DO NOT need gh auth login at all if you are using the GITHUB_TOKEN secret, as GitHub Actions automatically authenticates the GitHub CLI with that token. You can directly use gh commands without any additional authentication steps.
+      # - name: Authenticate gh
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     echo "$GH_TOKEN" | gh auth login --with-token
+
+      ## To Debug authentication issue.
+      - name: Verify gh auth
         run: |
-          echo "$GH_TOKEN" | gh auth login --with-token
+          gh auth status
   
       - run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=fix --skip-llm
