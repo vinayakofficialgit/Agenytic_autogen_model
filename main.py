@@ -35,12 +35,21 @@ try:
     from agents.reporter import Reporter
     from agents.fixer import Fixer
     from agents.autogen_runtime import run_autogen_layer
-except Exception:
-    from collector import CollectorAgent
-    from policy_gate import PolicyGate
-    from reporter import Reporter
-    from fixer import Fixer
-    from autogen_runtime import run_autogen_layer
+except Exception as e:
+    raise ImportError(f"Agent import failure: {e}")
+    
+# try:
+#     from agents.collector import CollectorAgent
+#     from agents.policy_gate import PolicyGate
+#     from agents.reporter import Reporter
+#     from agents.fixer import Fixer
+#     from agents.autogen_runtime import run_autogen_layer
+# except Exception:
+#     from collector import CollectorAgent
+#     from policy_gate import PolicyGate
+#     from reporter import Reporter
+#     from fixer import Fixer
+#     from autogen_runtime import run_autogen_layer
 
 
 # =====================================================
