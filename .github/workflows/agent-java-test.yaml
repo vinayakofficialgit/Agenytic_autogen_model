@@ -102,7 +102,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: app-jar
+          name: hackathon-vuln-app-1.0.jar
           path: ${{ env.APP_DIR }}/target/hackathon-vuln-app-1.0.jar
 
   # ============================================================
