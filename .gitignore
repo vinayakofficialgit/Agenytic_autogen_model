@@ -1,0 +1,5 @@
+agent_output/
+reports/
+**/__pycache__/
+*.pyc
+tools/java-ast-fixer/target/

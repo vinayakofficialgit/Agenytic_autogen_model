@@ -17,7 +17,8 @@ permissions:
 env:
   JAVA_VERSION: "17"
   PYTHON_VERSION: "3.12"
-  APP_DIR: "enterprise-devsecops-hackathon"
+  APP_DIR: "demo-vuln-app"
+  # APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
   MIN_SEVERITY: "high"
   LLM_ENABLED: "true"
