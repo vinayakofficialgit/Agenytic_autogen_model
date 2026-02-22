@@ -1,4 +1,4 @@
-name: DevSecOps Agentic AI Pipeline (Enterprise Optimize)
+name: DevSecOps Agentic AI Pipeline (Enterprise main)
 
 on:
   push:
