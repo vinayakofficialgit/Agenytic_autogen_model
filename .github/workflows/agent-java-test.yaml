@@ -17,7 +17,7 @@ permissions:
 env:
   JAVA_VERSION: "17"
   PYTHON_VERSION: "3.12"
-  APP_DIR: "demo-vuln-app"
+  APP_DIR: "hackathon-vuln-app"
   # APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
   MIN_SEVERITY: "high"
@@ -86,9 +86,6 @@ jobs:
             echo "🔐 Secret is available for downstream jobs."
           fi
 
-  # ============================================================
-  # BUILD
-  # ============================================================
   Build-Java-App:
     runs-on: ubuntu-latest
     steps:
@@ -100,14 +97,13 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - run: mvn -B clean package -DskipTests -f $APP_DIR/src/main/java/com/demo/pom.xml"
-      # - run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+      # ⭐ FIXED POM PATH
+      - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-jar
-          path: ${{ env.APP_DIR }}/app/target/demo-vuln-app-1.0.jar
-          retention-days: 7
+          path: ${{ env.APP_DIR }}/target/hackathon-vuln-app-1.0.jar
 
   # ============================================================
   # SAST
@@ -127,7 +123,7 @@ jobs:
 
       - run: mkdir -p $REPORTS_DIR
 
-      - run: mvn -B clean package -DskipTests -f $APP_DIR/app/pom.xml
+      - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
 
       - run: |
           pip install semgrep
@@ -136,16 +132,16 @@ jobs:
             --config=p/owasp-top-ten \
             --json \
             --output $REPORTS_DIR/semgrep.json \
-            $APP_DIR/app/src/main/java || echo '{}' > $REPORTS_DIR/semgrep.json
+            $APP_DIR/src/main/java || echo '{}' > $REPORTS_DIR/semgrep.json
 
       - name: Run SpotBugs
         run: |
-          mvn -B verify spotbugs:spotbugs -f $APP_DIR/app/pom.xml || true
+          mvn -B verify spotbugs:spotbugs -f $APP_DIR/src/main/java/com/demo/pom.xml || true
       
       - name: Collect SpotBugs XML
         run: |
-          if [ -f "$APP_DIR/app/target/spotbugsXml.xml" ]; then
-            cp "$APP_DIR/app/target/spotbugsXml.xml" reports/spotbugs.xml
+          if [ -f "$APP_DIR/target/spotbugsXml.xml" ]; then
+            cp "$APP_DIR/target/spotbugsXml.xml" reports/spotbugs.xml
           else
             echo "<BugCollection/>" > reports/spotbugs.xml
           fi
@@ -242,12 +238,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
-          path: ${{ env.APP_DIR }}/app/target
+          path: ${{ env.APP_DIR }}/target
       - name: Verify jar
         run: |
           echo "Listing target folder:"
-          ls -la $APP_DIR/app/target
-          if [ ! -f "$APP_DIR/app/target/enterprise-app-1.0.jar" ]; then
+          ls -la $APP_DIR/target
+          if [ ! -f "$APP_DIR/target/hackathon-vuln-app-1.0.jar" ]; then
             echo "❌ JAR missing"
             exit 1
           fi
@@ -255,7 +251,7 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
-            -t enterprise-app \
+            -t hackathon-vuln-app \
             -f $APP_DIR/docker/Dockerfile \
             .
       - name: Install Trivy
@@ -263,7 +259,7 @@ jobs:
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
       - name: Trivy Image Scan
         run: |
-          ./bin/trivy image enterprise-app \
+          ./bin/trivy image hackathon-vuln-app \
             --format json \
             --output $REPORTS_DIR/trivy_image.json \
             || echo '{}' > $REPORTS_DIR/trivy_image.json
@@ -285,12 +281,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: app-jar
-          path: ${{ env.APP_DIR }}/app/target
+          path: ${{ env.APP_DIR }}/target
       - run: mkdir -p $REPORTS_DIR
       - name: Start Application
         run: |
           mkdir -p config/dummy
-          java -jar $APP_DIR/app/target/enterprise-app-1.0.jar \
+          java -jar $APP_DIR/target/hackathon-vuln-app-1.0.jar \
             --spring.config.import=optional:file:./config/*/ &
           sleep 40
       - name: OWASP ZAP Baseline
