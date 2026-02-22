@@ -2,7 +2,7 @@ name: DevSecOps Agentic AI Pipeline (Enterprise main)
 
 on:
   push:
-    branches: [feature-branch-v]
+    branches: [test-home-sachin]
   workflow_dispatch:
 
 concurrency:
