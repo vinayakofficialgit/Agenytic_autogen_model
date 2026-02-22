@@ -1,4 +1,9 @@
-FROM openjdk:17
+FROM eclipse-temurin:17-jre
+
 USER root
-COPY target/demo-vuln-app-1.0.jar app.jar
+
+COPY hackathon-vuln-app/target/*.jar app.jar
+
+EXPOSE 8080
+
 ENTRYPOINT ["java","-jar","/app.jar"]
