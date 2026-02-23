@@ -71,6 +71,10 @@ class Fixer:
         self.cfg = cfg or {}
         self.out = Path(output_dir)
         self.repo = Path(repo_root)
+
+        # ✅ NEW: toggle AST fallback via env; default True for local runs
+        self.ast_enabled = str(os.getenv("AST_ENABLED", "true")).lower() in ("1", "true", "yes")
+
         self.ast_engine = ASTJavaEngine(repo_root=self.repo, debug=False)
 
     # -------------------------------------------------
@@ -84,6 +88,14 @@ class Fixer:
                 dockerfile.write_text(text.replace("USER root", "USER appuser"))
                 notes.append("[deterministic] Dockerfile hardened")
                 changed.append("Dockerfile")
+
+        # (Your Terraform S3 fixes method goes here if you’ve added it)
+        # Example:
+        tf_root = (self.repo / "hackathon-vuln-app" / "terraform")
+        if tf_root.exists():
+            n_iac, c_iac = self._apply_iac_s3_fixes(tf_root)  # <- your previously added method
+            notes += n_iac
+            changed += c_iac
 
         return notes, changed
 
@@ -116,7 +128,7 @@ class Fixer:
 
                 print(f"[fixer] vulnerability in: {file_path} -> {item.get('title')}")
 
-                # Only Java handled by AST
+                # Only Java handled by AST (optional); non-Java is handled elsewhere
                 if not file_path.endswith(".java"):
                     notes.append(f"[fixer] AST skipped (non-java finding): {item.get('title')}")
                     continue
@@ -124,9 +136,13 @@ class Fixer:
                 diff, fallback = self._llm_propose_patch_for_item(item)
 
                 # ======================================================
-                # LLM invalid → AST structural fallback
+                # LLM invalid → AST structural fallback (now optional)
                 # ======================================================
                 if fallback or not diff or "--- a/" not in diff:
+
+                    if not self.ast_enabled:
+                        notes.append(f"[fixer] AST disabled; skipping fallback for: {item.get('title')}")
+                        continue
 
                     notes.append(f"[fixer] LLM patch invalid → AST fallback: {item.get('title')}")
 
@@ -137,7 +153,6 @@ class Fixer:
                         item["title"] = "command injection"
 
                     ast_result = self.ast_engine.apply_for_finding(item)
-
                     notes.extend(ast_result.notes)
                     changed_files.extend(ast_result.changed_files)
 
@@ -145,7 +160,6 @@ class Fixer:
                     if ast_result.ok and ast_result.changed_files:
                         ok, msg = self.ast_engine.compile_validate()
                         notes.append(msg)
-
                         if not ok:
                             notes.append("[fixer] compile failed after AST fix")
 
@@ -165,6 +179,11 @@ class Fixer:
                     notes.append("[fixer] LLM patch applied")
                     changed_files.extend(targets)
                 else:
+                    # If LLM patch can't be applied
+                    if not self.ast_enabled:
+                        notes.append("[fixer] LLM patch failed and AST disabled; skipping fallback")
+                        continue
+
                     notes.append("[fixer] LLM patch failed → AST fallback")
 
                     ast_result = self.ast_engine.apply_for_finding(item)
@@ -174,11 +193,30 @@ class Fixer:
                     if ast_result.ok and ast_result.changed_files:
                         ok, msg = self.ast_engine.compile_validate()
                         notes.append(msg)
-
                         if not ok:
                             notes.append("[fixer] compile failed after AST fix")
 
         return notes, list(set(changed_files))
+
+    # -------------------------------------------------
+    def apply(self, grouped):
+        notes, changed = [], []
+
+        n1, c1 = self._apply_deterministic_fixes()
+        notes += n1; changed += c1
+
+        n2, c2 = self._apply_llm_autofixes(grouped)
+        notes += n2; changed += c2
+
+        changed = list(set(changed))
+        self.out.mkdir(parents=True, exist_ok=True)
+        (self.out / "patch_manifest.json").write_text(
+            json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
+        )
+
+        print("[fixer] changed files:", changed)
+        return notes, changed
+
 
     # # -------------------------------------------------
     # def apply(self, grouped):
