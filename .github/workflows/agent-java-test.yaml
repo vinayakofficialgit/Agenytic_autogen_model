@@ -346,7 +346,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: hackathon-vuln-app-1.0.jar
-        path: ${{ env.APP_DIR }}/target
+          path: ${{ env.APP_DIR }}/target
 
       - run: mkdir -p $REPORTS_DIR
 
