@@ -4,6 +4,7 @@ rich
 requests
 openai>=1.0.0
 xmltodict
+pyyaml>=6.0.1
 # pyyaml
 # autogen-agentchat
 # # autogen-ext[ollama]

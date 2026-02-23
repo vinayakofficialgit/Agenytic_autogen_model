@@ -4,6 +4,7 @@ import os
 import re
 import json
 import subprocess
+import yaml
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 
@@ -198,24 +199,248 @@ class Fixer:
 
         return notes, list(set(changed_files))
 
+    # =========================================================
+    # Kubernetes hardener (deterministic IaC for K8s)
+    # =========================================================
+    def _ensure_dict(d):
+        return d if isinstance(d, dict) else {}
+    
+    def _harden_container_sc(c: dict) -> bool:
+        """
+        Harden a single container (or initContainer) security context.
+        Returns True if mutated.
+        """
+        changed = False
+        sc = c.setdefault("securityContext", {})
+        if sc.get("privileged", False) is True:
+            sc["privileged"] = False
+            changed = True
+        if sc.get("allowPrivilegeEscalation") is not False:
+            sc["allowPrivilegeEscalation"] = False
+            changed = True
+        if sc.get("readOnlyRootFilesystem") is not True:
+            sc["readOnlyRootFilesystem"] = True
+            changed = True
+    
+        # Capabilities: drop ALL (merge if user provided existing list)
+        caps = sc.setdefault("capabilities", {})
+        drops = set(caps.get("drop", []) or [])
+        if "ALL" not in drops:
+            drops.add("ALL")
+            caps["drop"] = sorted(drops)
+            changed = True
+    
+        # Sensible default if not present
+        if not c.get("imagePullPolicy"):
+            c["imagePullPolicy"] = "IfNotPresent"
+            changed = True
+    
+        return changed
+    
+    def _get_podspec_for(doc: dict) -> dict | None:
+        """
+        Return the pod 'spec' dict for a given K8s resource 'doc', or None if not applicable.
+        Handles: Pod, Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob
+        """
+        kind = (doc.get("kind") or "").lower()
+        spec = _ensure_dict(doc.get("spec", {}))
+    
+        if kind == "pod":
+            return spec
+    
+        # Workloads with template.spec
+        if kind in ("deployment", "replicaset", "statefulset", "daemonset"):
+            tmpl = _ensure_dict(spec.get("template", {}))
+            return _ensure_dict(tmpl.get("spec", {}))
+    
+        if kind == "job":
+            tmpl = _ensure_dict(spec.get("template", {}))
+            return _ensure_dict(tmpl.get("spec", {}))
+    
+        if kind == "cronjob":
+            jt = _ensure_dict(spec.get("jobTemplate", {}))
+            jts = _ensure_dict(jt.get("spec", {}))
+            tmpl = _ensure_dict(jts.get("template", {}))
+            return _ensure_dict(tmpl.get("spec", {}))
+    
+        return None
+    
+    def _harden_podspec(podspec: dict) -> bool:
+        """
+        Apply pod-level and container-level hardening to a Pod spec.
+        Returns True if any mutation performed.
+        """
+        changed = False
+    
+        # Pod-level security context
+        psc = podspec.setdefault("securityContext", {})
+        if psc.get("runAsNonRoot") is not True:
+            psc["runAsNonRoot"] = True
+            changed = True
+        # Only set user/group if not already present (do not override explicit config)
+        if "runAsUser" not in psc:
+            psc["runAsUser"] = 10001
+            changed = True
+        if "runAsGroup" not in psc:
+            psc["runAsGroup"] = 10001
+            changed = True
+    
+        # seccomp profile (Pod-level)
+        sp = psc.setdefault("seccompProfile", {})
+        if sp.get("type") != "RuntimeDefault":
+            sp["type"] = "RuntimeDefault"
+            # (no changed flag because above logic may have set psc already)
+            changed = True
+    
+        # Harden containers and initContainers
+        for key in ("containers", "initContainers"):
+            for c in podspec.get(key, []) or []:
+                if _harden_container_sc(c):
+                    changed = True
+    
+        return changed
+    
+    def _harden_service(doc: dict) -> bool:
+        """
+        Enforce safe defaults for Service:
+          - type: ClusterIP
+          - remove ports[].nodePort
+          - sessionAffinity: None (if missing)
+        """
+        changed = False
+        spec = _ensure_dict(doc.get("spec", {}))
+    
+        svc_type = spec.get("type", "ClusterIP")
+        if svc_type in ("NodePort", "LoadBalancer"):
+            spec["type"] = "ClusterIP"
+            changed = True
+            # Remove nodePort fields that become invalid
+            for p in spec.get("ports", []) or []:
+                if "nodePort" in p:
+                    p.pop("nodePort", None)
+                    changed = True
+    
+        if "sessionAffinity" not in spec:
+            spec["sessionAffinity"] = "None"
+            changed = True
+    
+        # Write back if mutated
+        if changed:
+            doc["spec"] = spec
+        return changed
+    
+    def _apply_k8s_fixes(self, k8s_root: Path):
+        """
+        Deterministic Kubernetes hardening:
+          - Finds YAML files
+          - Hardens Pod specs across core workloads
+          - Hardens Services to ClusterIP (removes nodePort), sessionAffinity: None
+        """
+        notes, changed_files = [], []
+        if not k8s_root.exists():
+            return notes, changed_files
+    
+        for yf in k8s_root.rglob("*.y*ml"):
+            text = yf.read_text(encoding="utf-8")
+            orig = text
+    
+            try:
+                docs = list(yaml.safe_load_all(text)) or []
+            except Exception:
+                # Skip malformed YAML
+                continue
+    
+            file_changed = False
+    
+            for i, doc in enumerate(docs):
+                if not isinstance(doc, dict):
+                    continue
+                kind = (doc.get("kind") or "").lower()
+    
+                # Workloads with Pod specs
+                podspec = _get_podspec_for(doc)
+                if podspec is not None and isinstance(podspec, dict):
+                    if _harden_podspec(podspec):
+                        # write back podspec
+                        # (re-nest where appropriate)
+                        if kind == "pod":
+                            doc["spec"] = podspec
+                        elif kind in ("deployment", "replicaset", "statefulset", "daemonset", "job"):
+                            spec = _ensure_dict(doc.get("spec", {}))
+                            tmpl = _ensure_dict(spec.get("template", {}))
+                            tmpl["spec"] = podspec
+                            spec["template"] = tmpl
+                            doc["spec"] = spec
+                        elif kind == "cronjob":
+                            spec = _ensure_dict(doc.get("spec", {}))
+                            jt = _ensure_dict(spec.get("jobTemplate", {}))
+                            jts = _ensure_dict(jt.get("spec", {}))
+                            tmpl = _ensure_dict(jts.get("template", {}))
+                            tmpl["spec"] = podspec
+                            jts["template"] = tmpl
+                            jt["spec"] = jts
+                            spec["jobTemplate"] = jt
+                            doc["spec"] = spec
+                        docs[i] = doc
+                        file_changed = True
+    
+                # Services
+                if kind == "service":
+                    if _harden_service(doc):
+                        docs[i] = doc
+                        file_changed = True
+    
+            if file_changed:
+                # dump back (preserve doc separators; keep natural key order)
+                new_text = yaml.safe_dump_all(docs, sort_keys=False)
+                if new_text != orig:
+                    yf.write_text(new_text, encoding="utf-8")
+                    rel = str(yf.relative_to(self.repo))
+                    notes.append(f"[k8s] hardened {rel}")
+                    changed_files.append(rel)
+    
+        return notes, list(set(changed_files))
+    
+    
+    # -------------------------------------------------
     # -------------------------------------------------
     def apply(self, grouped):
-        notes, changed = [], []
+            notes, changed = [], []
+    
+            n1, c1 = self._apply_deterministic_fixes()
+            notes += n1; changed += c1
+    
+            n2, c2 = self._apply_llm_autofixes(grouped)
+            notes += n2; changed += c2
+    
+            changed = list(set(changed))
+            self.out.mkdir(parents=True, exist_ok=True)
+            (self.out / "patch_manifest.json").write_text(
+                json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
+            )
+    
+            print("[fixer] changed files:", changed)
+            return notes, changed  
 
-        n1, c1 = self._apply_deterministic_fixes()
-        notes += n1; changed += c1
 
-        n2, c2 = self._apply_llm_autofixes(grouped)
-        notes += n2; changed += c2
+    # -------------------------------------------------
+    # def apply(self, grouped):
+    #     notes, changed = [], []
 
-        changed = list(set(changed))
-        self.out.mkdir(parents=True, exist_ok=True)
-        (self.out / "patch_manifest.json").write_text(
-            json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
-        )
+    #     n1, c1 = self._apply_deterministic_fixes()
+    #     notes += n1; changed += c1
 
-        print("[fixer] changed files:", changed)
-        return notes, changed
+    #     n2, c2 = self._apply_llm_autofixes(grouped)
+    #     notes += n2; changed += c2
+
+    #     changed = list(set(changed))
+    #     self.out.mkdir(parents=True, exist_ok=True)
+    #     (self.out / "patch_manifest.json").write_text(
+    #         json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
+    #     )
+
+    #     print("[fixer] changed files:", changed)
+    #     return notes, changed
 
 
     # # -------------------------------------------------

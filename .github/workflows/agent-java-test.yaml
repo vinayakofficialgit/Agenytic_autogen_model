@@ -732,3 +732,10 @@ jobs:
         with:
           name: autofix-output
           path: agent_output/
+
+      - name: kube-score (optional)
+        run: |
+          curl -L https://github.com/zegl/kube-score/releases/latest/download/kube-score_ubuntu_amd64 -o kube-score
+          chmod +x kube-score && sudo mv kube-score /usr/local/bin/
+          kube-score version
+          kube-score score hackathon-vuln-app/kubernetes || true          
