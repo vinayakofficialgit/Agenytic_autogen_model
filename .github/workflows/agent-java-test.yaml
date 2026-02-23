@@ -18,7 +18,6 @@ env:
   JAVA_VERSION: "17"
   PYTHON_VERSION: "3.12"
   APP_DIR: "hackathon-vuln-app"
-  # APP_DIR: "enterprise-devsecops-hackathon"
   REPORTS_DIR: "reports"
   MIN_SEVERITY: "high"
   LLM_ENABLED: "true"
@@ -66,6 +65,7 @@ jobs:
           fi
 
       - name: Validate Vault Secret Fetch (AppRole Auth)
+        id: vault_check
         uses: hashicorp/vault-action@v3
         with:
           url: ${{ secrets.VAULT_ADDR }}
@@ -77,15 +77,18 @@ jobs:
 
       - name: Confirm Secret Retrieved
         run: |
-          if [ -z "${{ env.OPENAI_API_KEY }}" ]; then
+          if [ -z "${{ steps.vault_check.outputs.OPENAI_API_KEY }}" ]; then
             echo "❌ FAILED: OPENAI_API_KEY was NOT fetched from Vault."
             exit 1
           else
-            MASKED_KEY=$(echo "${{ env.OPENAI_API_KEY }}" | cut -c1-7)
+            MASKED_KEY=$(echo "${{ steps.vault_check.outputs.OPENAI_API_KEY }}" | cut -c1-7)
             echo "✅ SUCCESS: OPENAI_API_KEY fetched from Vault (starts with: ${MASKED_KEY}...)"
             echo "🔐 Secret is available for downstream jobs."
           fi
 
+  # ============================================================
+  # BUILD APP
+  # ============================================================
   Build-Java-App:
     runs-on: ubuntu-latest
     steps:
@@ -113,10 +116,12 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -125,19 +130,20 @@ jobs:
 
       - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
 
-      - run: |
+      - name: Semgrep (Java + OWASP Top 10)
+        run: |
           pip install semgrep
           semgrep scan \
             --config=p/java \
             --config=p/owasp-top-ten \
             --json \
-            --output $REPORTS_DIR/semgrep.json \
-            $APP_DIR/src/main/java || echo '{}' > $REPORTS_DIR/semgrep.json
+            --output "$REPORTS_DIR/semgrep.json" \
+            "$APP_DIR/src/main/java" || echo '{}' > "$REPORTS_DIR/semgrep.json"
 
       - name: Run SpotBugs
         run: |
           mvn -B verify spotbugs:spotbugs -f $APP_DIR/pom.xml || true
-      
+
       - name: Collect SpotBugs XML
         run: |
           if [ -f "$APP_DIR/target/spotbugsXml.xml" ]; then
@@ -145,7 +151,7 @@ jobs:
           else
             echo "<BugCollection/>" > reports/spotbugs.xml
           fi
-      
+
       - name: Convert SpotBugs XML → JSON
         run: |
           pip install xmltodict
@@ -176,177 +182,151 @@ jobs:
       - uses: actions/checkout@v4
       - run: mkdir -p $REPORTS_DIR
       - run: sudo apt-get update && sudo apt-get install -y jq
-      - run: |
+      - name: Install gitleaks
+        run: |
           VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -L -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz
+          curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
           tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
-      - run: |
-          gitleaks detect --source $APP_DIR --report-format json \
-          --report-path $REPORTS_DIR/gitleaks.json || echo '{}' > $REPORTS_DIR/gitleaks.json
+      - name: Run gitleaks
+        run: |
+          gitleaks detect --source "$APP_DIR" --report-format json \
+            --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
       - uses: actions/upload-artifact@v4
         with:
           name: secrets-reports
           path: reports/*.json
           if-no-files-found: ignore
 
-  # # ============================================================
-  # # SCA
-  # # ============================================================
-  # SCA-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: mkdir -p $REPORTS_DIR
-  #     - run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-  #         ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
-  #         $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: sca-reports
-  #         path: reports/*.json
-
-# =========================================================
-# SCA
-# =========================================================
+  # =========================================================
+  # SCA (Trivy FS)
+  # =========================================================
   SCA-Scanning:
-  runs-on: ubuntu-latest
-  continue-on-error: true
-  env:
-    TRIVY_VERSION: "0.51.2"     # pin to avoid CI drift
-  steps:
-    - uses: actions/checkout@v4
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Prepare reports folder
-      run: mkdir -p "$REPORTS_DIR"
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
 
-    - name: Install Trivy (pinned)
-      run: |
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-        ./bin/trivy --version
+      - name: Install Trivy (pinned)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+          ./bin/trivy --version
 
-    - name: Trivy FS (SCA) scan
-      run: |
-        set -e
-        # Create an empty file first so we always have an artifact even if the scan fails
-        : > "$REPORTS_DIR/trivy_fs.json"
-
-        # Run scan (do not fail job; you'll gate later in AI stage)
-        ./bin/trivy fs \
-          --format json \
-          --output "$REPORTS_DIR/trivy_fs.json" \
-          --timeout 10m \
-          "$APP_DIR" || true
-
-        # Sanity check: ensure file is non-empty JSON
-        if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
-          echo '{}' > "$REPORTS_DIR/trivy_fs.json"
-        fi
-
-    - uses: actions/upload-artifact@v4
-      with:
-        name: sca-reports
-        path: reports/*.json
-        if-no-files-found: ignore
-
-  # # ============================================================
-  # # IAC
-  # # ============================================================
-  # IAC-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: mkdir -p $REPORTS_DIR
-  #     - run: |
-  #         curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
-  #         chmod +x tfsec && sudo mv tfsec /usr/local/bin/
-  #     - run: |
-  #         tfsec $APP_DIR/terraform --format json > "$REPORTS_DIR/tfsec.json" || true
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: iac-reports
-  #         path: reports/*.json
-
-# =========================================================
-# IAC
-# =========================================================
-  IAC-Scanning:
-  runs-on: ubuntu-latest
-  continue-on-error: true
-  steps:
-    - uses: actions/checkout@v4
-
-    - name: Prepare reports folder
-      run: mkdir -p "$REPORTS_DIR"
-
-    - name: Install tfsec
-      run: |
-        curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o tfsec
-        chmod +x tfsec && sudo mv tfsec /usr/local/bin/
-        tfsec --version || true
-
-    - name: Run tfsec (only if Terraform dir exists)
-      run: |
-        : > "$REPORTS_DIR/tfsec.json"
-        if [ -d "$APP_DIR/terraform" ]; then
-          tfsec "$APP_DIR/terraform" \
+      - name: Trivy FS (SCA) scan
+        run: |
+          set -e
+          : > "$REPORTS_DIR/trivy_fs.json"
+          ./bin/trivy fs \
             --format json \
-            > "$REPORTS_DIR/tfsec.json" || true
-        else
-          echo "Terraform dir $APP_DIR/terraform not found. Writing empty report."
-          echo '{}' > "$REPORTS_DIR/tfsec.json"
-        fi
+            --output "$REPORTS_DIR/trivy_fs.json" \
+            --timeout 10m \
+            "$APP_DIR" || true
+          if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+            echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+          fi
 
-        # Ensure we always have valid JSON
-        if [ ! -s "$REPORTS_DIR/tfsec.json" ]; then
-          echo '{}' > "$REPORTS_DIR/tfsec.json"
-        fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
-    - uses: actions/upload-artifact@v4
-      with:
-        name: iac-reports
-        path: reports/*.json
-        if-no-files-found: ignore
+  # =========================================================
+  # IAC (tfsec)
+  # =========================================================
+  IAC-Scanning:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
 
-  # # ============================================================
-  # # CONTAINER
-  # # ============================================================
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
+
+      - name: Install tfsec
+        run: |
+          curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o tfsec
+          chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+          tfsec --version || true
+
+      - name: Run tfsec (only if Terraform dir exists)
+        run: |
+          : > "$REPORTS_DIR/tfsec.json"
+          if [ -d "$APP_DIR/terraform" ]; then
+            tfsec "$APP_DIR/terraform" \
+              --format json \
+              > "$REPORTS_DIR/tfsec.json" || true
+          else
+            echo "Terraform dir $APP_DIR/terraform not found. Writing empty report."
+            echo '{}' > "$REPORTS_DIR/tfsec.json"
+          fi
+          if [ ! -s "$REPORTS_DIR/tfsec.json" ]; then
+            echo '{}' > "$REPORTS_DIR/tfsec.json"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iac-reports
+          path: reports/*.json
+          if-no-files-found: ignore
+
+  # ============================================================
+  # CONTAINER (Trivy Image)
+  # ============================================================
   Container-Scanning:
     runs-on: ubuntu-latest
     needs: Build-Java-App
     continue-on-error: true
+    env:
+      TRIVY_VERSION: "0.51.2"
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: hackathon-vuln-app-1.0.jar
           path: ${{ env.APP_DIR }}/target
+
       - name: Verify jar
         run: |
           echo "Listing target folder:"
-          ls -la $APP_DIR/target
+          ls -la "$APP_DIR/target"
           if [ ! -f "$APP_DIR/target/hackathon-vuln-app-1.0.jar" ]; then
             echo "❌ JAR missing"
             exit 1
           fi
-      - run: mkdir -p $REPORTS_DIR
+
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
+
       - name: Build Docker image
         run: |
           docker build \
             -t hackathon-vuln-app \
-            -f $APP_DIR/Dockerfile \
+            -f "$APP_DIR/Dockerfile" \
             .
-      - name: Install Trivy
+
+      - name: Install Trivy (pinned)
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+          ./bin/trivy --version
+
       - name: Trivy Image Scan
         run: |
-          ./bin/trivy image hackathon-vuln-app \
+          : > "$REPORTS_DIR/trivy_image.json"
+          ./bin/trivy image \
             --format json \
-            --output $REPORTS_DIR/trivy_image.json \
-            || echo '{}' > $REPORTS_DIR/trivy_image.json
+            --timeout 10m \
+            --output "$REPORTS_DIR/trivy_image.json" \
+            hackathon-vuln-app || true
+          if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
+            echo '{}' > "$REPORTS_DIR/trivy_image.json"
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
@@ -362,56 +342,60 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: hackathon-vuln-app-1.0.jar
-          path: ${{ env.APP_DIR }}/target
+        path: ${{ env.APP_DIR }}/target
+
       - run: mkdir -p $REPORTS_DIR
+
       - name: Start Application
         run: |
           mkdir -p config/dummy
-          java -jar $APP_DIR/target/hackathon-vuln-app-1.0.jar \
+          java -jar "$APP_DIR/target/hackathon-vuln-app-1.0.jar" \
             --spring.config.import=optional:file:./config/*/ &
           sleep 40
+
       - name: OWASP ZAP Baseline
         run: |
           mkdir -p zap-output
           docker run --rm \
             -u root \
             --network=host \
-            -v $(pwd)/zap-output:/zap/wrk:rw \
+            -v "$(pwd)/zap-output":/zap/wrk:rw \
             ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
             -t http://localhost:8080 \
             -J zap.json || true
           if [ -f zap-output/zap.json ]; then
-            mv zap-output/zap.json $REPORTS_DIR/zap.json
+            mv zap-output/zap.json "$REPORTS_DIR/zap.json"
           else
-            echo '{}' > $REPORTS_DIR/zap.json
+            echo '{}' > "$REPORTS_DIR/zap.json"
           fi
-      - uses: actions/upload-artifact@v4  
+
+      - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
           path: reports/*.json
           if-no-files-found: ignore
 
-# ============================================================
-# AGGREGATE
-# ============================================================
+  # ============================================================
+  # AGGREGATE
+  # ============================================================
   Aggregate-Scanning-Reports:
     runs-on: ubuntu-latest
-    needs: [SAST-Scanning,Secrets-Scanning,SCA-Scanning,IAC-Scanning,Container-Scanning,DAST-Scanning]
-    # needs: [SAST-Scanning]
+    needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
     if: always()
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: collected-reports
 
-      - run: |
+      - name: Collate JSON
+        run: |
           mkdir -p final-reports
           find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
-
           echo "DEBUG: Aggregated files"
           ls -la final-reports || true
 
@@ -420,14 +404,15 @@ jobs:
           name: all-scan-reports
           path: final-reports/*.json
 
-# ============================================================
-# AI GATE
-# ============================================================
+  # ============================================================
+  # AI GATE
+  # ============================================================
   AI-Gate-Analysis:
     runs-on: ubuntu-latest
     needs: Aggregate-Scanning-Reports
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -456,9 +441,9 @@ jobs:
           name: ai-results
           path: agent_output/
 
-# ============================================================
-# SECURITY GATE
-# ============================================================
+  # ============================================================
+  # SECURITY GATE
+  # ============================================================
   Security-Gate:
     runs-on: ubuntu-latest
     needs: AI-Gate-Analysis
@@ -482,14 +467,15 @@ jobs:
             echo "gate_failed=false" >> $GITHUB_OUTPUT
           fi
 
-# ============================================================
-# TRIAGE
-# ============================================================
+  # ============================================================
+  # TRIAGE
+  # ============================================================
   LLM-Triage:
     runs-on: ubuntu-latest
     needs: [Security-Gate, Vault-Connection-Check]
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -508,6 +494,7 @@ jobs:
 
       # 🔐 Fetch OpenAI API Key from HashiCorp Vault
       - name: Import Secrets from HashiCorp Vault
+        id: vault
         uses: hashicorp/vault-action@v3
         with:
           url: ${{ secrets.VAULT_ADDR }}
@@ -517,10 +504,11 @@ jobs:
           secrets: |
             secret/data/openai api_key | OPENAI_API_KEY
 
-      - run: |
+      - name: Run Triage
+        run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=triage
         env:
-          OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
 
       - name: Debug triage
         run: |
@@ -533,14 +521,15 @@ jobs:
           name: triage-output
           path: agent_output/
 
-# ============================================================
-# SUGGESTIONS
-# ============================================================
+  # ============================================================
+  # SUGGESTIONS
+  # ============================================================
   LLM-Suggestions:
     runs-on: ubuntu-latest
     needs: LLM-Triage
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -559,6 +548,7 @@ jobs:
 
       # 🔐 Fetch OpenAI API Key from HashiCorp Vault
       - name: Import Secrets from HashiCorp Vault
+        id: vault
         uses: hashicorp/vault-action@v3
         with:
           url: ${{ secrets.VAULT_ADDR }}
@@ -568,10 +558,11 @@ jobs:
           secrets: |
             secret/data/openai api_key | OPENAI_API_KEY
 
-      - run: |
+      - name: Run Suggestions
+        run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=advise
         env:
-          OPENAI_API_KEY: ${{ env.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
 
       - name: Debug suggestions
         run: |
@@ -584,26 +575,9 @@ jobs:
           name: suggestions-output
           path: agent_output/
 
-      # - name: Setup Git identity
-      #   run: |
-      #     git config --global user.name "github-actions"
-      #     git config --global user.email "actions@github.com"
-      
-      # - name: Install GitHub CLI
-      #   run: |
-      #     sudo apt-get update
-      #     sudo apt-get install gh -y
-      
-      # - name: Authenticate gh
-      #   run: |
-      #     echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-
-
-
-# ============================================================
-# AUTOFIX
-# ============================================================
-
+  # ============================================================
+  # AUTOFIX
+  # ============================================================
   AutoFix-PR:
     runs-on: ubuntu-latest
     needs: [LLM-Suggestions, Security-Gate]
@@ -612,50 +586,57 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-  
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-  
+
       - run: pip install -r requirements.txt
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: suggestions-output
           path: agent_output
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: reports
-  
+
+      - name: Debug workspace & POMs
+        run: |
+          echo "PWD=$(pwd)"
+          find . -maxdepth 3 -type f -name pom.xml | sed 's|^\./||'
+
       # ⭐ REQUIRED (identity per job)
       - name: Setup Git identity
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-  
+
       # ⭐ REQUIRED (gh CLI)
       - name: Install GitHub CLI
         run: |
           sudo apt-get update
           sudo apt-get install -y gh
-  
-      # ✅ NEW: Setup Java (for AST fixer tool)
+
+      # ✅ Setup Java (for AST fixer tool)
       - name: Setup Java for AST fixer
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
-  
-      # ✅ NEW: Pre-build AST fixer module (adjust path if needed)
+
+      # ✅ Pre-build AST fixer module
       - name: Build AST fixer module
         run: |
+          set -e
+          test -f tools/java-ast-fixer/pom.xml || { echo "POM not found at tools/java-ast-fixer/pom.xml"; exit 1; }
           mvn -B -q -DskipTests package -f tools/java-ast-fixer/pom.xml
           mvn -v
-  
-      # ✅ NEW: Fetch OpenAI API key from Vault for LLM-enabled fixes
+
+      # 🔐 Fetch OpenAI API key from Vault for LLM-enabled fixes
       - name: Import Secrets from HashiCorp Vault
         id: vault
         uses: hashicorp/vault-action@v3
@@ -666,42 +647,65 @@ jobs:
           secretId: ${{ secrets.VAULT_SECRET_ID }}
           secrets: |
             secret/data/openai api_key | OPENAI_API_KEY
-  
-      # 🔄 CHANGED: remove --skip-llm and pass key via env
+
+      # 🚀 Run autofix (LLM enabled); hint engine where the AST POM is
       - name: Run autofix
         run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=fix
         env:
           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
           MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
-  
-      # ⭐ Debug patch manifest (place here)
+          AST_FIXER_POM: tools/java-ast-fixer/pom.xml
+
+      # 💅 Optional: Neaten Terraform changes & quick post-fix signal
+      - name: Terraform fmt (keep diffs tidy)
+        run: |
+          if [ -d "hackathon-vuln-app/terraform" ]; then
+            cd hackathon-vuln-app/terraform
+            terraform fmt -recursive || true
+          fi
+
+      - name: tfsec (post-fix quick check)
+        run: |
+          if [ -d "hackathon-vuln-app/terraform" ]; then
+            curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
+            chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+            tfsec --version || true
+            tfsec . || true
+          fi
+        working-directory: hackathon-vuln-app/terraform
+
+      # ⭐ Debug patch manifest
       - name: Debug patch manifest
         run: |
           echo "Patch manifest"
           cat agent_output/patch_manifest.json || true
-  
+
       - name: Debug git diff before commit
         run: |
           git status
           git diff
           git diff --name-only || true
-  
-      # ✅ NEW: Commit & push changes if present (fallback even if GitPRAgent is absent)
+
+      # ✅ Commit & push changes if present (fallback even if GitPRAgent is absent)
       - name: Commit & push changes (if any)
         run: |
           if ! git diff --quiet || ! git diff --cached --quiet; then
             BR="autofix-$(date +%Y%m%d%H%M%S)"
             git checkout -b "$BR"
             git add -A
-            git commit -m "Autofix: security scan fixes"
-            git push --set-upstream origin "$BR"
-            echo "branch_name=$BR" >> $GITHUB_OUTPUT
+            if git diff --cached --quiet; then
+              echo "No staged changes after add; skipping commit."
+            else
+              git commit -m "Autofix: security scan fixes"
+              git push --set-upstream origin "$BR"
+              echo "branch_name=$BR" >> $GITHUB_OUTPUT
+            fi
           else
             echo "No changes to commit."
           fi
-  
-      # ✅ NEW: Open PR using gh
+
+      # ✅ Open PR using gh
       - name: Open PR
         env:
           GH_TOKEN: ${{ github.token }}
@@ -716,88 +720,14 @@ jobs:
           else
             echo "No new branch → no PR."
           fi
-  
+
       - name: Debug autofix
         run: |
           git status
           git branch -a
           ls -la agent_output
-  
+
       - uses: actions/upload-artifact@v4
         with:
           name: autofix-output
           path: agent_output/
-
-  # AutoFix-PR:
-  #   runs-on: ubuntu-latest
-  #   needs: [LLM-Suggestions, Security-Gate]
-  #   if: needs.Security-Gate.outputs.gate_failed == 'true'
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
-  
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: ${{ env.PYTHON_VERSION }}
-  
-  #     - run: pip install -r requirements.txt
-  
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: suggestions-output
-  #         path: agent_output
-  
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: all-scan-reports
-  #         path: reports
-  
-  #     # ⭐ REQUIRED (identity per job)
-  #     - name: Setup Git identity
-  #       run: |
-  #         git config user.name "github-actions"
-  #         git config user.email "github-actions@github.com"
-  
-  #     # ⭐ REQUIRED (gh CLI)
-  #     - name: Install GitHub CLI
-  #       run: |
-  #         sudo apt-get update
-  #         sudo apt-get install gh -y
-  
-  #     # ⭐ REQUIRED (auth)  ## In GitHub Actions you DO NOT need gh auth login at all if you are using the GITHUB_TOKEN secret, as GitHub Actions automatically authenticates the GitHub CLI with that token. You can directly use gh commands without any additional authentication steps.
-  #     # - name: Authenticate gh
-  #     #   env:
-  #     #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #     #   run: |
-  #     #     echo "$GH_TOKEN" | gh auth login --with-token
-
-  #     # ## To Debug authentication issue.
-  #     # - name: Verify gh auth
-  #     #   run: |
-  #     #     gh auth status
-  
-  #     - run: |
-  #         python main.py --reports-dir reports --output-dir agent_output --mode=fix --skip-llm
-
-  #     # ⭐ Debug patch manifest (place here)
-  #     - name: Debug patch manifest
-  #       run: |
-  #         echo "Patch manifest"
-  #         cat agent_output/patch_manifest.json || true
-
-  #     - name: Debug git diff before commit
-  #       run: |
-  #         git status
-  #         git diff
-    
-  #     - name: Debug autofix
-  #       run: |
-  #         git status
-  #         git branch -a
-  #         ls -la agent_output
-  
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: autofix-output
-  #         path: agent_output/
