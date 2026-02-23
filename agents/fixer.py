@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import json
 import subprocess
 from pathlib import Path
@@ -179,25 +180,142 @@ class Fixer:
 
         return notes, list(set(changed_files))
 
-    # -------------------------------------------------
+    # # -------------------------------------------------
+    # def apply(self, grouped):
+    #     notes, changed = [], []
+
+    #     n1, c1 = self._apply_deterministic_fixes()
+    #     notes += n1
+    #     changed += c1
+
+    #     n2, c2 = self._apply_llm_autofixes(grouped)
+    #     notes += n2
+    #     changed += c2
+
+    #     changed = list(set(changed))
+
+    #     self.out.mkdir(parents=True, exist_ok=True)
+
+    #     (self.out / "patch_manifest.json").write_text(
+    #         json.dumps({"files": changed, "notes": notes}, indent=2)
+    #     )
+
+    #     print("[fixer] changed files:", changed)
+    #     return notes, changed
+
+
+    # --- inside class Fixer, add this method ---
+    def _apply_iac_s3_fixes(self, tf_root: Path):
+        """
+        Deterministic Terraform fixes for S3 buckets flagged by tfsec:
+          - AVD-AWS-0092: public ACL -> private
+          - AVD-AWS-0088/0132: add SSE (uses KMS if S3_KMS_KEY_ARN env provided; else SSE-S3)
+          - AVD-AWS-0086/87/91/93/0094: add aws_s3_bucket_public_access_block with all four booleans true
+        """
+        notes, changed = [], []
+        if not tf_root.exists():
+            return notes, changed
+    
+        kms_arn = os.getenv("S3_KMS_KEY_ARN", "").strip()
+    
+        # 1) In-place update for bucket resources across *.tf
+        for tf in tf_root.rglob("*.tf"):
+            text = tf.read_text(encoding="utf-8")
+            original = text
+    
+            # (a) Prevent public ACLs
+            text = re.sub(r'acl\s*=\s*"public-read(-write)?"', 'acl = "private"', text)
+    
+            # (b) Ensure SSE block (prefer KMS if provided; else SSE-S3)
+            def add_sse_block(match):
+                block = match.group(0)
+                if "server_side_encryption_configuration" in block:
+                    return block  # already present
+                if kms_arn:
+                    sse = f'''
+      server_side_encryption_configuration {{
+        rule {{
+          apply_server_side_encryption_by_default {{
+            sse_algorithm     = "aws:kms"
+            kms_master_key_id = "{kms_arn}"
+          }}
+        }}
+      }}'''
+                else:
+                    sse = '''
+      server_side_encryption_configuration {
+        rule {
+          apply_server_side_encryption_by_default {
+            sse_algorithm = "AES256"
+          }
+        }
+      }'''
+                return re.sub(r'\}\s*$', f'{sse}\n}}', block, flags=re.S)
+    
+            # inject SSE into each aws_s3_bucket resource
+            text = re.sub(
+                r'resource\s+"aws_s3_bucket"\s+"[^"]+"\s*\{[\s\S]*?\}',
+                add_sse_block,
+                text,
+                flags=re.S
+            )
+    
+            if text != original:
+                tf.write_text(text, encoding="utf-8")
+                notes.append(f"[iac] updated {tf}")
+                changed.append(str(tf.relative_to(self.repo)))
+    
+        # 2) Ensure Public Access Block is present (one per bucket)
+        pab_tf = tf_root / "s3_public_access_block.tf"
+        required = []
+        for tf in tf_root.rglob("*.tf"):
+            if tf == pab_tf:
+                continue
+            src = tf.read_text(encoding="utf-8")
+            required += re.findall(r'resource\s+"aws_s3_bucket"\s+"([^"]+)"', src)
+        required = sorted(set(required))
+    
+        want_body = ""
+        for name in required:
+            want_body += f'''
+    resource "aws_s3_bucket_public_access_block" "{name}_pab" {{
+      bucket = aws_s3_bucket.{name}.id
+    
+      block_public_acls       = true
+      block_public_policy     = true
+      ignore_public_acls      = true
+      restrict_public_buckets = true
+    }}
+    '''.strip() + "\n\n"
+    
+        if required:
+            current = pab_tf.read_text(encoding="utf-8") if pab_tf.exists() else ""
+            if current.strip() != want_body.strip():
+                pab_tf.write_text(want_body.strip() + "\n", encoding="utf-8")
+                notes.append(f"[iac] wrote {pab_tf.relative_to(self.repo)} for: {', '.join(required)}")
+                changed.append(str(pab_tf.relative_to(self.repo)))
+    
+        return notes, list(set(changed))
+
+    # --- in apply(self, grouped) insert this call (keep your existing order) ---
     def apply(self, grouped):
         notes, changed = [], []
-
+    
         n1, c1 = self._apply_deterministic_fixes()
-        notes += n1
-        changed += c1
-
+        notes += n1; changed += c1
+    
+        # IaC S3 fixes
+        tf_root = (self.repo / "hackathon-vuln-app" / "terraform")
+        n_iac, c_iac = self._apply_iac_s3_fixes(tf_root)
+        notes += n_iac; changed += c_iac
+    
         n2, c2 = self._apply_llm_autofixes(grouped)
-        notes += n2
-        changed += c2
-
+        notes += n2; changed += c2
+    
         changed = list(set(changed))
-
         self.out.mkdir(parents=True, exist_ok=True)
-
         (self.out / "patch_manifest.json").write_text(
-            json.dumps({"files": changed, "notes": notes}, indent=2)
+            json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
         )
-
         print("[fixer] changed files:", changed)
         return notes, changed

@@ -192,39 +192,123 @@ jobs:
   # # ============================================================
   # # SCA
   # # ============================================================
+  # SCA-Scanning:
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - run: |
+  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+  #         ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
+  #         $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: sca-reports
+  #         path: reports/*.json
+
+# =========================================================
+# SCA
+# =========================================================
   SCA-Scanning:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-      - run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-          ./bin/trivy fs --format json --output $REPORTS_DIR/trivy_fs.json \
-          $APP_DIR || echo '{}' > $REPORTS_DIR/trivy_fs.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sca-reports
-          path: reports/*.json
+  runs-on: ubuntu-latest
+  continue-on-error: true
+  env:
+    TRIVY_VERSION: "0.51.2"     # pin to avoid CI drift
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Prepare reports folder
+      run: mkdir -p "$REPORTS_DIR"
+
+    - name: Install Trivy (pinned)
+      run: |
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+        ./bin/trivy --version
+
+    - name: Trivy FS (SCA) scan
+      run: |
+        set -e
+        # Create an empty file first so we always have an artifact even if the scan fails
+        : > "$REPORTS_DIR/trivy_fs.json"
+
+        # Run scan (do not fail job; you'll gate later in AI stage)
+        ./bin/trivy fs \
+          --format json \
+          --output "$REPORTS_DIR/trivy_fs.json" \
+          --timeout 10m \
+          "$APP_DIR" || true
+
+        # Sanity check: ensure file is non-empty JSON
+        if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+          echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: sca-reports
+        path: reports/*.json
+        if-no-files-found: ignore
 
   # # ============================================================
   # # IAC
   # # ============================================================
+  # IAC-Scanning:
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - run: mkdir -p $REPORTS_DIR
+  #     - run: |
+  #         curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
+  #         chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+  #     - run: |
+  #         tfsec $APP_DIR/terraform --format json > "$REPORTS_DIR/tfsec.json" || true
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: iac-reports
+  #         path: reports/*.json
+
+# =========================================================
+# IAC
+# =========================================================
   IAC-Scanning:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - run: mkdir -p $REPORTS_DIR
-      - run: |
-          curl -L https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64 -o tfsec
-          chmod +x tfsec && sudo mv tfsec /usr/local/bin/
-      - run: |
-          tfsec $APP_DIR/terraform --format json > "$REPORTS_DIR/tfsec.json" || true
-      - uses: actions/upload-artifact@v4
-        with:
-          name: iac-reports
-          path: reports/*.json
+  runs-on: ubuntu-latest
+  continue-on-error: true
+  steps:
+    - uses: actions/checkout@v4
+
+    - name: Prepare reports folder
+      run: mkdir -p "$REPORTS_DIR"
+
+    - name: Install tfsec
+      run: |
+        curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o tfsec
+        chmod +x tfsec && sudo mv tfsec /usr/local/bin/
+        tfsec --version || true
+
+    - name: Run tfsec (only if Terraform dir exists)
+      run: |
+        : > "$REPORTS_DIR/tfsec.json"
+        if [ -d "$APP_DIR/terraform" ]; then
+          tfsec "$APP_DIR/terraform" \
+            --format json \
+            > "$REPORTS_DIR/tfsec.json" || true
+        else
+          echo "Terraform dir $APP_DIR/terraform not found. Writing empty report."
+          echo '{}' > "$REPORTS_DIR/tfsec.json"
+        fi
+
+        # Ensure we always have valid JSON
+        if [ ! -s "$REPORTS_DIR/tfsec.json" ]; then
+          echo '{}' > "$REPORTS_DIR/tfsec.json"
+        fi
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: iac-reports
+        path: reports/*.json
+        if-no-files-found: ignore
 
   # # ============================================================
   # # CONTAINER
@@ -568,7 +652,7 @@ jobs:
       # ✅ NEW: Pre-build AST fixer module (adjust path if needed)
       - name: Build AST fixer module
         run: |
-          mvn -B -q -DskipTests package -f Agenytic_autogen_model/tools/java-ast-fixer/pom.xml
+          mvn -B -q -DskipTests package -f tools/java-ast-fixer/pom.xml
           mvn -v
   
       # ✅ NEW: Fetch OpenAI API key from Vault for LLM-enabled fixes
