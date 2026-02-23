@@ -1,8 +1,8 @@
-name: DevSecOps Agentic AI Pipeline (Enterprise main)Dummy
+name: DevSecOps Agentic AI Pipeline (Enterprise main)
 
 on:
   push:
-    branches: [test-home-sachin]
+    branches: [hackathon-feature]
   workflow_dispatch:
 
 concurrency:
