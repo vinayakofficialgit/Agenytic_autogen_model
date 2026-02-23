@@ -65,6 +65,140 @@ def _git_apply_patch(repo: Path, diff: str) -> bool:
 
 
 # =========================================================
+# Kubernetes hardener helpers (module-level)
+# =========================================================
+def _ensure_dict(d):
+    return d if isinstance(d, dict) else {}
+
+
+def _harden_container_sc(c: dict) -> bool:
+    """
+    Harden a single container (or initContainer) security context.
+    Returns True if mutated.
+    """
+    changed = False
+    sc = c.setdefault("securityContext", {})
+    if sc.get("privileged", False) is True:
+        sc["privileged"] = False
+        changed = True
+    if sc.get("allowPrivilegeEscalation") is not False:
+        sc["allowPrivilegeEscalation"] = False
+        changed = True
+    if sc.get("readOnlyRootFilesystem") is not True:
+        sc["readOnlyRootFilesystem"] = True
+        changed = True
+
+    # Capabilities: drop ALL (merge if user provided existing list)
+    caps = sc.setdefault("capabilities", {})
+    drops = set(caps.get("drop", []) or [])
+    if "ALL" not in drops:
+        drops.add("ALL")
+        caps["drop"] = sorted(drops)
+        changed = True
+
+    # Sensible default if not present
+    if not c.get("imagePullPolicy"):
+        c["imagePullPolicy"] = "IfNotPresent"
+        changed = True
+
+    return changed
+
+
+def _get_podspec_for(doc: dict) -> dict | None:
+    """
+    Return the pod 'spec' dict for a given K8s resource 'doc', or None if not applicable.
+    Handles: Pod, Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob
+    """
+    kind = (doc.get("kind") or "").lower()
+    spec = _ensure_dict(doc.get("spec", {}))
+
+    if kind == "pod":
+        return spec
+
+    # Workloads with template.spec
+    if kind in ("deployment", "replicaset", "statefulset", "daemonset"):
+        tmpl = _ensure_dict(spec.get("template", {}))
+        return _ensure_dict(tmpl.get("spec", {}))
+
+    if kind == "job":
+        tmpl = _ensure_dict(spec.get("template", {}))
+        return _ensure_dict(tmpl.get("spec", {}))
+
+    if kind == "cronjob":
+        jt = _ensure_dict(spec.get("jobTemplate", {}))
+        jts = _ensure_dict(jt.get("spec", {}))
+        tmpl = _ensure_dict(jts.get("template", {}))
+        return _ensure_dict(tmpl.get("spec", {}))
+
+    return None
+
+
+def _harden_podspec(podspec: dict) -> bool:
+    """
+    Apply pod-level and container-level hardening to a Pod spec.
+    Returns True if any mutation performed.
+    """
+    changed = False
+
+    # Pod-level security context
+    psc = podspec.setdefault("securityContext", {})
+    if psc.get("runAsNonRoot") is not True:
+        psc["runAsNonRoot"] = True
+        changed = True
+    # Only set user/group if not already present (do not override explicit config)
+    if "runAsUser" not in psc:
+        psc["runAsUser"] = 10001
+        changed = True
+    if "runAsGroup" not in psc:
+        psc["runAsGroup"] = 10001
+        changed = True
+
+    # seccomp profile (Pod-level)
+    sp = psc.setdefault("seccompProfile", {})
+    if sp.get("type") != "RuntimeDefault":
+        sp["type"] = "RuntimeDefault"
+        changed = True
+
+    # Harden containers and initContainers
+    for key in ("containers", "initContainers"):
+        for c in podspec.get(key, []) or []:
+            if _harden_container_sc(c):
+                changed = True
+
+    return changed
+
+
+def _harden_service(doc: dict) -> bool:
+    """
+    Enforce safe defaults for Service:
+      - type: ClusterIP
+      - remove ports[].nodePort
+      - sessionAffinity: None (if missing)
+    """
+    changed = False
+    spec = _ensure_dict(doc.get("spec", {}))
+
+    svc_type = spec.get("type", "ClusterIP")
+    if svc_type in ("NodePort", "LoadBalancer"):
+        spec["type"] = "ClusterIP"
+        changed = True
+        # Remove nodePort fields that become invalid
+        for p in spec.get("ports", []) or []:
+            if "nodePort" in p:
+                p.pop("nodePort", None)
+                changed = True
+
+    if "sessionAffinity" not in spec:
+        spec["sessionAffinity"] = "None"
+        changed = True
+
+    # Write back if mutated
+    if changed:
+        doc["spec"] = spec
+    return changed
+
+
+# =========================================================
 # FIXER CLASS
 # =========================================================
 class Fixer:
@@ -73,7 +207,7 @@ class Fixer:
         self.out = Path(output_dir)
         self.repo = Path(repo_root)
 
-        # ✅ NEW: toggle AST fallback via env; default True for local runs
+        # ✅ Toggle AST fallback via env; default True for local runs
         self.ast_enabled = str(os.getenv("AST_ENABLED", "true")).lower() in ("1", "true", "yes")
 
         self.ast_engine = ASTJavaEngine(repo_root=self.repo, debug=False)
@@ -90,15 +224,109 @@ class Fixer:
                 notes.append("[deterministic] Dockerfile hardened")
                 changed.append("Dockerfile")
 
-        # (Your Terraform S3 fixes method goes here if you’ve added it)
-        # Example:
+        # Terraform S3 fixes (if present)
         tf_root = (self.repo / "hackathon-vuln-app" / "terraform")
         if tf_root.exists():
-            n_iac, c_iac = self._apply_iac_s3_fixes(tf_root)  # <- your previously added method
+            n_iac, c_iac = self._apply_iac_s3_fixes(tf_root)  # previously added method
             notes += n_iac
             changed += c_iac
 
         return notes, changed
+
+    # -------------------------------------------------
+    # IaC: Terraform S3 hardener (deterministic)
+    # -------------------------------------------------
+    def _apply_iac_s3_fixes(self, tf_root: Path):
+        """
+        Deterministic Terraform fixes for S3 buckets flagged by tfsec:
+          - AVD-AWS-0092: public ACL -> private
+          - AVD-AWS-0088/0132: add SSE (uses KMS if S3_KMS_KEY_ARN env provided; else SSE-S3)
+          - AVD-AWS-0086/87/91/93/0094: add aws_s3_bucket_public_access_block with all four booleans true
+        """
+        notes, changed = [], []
+        if not tf_root.exists():
+            return notes, changed
+
+        kms_arn = os.getenv("S3_KMS_KEY_ARN", "").strip()
+
+        # 1) In-place update for bucket resources across *.tf
+        for tf in tf_root.rglob("*.tf"):
+            text = tf.read_text(encoding="utf-8")
+            original = text
+
+            # (a) Prevent public ACLs
+            text = re.sub(r'acl\s*=\s*"public-read(-write)?"', 'acl = "private"', text)
+
+            # (b) Ensure SSE block (prefer KMS if provided; else SSE-S3)
+            def add_sse_block(match):
+                block = match.group(0)
+                if "server_side_encryption_configuration" in block:
+                    return block  # already present
+                if kms_arn:
+                    sse = f'''
+  server_side_encryption_configuration {{
+    rule {{
+      apply_server_side_encryption_by_default {{
+        sse_algorithm     = "aws:kms"
+        kms_master_key_id = "{kms_arn}"
+      }}
+    }}
+  }}'''
+                else:
+                    sse = '''
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "AES256"
+      }
+    }
+  }'''
+                return re.sub(r'\}\s*$', f'{sse}\n}}', block, flags=re.S)
+
+            # inject SSE into each aws_s3_bucket resource
+            text = re.sub(
+                r'resource\s+"aws_s3_bucket"\s+"[^"]+"\s*\{[\s\S]*?\}',
+                add_sse_block,
+                text,
+                flags=re.S
+            )
+
+            if text != original:
+                tf.write_text(text, encoding="utf-8")
+                notes.append(f"[iac] updated {tf}")
+                changed.append(str(tf.relative_to(self.repo)))
+
+        # 2) Ensure Public Access Block is present (one per bucket)
+        pab_tf = tf_root / "s3_public_access_block.tf"
+        required = []
+        for tf in tf_root.rglob("*.tf"):
+            if tf == pab_tf:
+                continue
+            src = tf.read_text(encoding="utf-8")
+            required += re.findall(r'resource\s+"aws_s3_bucket"\s+"([^"]+)"', src)
+        required = sorted(set(required))
+
+        want_body = ""
+        for name in required:
+            want_body += f'''
+resource "aws_s3_bucket_public_access_block" "{name}_pab" {{
+  bucket = aws_s3_bucket.{name}.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}}
+'''.strip() + "\n\n"
+
+        if required:
+            current = pab_tf.read_text(encoding="utf-8") if pab_tf.exists() else ""
+            if current.strip() != want_body.strip():
+                pab_tf.write_text(want_body.strip() + "\n", encoding="utf-8")
+                notes.append(f"[iac] wrote {pab_tf.relative_to(self.repo)} for: {', '.join(required)}")
+                changed.append(str(pab_tf.relative_to(self.repo)))
+
+        return notes, list(set(changed))
 
     # -------------------------------------------------
     def _llm_propose_patch_for_item(self, item: Dict[str, Any]) -> Tuple[str, bool]:
@@ -137,7 +365,7 @@ class Fixer:
                 diff, fallback = self._llm_propose_patch_for_item(item)
 
                 # ======================================================
-                # LLM invalid → AST structural fallback (now optional)
+                # LLM invalid → AST structural fallback (optional)
                 # ======================================================
                 if fallback or not diff or "--- a/" not in diff:
 
@@ -154,6 +382,7 @@ class Fixer:
                         item["title"] = "command injection"
 
                     ast_result = self.ast_engine.apply_for_finding(item)
+
                     notes.extend(ast_result.notes)
                     changed_files.extend(ast_result.changed_files)
 
@@ -199,136 +428,9 @@ class Fixer:
 
         return notes, list(set(changed_files))
 
-    # =========================================================
+    # -------------------------------------------------
     # Kubernetes hardener (deterministic IaC for K8s)
-    # =========================================================
-    def _ensure_dict(d):
-        return d if isinstance(d, dict) else {}
-    
-    def _harden_container_sc(c: dict) -> bool:
-        """
-        Harden a single container (or initContainer) security context.
-        Returns True if mutated.
-        """
-        changed = False
-        sc = c.setdefault("securityContext", {})
-        if sc.get("privileged", False) is True:
-            sc["privileged"] = False
-            changed = True
-        if sc.get("allowPrivilegeEscalation") is not False:
-            sc["allowPrivilegeEscalation"] = False
-            changed = True
-        if sc.get("readOnlyRootFilesystem") is not True:
-            sc["readOnlyRootFilesystem"] = True
-            changed = True
-    
-        # Capabilities: drop ALL (merge if user provided existing list)
-        caps = sc.setdefault("capabilities", {})
-        drops = set(caps.get("drop", []) or [])
-        if "ALL" not in drops:
-            drops.add("ALL")
-            caps["drop"] = sorted(drops)
-            changed = True
-    
-        # Sensible default if not present
-        if not c.get("imagePullPolicy"):
-            c["imagePullPolicy"] = "IfNotPresent"
-            changed = True
-    
-        return changed
-    
-    def _get_podspec_for(doc: dict) -> dict | None:
-        """
-        Return the pod 'spec' dict for a given K8s resource 'doc', or None if not applicable.
-        Handles: Pod, Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob
-        """
-        kind = (doc.get("kind") or "").lower()
-        spec = _ensure_dict(doc.get("spec", {}))
-    
-        if kind == "pod":
-            return spec
-    
-        # Workloads with template.spec
-        if kind in ("deployment", "replicaset", "statefulset", "daemonset"):
-            tmpl = _ensure_dict(spec.get("template", {}))
-            return _ensure_dict(tmpl.get("spec", {}))
-    
-        if kind == "job":
-            tmpl = _ensure_dict(spec.get("template", {}))
-            return _ensure_dict(tmpl.get("spec", {}))
-    
-        if kind == "cronjob":
-            jt = _ensure_dict(spec.get("jobTemplate", {}))
-            jts = _ensure_dict(jt.get("spec", {}))
-            tmpl = _ensure_dict(jts.get("template", {}))
-            return _ensure_dict(tmpl.get("spec", {}))
-    
-        return None
-    
-    def _harden_podspec(podspec: dict) -> bool:
-        """
-        Apply pod-level and container-level hardening to a Pod spec.
-        Returns True if any mutation performed.
-        """
-        changed = False
-    
-        # Pod-level security context
-        psc = podspec.setdefault("securityContext", {})
-        if psc.get("runAsNonRoot") is not True:
-            psc["runAsNonRoot"] = True
-            changed = True
-        # Only set user/group if not already present (do not override explicit config)
-        if "runAsUser" not in psc:
-            psc["runAsUser"] = 10001
-            changed = True
-        if "runAsGroup" not in psc:
-            psc["runAsGroup"] = 10001
-            changed = True
-    
-        # seccomp profile (Pod-level)
-        sp = psc.setdefault("seccompProfile", {})
-        if sp.get("type") != "RuntimeDefault":
-            sp["type"] = "RuntimeDefault"
-            # (no changed flag because above logic may have set psc already)
-            changed = True
-    
-        # Harden containers and initContainers
-        for key in ("containers", "initContainers"):
-            for c in podspec.get(key, []) or []:
-                if _harden_container_sc(c):
-                    changed = True
-    
-        return changed
-    
-    def _harden_service(doc: dict) -> bool:
-        """
-        Enforce safe defaults for Service:
-          - type: ClusterIP
-          - remove ports[].nodePort
-          - sessionAffinity: None (if missing)
-        """
-        changed = False
-        spec = _ensure_dict(doc.get("spec", {}))
-    
-        svc_type = spec.get("type", "ClusterIP")
-        if svc_type in ("NodePort", "LoadBalancer"):
-            spec["type"] = "ClusterIP"
-            changed = True
-            # Remove nodePort fields that become invalid
-            for p in spec.get("ports", []) or []:
-                if "nodePort" in p:
-                    p.pop("nodePort", None)
-                    changed = True
-    
-        if "sessionAffinity" not in spec:
-            spec["sessionAffinity"] = "None"
-            changed = True
-    
-        # Write back if mutated
-        if changed:
-            doc["spec"] = spec
-        return changed
-    
+    # -------------------------------------------------
     def _apply_k8s_fixes(self, k8s_root: Path):
         """
         Deterministic Kubernetes hardening:
@@ -339,30 +441,29 @@ class Fixer:
         notes, changed_files = [], []
         if not k8s_root.exists():
             return notes, changed_files
-    
+
         for yf in k8s_root.rglob("*.y*ml"):
             text = yf.read_text(encoding="utf-8")
             orig = text
-    
+
             try:
                 docs = list(yaml.safe_load_all(text)) or []
             except Exception:
                 # Skip malformed YAML
                 continue
-    
+
             file_changed = False
-    
+
             for i, doc in enumerate(docs):
                 if not isinstance(doc, dict):
                     continue
                 kind = (doc.get("kind") or "").lower()
-    
+
                 # Workloads with Pod specs
                 podspec = _get_podspec_for(doc)
                 if podspec is not None and isinstance(podspec, dict):
                     if _harden_podspec(podspec):
-                        # write back podspec
-                        # (re-nest where appropriate)
+                        # write back podspec (re-nest where appropriate)
                         if kind == "pod":
                             doc["spec"] = podspec
                         elif kind in ("deployment", "replicaset", "statefulset", "daemonset", "job"):
@@ -383,13 +484,13 @@ class Fixer:
                             doc["spec"] = spec
                         docs[i] = doc
                         file_changed = True
-    
+
                 # Services
                 if kind == "service":
                     if _harden_service(doc):
                         docs[i] = doc
                         file_changed = True
-    
+
             if file_changed:
                 # dump back (preserve doc separators; keep natural key order)
                 new_text = yaml.safe_dump_all(docs, sort_keys=False)
@@ -398,187 +499,31 @@ class Fixer:
                     rel = str(yf.relative_to(self.repo))
                     notes.append(f"[k8s] hardened {rel}")
                     changed_files.append(rel)
-    
+
         return notes, list(set(changed_files))
-    
-    
-    # -------------------------------------------------
+
     # -------------------------------------------------
     def apply(self, grouped):
-            notes, changed = [], []
-    
-            n1, c1 = self._apply_deterministic_fixes()
-            notes += n1; changed += c1
-    
-            n2, c2 = self._apply_llm_autofixes(grouped)
-            notes += n2; changed += c2
-    
-            changed = list(set(changed))
-            self.out.mkdir(parents=True, exist_ok=True)
-            (self.out / "patch_manifest.json").write_text(
-                json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
-            )
-    
-            print("[fixer] changed files:", changed)
-            return notes, changed  
-
-
-    # -------------------------------------------------
-    # def apply(self, grouped):
-    #     notes, changed = [], []
-
-    #     n1, c1 = self._apply_deterministic_fixes()
-    #     notes += n1; changed += c1
-
-    #     n2, c2 = self._apply_llm_autofixes(grouped)
-    #     notes += n2; changed += c2
-
-    #     changed = list(set(changed))
-    #     self.out.mkdir(parents=True, exist_ok=True)
-    #     (self.out / "patch_manifest.json").write_text(
-    #         json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
-    #     )
-
-    #     print("[fixer] changed files:", changed)
-    #     return notes, changed
-
-
-    # # -------------------------------------------------
-    # def apply(self, grouped):
-    #     notes, changed = [], []
-
-    #     n1, c1 = self._apply_deterministic_fixes()
-    #     notes += n1
-    #     changed += c1
-
-    #     n2, c2 = self._apply_llm_autofixes(grouped)
-    #     notes += n2
-    #     changed += c2
-
-    #     changed = list(set(changed))
-
-    #     self.out.mkdir(parents=True, exist_ok=True)
-
-    #     (self.out / "patch_manifest.json").write_text(
-    #         json.dumps({"files": changed, "notes": notes}, indent=2)
-    #     )
-
-    #     print("[fixer] changed files:", changed)
-    #     return notes, changed
-
-
-    # --- inside class Fixer, add this method ---
-    def _apply_iac_s3_fixes(self, tf_root: Path):
-        """
-        Deterministic Terraform fixes for S3 buckets flagged by tfsec:
-          - AVD-AWS-0092: public ACL -> private
-          - AVD-AWS-0088/0132: add SSE (uses KMS if S3_KMS_KEY_ARN env provided; else SSE-S3)
-          - AVD-AWS-0086/87/91/93/0094: add aws_s3_bucket_public_access_block with all four booleans true
-        """
         notes, changed = [], []
-        if not tf_root.exists():
-            return notes, changed
-    
-        kms_arn = os.getenv("S3_KMS_KEY_ARN", "").strip()
-    
-        # 1) In-place update for bucket resources across *.tf
-        for tf in tf_root.rglob("*.tf"):
-            text = tf.read_text(encoding="utf-8")
-            original = text
-    
-            # (a) Prevent public ACLs
-            text = re.sub(r'acl\s*=\s*"public-read(-write)?"', 'acl = "private"', text)
-    
-            # (b) Ensure SSE block (prefer KMS if provided; else SSE-S3)
-            def add_sse_block(match):
-                block = match.group(0)
-                if "server_side_encryption_configuration" in block:
-                    return block  # already present
-                if kms_arn:
-                    sse = f'''
-      server_side_encryption_configuration {{
-        rule {{
-          apply_server_side_encryption_by_default {{
-            sse_algorithm     = "aws:kms"
-            kms_master_key_id = "{kms_arn}"
-          }}
-        }}
-      }}'''
-                else:
-                    sse = '''
-      server_side_encryption_configuration {
-        rule {
-          apply_server_side_encryption_by_default {
-            sse_algorithm = "AES256"
-          }
-        }
-      }'''
-                return re.sub(r'\}\s*$', f'{sse}\n}}', block, flags=re.S)
-    
-            # inject SSE into each aws_s3_bucket resource
-            text = re.sub(
-                r'resource\s+"aws_s3_bucket"\s+"[^"]+"\s*\{[\s\S]*?\}',
-                add_sse_block,
-                text,
-                flags=re.S
-            )
-    
-            if text != original:
-                tf.write_text(text, encoding="utf-8")
-                notes.append(f"[iac] updated {tf}")
-                changed.append(str(tf.relative_to(self.repo)))
-    
-        # 2) Ensure Public Access Block is present (one per bucket)
-        pab_tf = tf_root / "s3_public_access_block.tf"
-        required = []
-        for tf in tf_root.rglob("*.tf"):
-            if tf == pab_tf:
-                continue
-            src = tf.read_text(encoding="utf-8")
-            required += re.findall(r'resource\s+"aws_s3_bucket"\s+"([^"]+)"', src)
-        required = sorted(set(required))
-    
-        want_body = ""
-        for name in required:
-            want_body += f'''
-    resource "aws_s3_bucket_public_access_block" "{name}_pab" {{
-      bucket = aws_s3_bucket.{name}.id
-    
-      block_public_acls       = true
-      block_public_policy     = true
-      ignore_public_acls      = true
-      restrict_public_buckets = true
-    }}
-    '''.strip() + "\n\n"
-    
-        if required:
-            current = pab_tf.read_text(encoding="utf-8") if pab_tf.exists() else ""
-            if current.strip() != want_body.strip():
-                pab_tf.write_text(want_body.strip() + "\n", encoding="utf-8")
-                notes.append(f"[iac] wrote {pab_tf.relative_to(self.repo)} for: {', '.join(required)}")
-                changed.append(str(pab_tf.relative_to(self.repo)))
-    
-        return notes, list(set(changed))
 
-    # --- in apply(self, grouped) insert this call (keep your existing order) ---
-    def apply(self, grouped):
-        notes, changed = [], []
-    
+        # Deterministic fixes (Dockerfile + Terraform S3)
         n1, c1 = self._apply_deterministic_fixes()
         notes += n1; changed += c1
-    
-        # IaC S3 fixes
-        tf_root = (self.repo / "hackathon-vuln-app" / "terraform")
-        n_iac, c_iac = self._apply_iac_s3_fixes(tf_root)
-        notes += n_iac; changed += c_iac
-    
+
+        # ✅ Kubernetes hardening (Pods/Workloads/Services)
+        k8s_root = (self.repo / "hackathon-vuln-app" / "kubernetes")
+        n_k8s, c_k8s = self._apply_k8s_fixes(k8s_root)
+        notes += n_k8s; changed += c_k8s
+
+        # LLM fixes (Java etc., AST optional)
         n2, c2 = self._apply_llm_autofixes(grouped)
         notes += n2; changed += c2
-    
+
         changed = list(set(changed))
         self.out.mkdir(parents=True, exist_ok=True)
         (self.out / "patch_manifest.json").write_text(
             json.dumps({"files": changed, "notes": notes}, indent=2), encoding="utf-8"
         )
+
         print("[fixer] changed files:", changed)
         return notes, changed

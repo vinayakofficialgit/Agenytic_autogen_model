@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insecure-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: insecure
+  template:
+    metadata:
+      labels:
+        app: insecure
+    spec:
+      securityContext: {}   # missing runAsNonRoot, seccomp, etc.
+      containers:
+        - name: web
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: false
+            capabilities:
+              add:
+                - SYS_ADMIN
+
+
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: insecure
+# spec:
+#   containers:
+#   - name: app
+#     image: demo
+#     securityContext:
+#       privileged: true
