@@ -175,65 +175,65 @@ jobs:
   # ============================================================
   # SECRETS
   # ============================================================
-  # Secrets-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: mkdir -p $REPORTS_DIR
-  #     - run: sudo apt-get update && sudo apt-get install -y jq
-  #     - name: Install gitleaks
-  #       run: |
-  #         VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-  #         curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
-  #         tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
-  #     - name: Run gitleaks
-  #       run: |
-  #         gitleaks detect --source "$APP_DIR" --report-format json \
-  #           --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: secrets-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+  Secrets-Scanning:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install gitleaks
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+      - name: Run gitleaks
+        run: |
+          gitleaks detect --source "$APP_DIR" --report-format json \
+            --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secrets-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # =========================================================
   # SCA (Trivy FS)
   # =========================================================
-  # SCA-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   env:
-  #     TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
-  #   steps:
-  #     - uses: actions/checkout@v4
+  SCA-Scanning:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
 
-  #     - name: Install Trivy (pinned)
-  #       run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-  #         ./bin/trivy --version
+      - name: Install Trivy (pinned)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+          ./bin/trivy --version
 
-  #     - name: Trivy FS (SCA) scan
-  #       run: |
-  #         set -e
-  #         : > "$REPORTS_DIR/trivy_fs.json"
-  #         ./bin/trivy fs \
-  #           --format json \
-  #           --output "$REPORTS_DIR/trivy_fs.json" \
-  #           --timeout 10m \
-  #           "$APP_DIR" || true
-  #         if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
-  #           echo '{}' > "$REPORTS_DIR/trivy_fs.json"
-  #         fi
+      - name: Trivy FS (SCA) scan
+        run: |
+          set -e
+          : > "$REPORTS_DIR/trivy_fs.json"
+          ./bin/trivy fs \
+            --format json \
+            --output "$REPORTS_DIR/trivy_fs.json" \
+            --timeout 10m \
+            "$APP_DIR" || true
+          if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+            echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+          fi
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: sca-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # =========================================================
   # IAC (tfsec)
@@ -277,108 +277,108 @@ jobs:
   # ============================================================
   # CONTAINER (Trivy Image)
   # ============================================================
-  # Container-Scanning:
-  #   runs-on: ubuntu-latest
-  #   needs: Build-Java-App
-  #   continue-on-error: true
-  #   env:
-  #     TRIVY_VERSION: "0.51.2"
-  #   steps:
-  #     - uses: actions/checkout@v4
+  Container-Scanning:
+    runs-on: ubuntu-latest
+    needs: Build-Java-App
+    continue-on-error: true
+    env:
+      TRIVY_VERSION: "0.51.2"
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: hackathon-vuln-app-1.0.jar
-  #         path: ${{ env.APP_DIR }}/target
+      - uses: actions/download-artifact@v4
+        with:
+          name: hackathon-vuln-app-1.0.jar
+          path: ${{ env.APP_DIR }}/target
 
-  #     - name: Verify jar
-  #       run: |
-  #         echo "Listing target folder:"
-  #         ls -la "$APP_DIR/target"
-  #         if [ ! -f "$APP_DIR/target/hackathon-vuln-app-1.0.jar" ]; then
-  #           echo "❌ JAR missing"
-  #           exit 1
-  #         fi
+      - name: Verify jar
+        run: |
+          echo "Listing target folder:"
+          ls -la "$APP_DIR/target"
+          if [ ! -f "$APP_DIR/target/hackathon-vuln-app-1.0.jar" ]; then
+            echo "❌ JAR missing"
+            exit 1
+          fi
 
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
 
-  #     - name: Build Docker image
-  #       run: |
-  #         docker build \
-  #           -t hackathon-vuln-app \
-  #           -f "$APP_DIR/Dockerfile" \
-  #           .
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t hackathon-vuln-app \
+            -f "$APP_DIR/Dockerfile" \
+            .
 
-  #     - name: Install Trivy (pinned)
-  #       run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-  #         ./bin/trivy --version
+      - name: Install Trivy (pinned)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+          ./bin/trivy --version
 
-  #     - name: Trivy Image Scan
-  #       run: |
-  #         : > "$REPORTS_DIR/trivy_image.json"
-  #         ./bin/trivy image \
-  #           --format json \
-  #           --timeout 10m \
-  #           --output "$REPORTS_DIR/trivy_image.json" \
-  #           hackathon-vuln-app || true
-  #         if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
-  #           echo '{}' > "$REPORTS_DIR/trivy_image.json"
-  #         fi
+      - name: Trivy Image Scan
+        run: |
+          : > "$REPORTS_DIR/trivy_image.json"
+          ./bin/trivy image \
+            --format json \
+            --timeout 10m \
+            --output "$REPORTS_DIR/trivy_image.json" \
+            hackathon-vuln-app || true
+          if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
+            echo '{}' > "$REPORTS_DIR/trivy_image.json"
+          fi
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: container-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # ============================================================
   # DAST
   # ============================================================
-  # DAST-Scanning:
-  #   runs-on: ubuntu-latest
-  #   needs: Build-Java-App
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
+  DAST-Scanning:
+    runs-on: ubuntu-latest
+    needs: Build-Java-App
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
 
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: hackathon-vuln-app-1.0.jar
-  #         path: ${{ env.APP_DIR }}/target
+      - uses: actions/download-artifact@v4
+        with:
+          name: hackathon-vuln-app-1.0.jar
+          path: ${{ env.APP_DIR }}/target
 
-  #     - run: mkdir -p $REPORTS_DIR
+      - run: mkdir -p $REPORTS_DIR
 
-  #     - name: Start Application
-  #       run: |
-  #         mkdir -p config/dummy
-  #         java -jar "$APP_DIR/target/hackathon-vuln-app-1.0.jar" \
-  #           --spring.config.import=optional:file:./config/*/ &
-  #         sleep 40
+      - name: Start Application
+        run: |
+          mkdir -p config/dummy
+          java -jar "$APP_DIR/target/hackathon-vuln-app-1.0.jar" \
+            --spring.config.import=optional:file:./config/*/ &
+          sleep 40
 
-  #     - name: OWASP ZAP Baseline
-  #       run: |
-  #         mkdir -p zap-output
-  #         docker run --rm \
-  #           -u root \
-  #           --network=host \
-  #           -v "$(pwd)/zap-output":/zap/wrk:rw \
-  #           ghcr.io/zaproxy/zaproxy:stable \
-  #           zap-baseline.py \
-  #           -t http://localhost:8080 \
-  #           -J zap.json || true
-  #         if [ -f zap-output/zap.json ]; then
-  #           mv zap-output/zap.json "$REPORTS_DIR/zap.json"
-  #         else
-  #           echo '{}' > "$REPORTS_DIR/zap.json"
-  #         fi
+      - name: OWASP ZAP Baseline
+        run: |
+          mkdir -p zap-output
+          docker run --rm \
+            -u root \
+            --network=host \
+            -v "$(pwd)/zap-output":/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:8080 \
+            -J zap.json || true
+          if [ -f zap-output/zap.json ]; then
+            mv zap-output/zap.json "$REPORTS_DIR/zap.json"
+          else
+            echo '{}' > "$REPORTS_DIR/zap.json"
+          fi
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: dast-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # ============================================================
   # AGGREGATE
@@ -733,9 +733,34 @@ jobs:
           name: autofix-output
           path: agent_output/
 
-      - name: kube-score (optional)
+      # 📊 kube-score (install + run) — non-gating signal for K8s manifests
+      - name: Install kube-score (latest)
         run: |
-          curl -L https://github.com/zegl/kube-score/releases/latest/download/kube-score_ubuntu_amd64 -o kube-score
+          set -e
+          sudo apt-get update -y && sudo apt-get install -y jq
+          # Resolve latest release tag (fallback to 1.20.0 if API fails)
+          VER="$(curl -s https://api.github.com/repos/zegl/kube-score/releases/latest | jq -r '.tag_name' | sed 's/^v//' || true)"
+          if [ -z "$VER" ] || [ "$VER" = "null" ]; then VER="1.20.0"; fi
+          echo "Installing kube-score version: $VER"
+          curl -L -o kube-score "https://github.com/zegl/kube-score/releases/download/v${VER}/kube-score_${VER}_linux_amd64"
           chmod +x kube-score && sudo mv kube-score /usr/local/bin/
           kube-score version
-          kube-score score hackathon-vuln-app/kubernetes || true          
+  
+      - name: kube-score (JSON report)
+        run: |
+          if [ -d "hackathon-vuln-app/kubernetes" ]; then
+            mkdir -p reports
+            kube-score score \
+              --output-format json \
+              hackathon-vuln-app/kubernetes > reports/kube-score.json || true
+          else
+            echo "No Kubernetes folder found; writing empty JSON."
+            mkdir -p reports
+            echo '{"version":"2.1.0","runs":[]}' > reports/kube-score.json
+          fi
+  
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kube-score-reports
+          path: reports/kube-score.json
+          if-no-files-found: ignore     
