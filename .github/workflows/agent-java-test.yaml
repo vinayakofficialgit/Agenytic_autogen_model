@@ -385,8 +385,9 @@ jobs:
   # ============================================================
   Aggregate-Scanning-Reports:
     runs-on: ubuntu-latest
-    needs: [SAST-Scanning, IAC-Scanning]
-    # needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
+    needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
+    # needs: [SAST-Scanning, IAC-Scanning]
+    
     if: always()
     steps:
       - uses: actions/download-artifact@v4
