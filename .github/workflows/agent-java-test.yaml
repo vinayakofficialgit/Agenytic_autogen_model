@@ -268,6 +268,22 @@ jobs:
             echo '{}' > "$REPORTS_DIR/tfsec.json"
           fi
 
+      - name: Run tfsec (only if Kubernetes dir exists)
+        run: |
+          : > "$REPORTS_DIR/tfsec_k8s.json"
+          if [ -d "$APP_DIR/Kubernetes" ]; then
+            tfsec "$APP_DIR/Kubernetes" \
+              --format json \
+              > "$REPORTS_DIR/tfsec_k8s.json" || true
+          else
+            echo "Terraform dir $APP_DIR/kubernetes not found. Writing empty report."
+            echo '{}' > "$REPORTS_DIR/tfsec_k8s.json"
+          fi
+          if [ ! -s "$REPORTS_DIR/tfsec_k8s.json" ]; then
+            echo '{}' > "$REPORTS_DIR/tfsec_k8s.json"
+          fi
+
+
       - uses: actions/upload-artifact@v4
         with:
           name: iac-reports
