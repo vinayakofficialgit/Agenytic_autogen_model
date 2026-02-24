@@ -224,9 +224,9 @@ jobs:
           name: secrets-reports
           path: reports/*.json
           if-no-files-found: ignore  
-# # =========================================================
-# # SCA (Trivy FS)
-# # =========================================================
+# =========================================================
+# SCA (Trivy FS)
+# =========================================================
   SCA-Scanning:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -269,128 +269,128 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # # =========================================================
-  # # IAC (tfsec and k8s)
-  # # =========================================================
-  # IAC-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
+# =========================================================
+# IAC (tfsec and k8s)
+# =========================================================
+  IAC-Scanning:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
   
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
   
-  #     - name: Install Checkov
-  #       run: pip install checkov
+      - name: Install Checkov
+        run: pip install checkov
   
-  #     - name: Checkov (Terraform JSON)
-  #       run: |
-  #         : > "$REPORTS_DIR/checkov_tf.json"
-  #         if [ -d "$APP_DIR/terraform" ]; then
-  #           checkov -d "$APP_DIR/terraform" --framework terraform -o json > "$REPORTS_DIR/checkov_tf.json" || true
-  #         else
-  #           echo '{}' > "$REPORTS_DIR/checkov_tf.json"
-  #         fi
-  #         if [ ! -s "$REPORTS_DIR/checkov_tf.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_tf.json"; fi
+      - name: Checkov (Terraform JSON)
+        run: |
+          : > "$REPORTS_DIR/checkov_tf.json"
+          if [ -d "$APP_DIR/terraform" ]; then
+            checkov -d "$APP_DIR/terraform" --framework terraform -o json > "$REPORTS_DIR/checkov_tf.json" || true
+          else
+            echo '{}' > "$REPORTS_DIR/checkov_tf.json"
+          fi
+          if [ ! -s "$REPORTS_DIR/checkov_tf.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_tf.json"; fi
   
-  #     - name: Checkov (Kubernetes JSON)
-  #       run: |
-  #         : > "$REPORTS_DIR/checkov_k8s.json"
-  #         if [ -d "$APP_DIR/k8s" ]; then
-  #           checkov -d "$APP_DIR/k8s" --framework kubernetes -o json > "$REPORTS_DIR/checkov_k8s.json" || true
-  #         else
-  #           echo '{}' > "$REPORTS_DIR/checkov_k8s.json"
-  #         fi
-  #         if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
+      - name: Checkov (Kubernetes JSON)
+        run: |
+          : > "$REPORTS_DIR/checkov_k8s.json"
+          if [ -d "$APP_DIR/k8s" ]; then
+            checkov -d "$APP_DIR/k8s" --framework kubernetes -o json > "$REPORTS_DIR/checkov_k8s.json" || true
+          else
+            echo '{}' > "$REPORTS_DIR/checkov_k8s.json"
+          fi
+          if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
   
-  #     - name: IaC Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: IaC
-  #         reports_dir: reports
-  #         files: checkov_tf.json,checkov_k8s.json
+      - name: IaC Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: IaC
+          reports_dir: reports
+          files: checkov_tf.json,checkov_k8s.json
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: iac-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iac-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # # ============================================================
   # # CONTAINER (Trivy Image)
   # # ============================================================
-  # Container-Scanning:
-  #   runs-on: ubuntu-latest
-  #   needs: Build-Java-App
-  #   continue-on-error: true
-  #   env:
-  #     TRIVY_VERSION: "0.51.2"
-  #   steps:
-  #     - uses: actions/checkout@v4
+  Container-Scanning:
+    runs-on: ubuntu-latest
+    needs: Build-Java-App
+    continue-on-error: true
+    env:
+      TRIVY_VERSION: "0.51.2"
+    steps:
+      - uses: actions/checkout@v4
   
-  #     # Download the jar produced by Build-Java-App
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: app-jar
-  #         path: ${{ env.APP_DIR }}/target
+      # Download the jar produced by Build-Java-App
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: ${{ env.APP_DIR }}/target
   
-  #     - name: Verify jar
-  #       run: |
-  #         echo "Listing target folder:"
-  #         ls -la "$APP_DIR/target"
-  #         if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
-  #           echo "❌ JAR missing"
-  #           exit 1
-  #         fi
+      - name: Verify jar
+        run: |
+          echo "Listing target folder:"
+          ls -la "$APP_DIR/target"
+          if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
+            echo "❌ JAR missing"
+            exit 1
+          fi
   
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
   
-  #     - name: Build Docker image (build from app folder)
-  #       id: buildimg
-  #       run: |
-  #         if docker build -t java-pilot-app:1.0.0 "$APP_DIR" ; then
-  #           echo "built=true" >> $GITHUB_OUTPUT
-  #         else
-  #           echo "built=false" >> $GITHUB_OUTPUT
-  #         fi
+      - name: Build Docker image (build from app folder)
+        id: buildimg
+        run: |
+          if docker build -t java-pilot-app:1.0.0 "$APP_DIR" ; then
+            echo "built=true" >> $GITHUB_OUTPUT
+          else
+            echo "built=false" >> $GITHUB_OUTPUT
+          fi
   
-  #     - name: Install Trivy (pinned)
-  #       run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-  #         ./bin/trivy --version
+      - name: Install Trivy (pinned)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+          ./bin/trivy --version
   
-  #     - name: Trivy Image Scan (only if image built)
-  #       if: steps.buildimg.outputs.built == 'true'
-  #       run: |
-  #         : > "$REPORTS_DIR/trivy_image.json"
-  #         ./bin/trivy image \
-  #           --format json \
-  #           --timeout 10m \
-  #           --output "$REPORTS_DIR/trivy_image.json" \
-  #           java-pilot-app:1.0.0 || true
-  #         if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
-  #           echo '{}' > "$REPORTS_DIR/trivy_image.json"
-  #         fi
+      - name: Trivy Image Scan (only if image built)
+        if: steps.buildimg.outputs.built == 'true'
+        run: |
+          : > "$REPORTS_DIR/trivy_image.json"
+          ./bin/trivy image \
+            --format json \
+            --timeout 10m \
+            --output "$REPORTS_DIR/trivy_image.json" \
+            java-pilot-app:1.0.0 || true
+          if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
+            echo '{}' > "$REPORTS_DIR/trivy_image.json"
+          fi
   
-  #     - name: Trivy Image Scan (fallback when build failed)
-  #       if: steps.buildimg.outputs.built != 'true'
-  #       run: |
-  #         echo '{}' > "$REPORTS_DIR/trivy_image.json"
+      - name: Trivy Image Scan (fallback when build failed)
+        if: steps.buildimg.outputs.built != 'true'
+        run: |
+          echo '{}' > "$REPORTS_DIR/trivy_image.json"
   
-  #     - name: Container Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: Container
-  #         reports_dir: reports
-  #         files: trivy_image.json
+      - name: Container Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: Container
+          reports_dir: reports
+          files: trivy_image.json
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: container-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # # ============================================================
   # # DAST
