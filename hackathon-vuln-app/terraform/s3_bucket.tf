@@ -1,6 +1,6 @@
 resource "aws_s3_bucket" "bad" {
   bucket = "public-bucket-demo"
-  acl = "private"
+  acl    = "private"
 
   server_side_encryption_configuration {
     rule {
