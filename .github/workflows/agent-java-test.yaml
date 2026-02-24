@@ -195,35 +195,35 @@ jobs:
   # ============================================================
   # SECRETS
   # ============================================================
-  # Secrets-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - run: mkdir -p $REPORTS_DIR
-  #     - run: sudo apt-get update && sudo apt-get install -y jq
-  #     - name: Install gitleaks
-  #       run: |
-  #         VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-  #         curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
-  #         tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
-  #     - name: Run gitleaks
-  #       run: |
-  #         gitleaks detect --source "$APP_DIR" --report-format json \
-  #           --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
+  Secrets-Scanning:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p $REPORTS_DIR
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install gitleaks
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+      - name: Run gitleaks
+        run: |
+          gitleaks detect --source "$APP_DIR" --report-format json \
+            --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
       
-  #     - name: Secrets Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: Secrets
-  #         reports_dir: reports
-  #         files: gitleaks.json
+      - name: Secrets Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: Secrets
+          reports_dir: reports
+          files: gitleaks.json
       
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: secrets-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secrets-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # # =========================================================
   # # SCA (Trivy FS)
