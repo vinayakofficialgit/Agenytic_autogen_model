@@ -209,7 +209,8 @@ jobs:
           tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
       - name: Run gitleaks
         run: |
-          gitleaks detect --source "$APP_DIR" --report-format json \
+          gitleaks detect --no-git --source "." --report-format json \
+            --exit-code 0 --redact --log-level=info \
             --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
       
       - name: Secrets Stage Summary
