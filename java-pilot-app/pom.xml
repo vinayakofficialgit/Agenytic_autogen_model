@@ -63,6 +63,13 @@
         <configuration>
           <layers enabled="true"/>
         </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          <execution>
+        <executions>      
       </plugin>
 
       <!-- SpotBugs plugin -->
