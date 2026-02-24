@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, pathlib
+from agent.utils.debug import log_topk
 from embeddings.retriever import RepoRetriever
 from agent.pick_findings import get_findings
 from agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
@@ -16,28 +17,57 @@ def append_diff(container: list, diff: str):
         container.append(diff)
 
 def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list):
-    if not items: return
+    if not items: 
+        return
     fx = {"k8s": fixer_k8s, "tf": fixer_tf, "java": fixer_java, "docker": fixer_docker}[kind]
 
     for it in items:
         # 1) Deterministic
         d = fx.try_deterministic(it)
         if d:
+            log_topk(kind, it, query="(deterministic)", topk=[], mode="deterministic")
             append_diff(diffs, d)
             continue
 
         # 2) RAG (repo-aware)
         q = fx.query_for(it)
         topk = retriever.search(q) if q else []
+        # try RAG-style patch using retrieved patterns
         d = fx.try_rag_style(it, topk)
         if d:
+            log_topk(kind, it, query=q, topk=topk, mode="rag")
             append_diff(diffs, d)
             continue
 
         # 3) Trained-knowledge fallback (LLM prompt → diff)
+        log_topk(kind, it, query=q or "(no-query)", topk=topk, mode="trained")
         prompt = build_patch_prompt(kind, it, topk)
         d = call_llm_for_diff(prompt)
         append_diff(diffs, d)
+        
+# def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list):
+#     if not items: return
+#     fx = {"k8s": fixer_k8s, "tf": fixer_tf, "java": fixer_java, "docker": fixer_docker}[kind]
+
+#     for it in items:
+#         # 1) Deterministic
+#         d = fx.try_deterministic(it)
+#         if d:
+#             append_diff(diffs, d)
+#             continue
+
+#         # 2) RAG (repo-aware)
+#         q = fx.query_for(it)
+#         topk = retriever.search(q) if q else []
+#         d = fx.try_rag_style(it, topk)
+#         if d:
+#             append_diff(diffs, d)
+#             continue
+
+#         # 3) Trained-knowledge fallback (LLM prompt → diff)
+#         prompt = build_patch_prompt(kind, it, topk)
+#         d = call_llm_for_diff(prompt)
+#         append_diff(diffs, d)
 
 def main():
     min_sev = os.getenv("MIN_SEVERITY", "HIGH").upper()

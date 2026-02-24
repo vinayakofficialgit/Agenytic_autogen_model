@@ -25,6 +25,7 @@ env:
   LLM_MODE: "openai"
   BASE_BRANCH: "feature/devsecops-agent-bgbstr"
 
+
 jobs:
 
   # ============================================================
@@ -614,6 +615,7 @@ jobs:
     if: needs.Aggregate-Scanning-Reports.outputs.decision == 'FAIL'
     env:
       OPENAI_API_KEY: ${{ needs.Vault-Connection-Check.outputs.OPENAI_API_KEY }} # or from your Vault job outputs
+      RAG_DEBUG: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -685,18 +687,26 @@ jobs:
               echo
               echo "</details>"
             fi
-          } > agent_output/pr_comment.md
-
-          if [ -f agent_output/rag_topk.txt ]; then
-            echo ""
-            echo "<details><summary>RAG Top‑K evidence (paths & chunk IDs)</summary>"
-            echo
-            sed 's/^/    /' agent_output/rag_topk.txt
-            echo
-            echo "</details>"
-          fi
       
-      # Post PR comment (uses pr_url; if missing, resolve PR by head branch)
+            if [ -f agent_output/rag_topk.txt ]; then
+              echo ""
+              echo "<details><summary>RAG Top‑K evidence (paths & scores)</summary>"
+              echo
+              sed 's/^/    /' agent_output/rag_topk.txt
+              echo
+              echo "</details>"
+            fi
+          } > agent_output/pr_comment.md
+  
+            if [ -f agent_output/rag_topk.txt ]; then
+              echo ""
+              echo "<details><summary>RAG Top‑K evidence (paths & chunk IDs)</summary>"
+              echo
+              sed 's/^/    /' agent_output/rag_topk.txt
+              echo
+              echo "</details>"
+            fi
+# Post PR comment (uses pr_url; if missing, resolve PR by head branch)        
       - name: Post PR comment
         uses: actions/github-script@v7
         with:
