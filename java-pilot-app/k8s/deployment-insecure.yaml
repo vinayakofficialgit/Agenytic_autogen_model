@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-insecure
+  labels:
+    app: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:
+      - name: app
+        image: demo-app:latest            # INTENTIONAL :latest
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true                # INTENTIONAL
+          allowPrivilegeEscalation: true  # INTENTIONAL
+          runAsUser: 0                    # INTENTIONAL root
+          readOnlyRootFilesystem: false   # INTENTIONAL
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - secretRef:
+            name: demo-secrets
+        # No liveness/readiness probes (INTENTIONAL)
+      # default service account token mounted (INTENTIONAL)
