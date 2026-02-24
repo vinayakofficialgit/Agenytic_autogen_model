@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-                             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
+
   <groupId>com.demo</groupId>
   <artifactId>java-pilot-app</artifactId>
   <version>1.0.0</version>
   <name>java-pilot-app</name>
   <description>Pilot app with intentional vulns for Agentic AI RAG demo</description>
+
   <properties>
     <java.version>17</java.version>
     <spring-boot.version>3.2.5</spring-boot.version>
@@ -55,7 +56,7 @@
 
   <build>
     <plugins>
-      <!-- Spring Boot plugin -->
+      <!-- Spring Boot plugin: pin version + make an executable (fat) jar -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
@@ -69,20 +70,21 @@
               <goal>repackage</goal>
             </goals>
           </execution>
-        <executions>      
+        </executions>
       </plugin>
 
       <!-- SpotBugs plugin -->
       <plugin>
         <groupId>com.github.spotbugs</groupId>
         <artifactId>spotbugs-maven-plugin</artifactId>
-        <version>4.8.6.3</version> <!-- or the latest stable -->
+        <version>4.8.6.3</version>
         <configuration>
-          <!-- produce XML; our pipeline converts it to JSON -->
+          <!-- produce XML; pipeline converts to JSON -->
           <xmlOutput>true</xmlOutput>
-          <!-- optional: limit effort or set threshold -->
-          <!-- <effort>Max</effort> -->
-          <!-- <threshold>Low</threshold> -->
+          <!-- optional:
+          <effort>Max</effort>
+          <threshold>Low</threshold>
+          -->
         </configuration>
         <executions>
           <execution>
