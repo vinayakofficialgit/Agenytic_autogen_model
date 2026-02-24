@@ -26,7 +26,7 @@ def count_spotbugs(d):
             elif risk == "2": sev["MEDIUM"] += 1
             elif risk == "1": sev["LOW"] += 1
             else: sev["LOW"] += 1
-    return total, sev
+            return total, sev
 
 # Heuristic router by filename
 def route(filename, data):

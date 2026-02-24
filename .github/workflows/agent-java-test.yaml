@@ -134,7 +134,7 @@ jobs:
       # Reuse compiled classes (no rebuild)
       - uses: actions/download-artifact@v4
         with:
-          name: app-target
+          name: java-pilot-app-1.0.0.jar
           path: ${{ env.APP_DIR }}/target
   
       # Semgrep on source (no rebuild)
