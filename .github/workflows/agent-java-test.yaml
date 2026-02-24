@@ -192,9 +192,9 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # ============================================================
-  # SECRETS
-  # ============================================================
+# ============================================================
+# SECRETS
+# ============================================================
   Secrets-Scanning:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -223,52 +223,51 @@ jobs:
         with:
           name: secrets-reports
           path: reports/*.json
+          if-no-files-found: ignore  
+# # =========================================================
+# # SCA (Trivy FS)
+# # =========================================================
+  SCA-Scanning:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare reports folder
+        run: mkdir -p "$REPORTS_DIR"
+
+      - name: Install Trivy (pinned)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+          ./bin/trivy --version
+
+      - name: Trivy FS (SCA) scan
+        run: |
+          set -e
+          : > "$REPORTS_DIR/trivy_fs.json"
+          ./bin/trivy fs \
+            --format json \
+            --output "$REPORTS_DIR/trivy_fs.json" \
+            --timeout 10m \
+            "$APP_DIR" || true
+          if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+            echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+          fi
+
+      - name: SCA Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: SCA
+          reports_dir: reports
+          files: trivy_fs.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sca-reports
+          path: reports/*.json
           if-no-files-found: ignore
-
-  # # =========================================================
-  # # SCA (Trivy FS)
-  # # =========================================================
-  # SCA-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   env:
-  #     TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
-  #   steps:
-  #     - uses: actions/checkout@v4
-
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
-
-  #     - name: Install Trivy (pinned)
-  #       run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-  #         ./bin/trivy --version
-
-  #     - name: Trivy FS (SCA) scan
-  #       run: |
-  #         set -e
-  #         : > "$REPORTS_DIR/trivy_fs.json"
-  #         ./bin/trivy fs \
-  #           --format json \
-  #           --output "$REPORTS_DIR/trivy_fs.json" \
-  #           --timeout 10m \
-  #           "$APP_DIR" || true
-  #         if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
-  #           echo '{}' > "$REPORTS_DIR/trivy_fs.json"
-  #         fi
-
-  #     - name: SCA Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: SCA
-  #         reports_dir: reports
-  #         files: trivy_fs.json
-
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: sca-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
 
   # # =========================================================
   # # IAC (tfsec and k8s)
