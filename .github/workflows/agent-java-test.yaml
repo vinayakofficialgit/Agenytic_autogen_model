@@ -392,59 +392,59 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # # ============================================================
-  # # DAST
-  # # ============================================================
-  # DAST-Scanning:
-  #   runs-on: ubuntu-latest
-  #   needs: Build-Java-App
-  #   continue-on-error: true
-  #   steps:
-  #     - uses: actions/checkout@v4
+# ============================================================
+# DAST
+# ============================================================
+  DAST-Scanning:
+    runs-on: ubuntu-latest
+    needs: Build-Java-App
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
   
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: app-jar
-  #         path: ${{ env.APP_DIR }}/target
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: ${{ env.APP_DIR }}/target
   
-  #     - run: mkdir -p $REPORTS_DIR
+      - run: mkdir -p $REPORTS_DIR
   
-  #     - name: Start Application
-  #       run: |
-  #         mkdir -p config/dummy
-  #         java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
-  #           --spring.config.import=optional:file:./config/*/ &
-  #         sleep 40
+      - name: Start Application
+        run: |
+          mkdir -p config/dummy
+          java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
+            --spring.config.import=optional:file:./config/*/ &
+          sleep 40
   
-  #     - name: OWASP ZAP Baseline
-  #       run: |
-  #         mkdir -p zap-output
-  #         docker run --rm \
-  #           -u root \
-  #           --network=host \
-  #           -v "$(pwd)/zap-output":/zap/wrk:rw \
-  #           ghcr.io/zaproxy/zaproxy:stable \
-  #           zap-baseline.py \
-  #           -t http://localhost:8080 \
-  #           -J zap.json || true
-  #         if [ -f zap-output/zap.json ]; then
-  #           mv zap-output/zap.json "$REPORTS_DIR/zap.json"
-  #         else
-  #           echo '{}' > "$REPORTS_DIR/zap.json"
-  #         fi
+      - name: OWASP ZAP Baseline
+        run: |
+          mkdir -p zap-output
+          docker run --rm \
+            -u root \
+            --network=host \
+            -v "$(pwd)/zap-output":/zap/wrk:rw \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:8080 \
+            -J zap.json || true
+          if [ -f zap-output/zap.json ]; then
+            mv zap-output/zap.json "$REPORTS_DIR/zap.json"
+          else
+            echo '{}' > "$REPORTS_DIR/zap.json"
+          fi
   
-  #     - name: DAST Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: DAST
-  #         reports_dir: reports
-  #         files: zap.json
+      - name: DAST Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: DAST
+          reports_dir: reports
+          files: zap.json
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: dast-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: reports/*.json
+          if-no-files-found: ignore
 
   # # ============================================================
   # # AGGREGATE

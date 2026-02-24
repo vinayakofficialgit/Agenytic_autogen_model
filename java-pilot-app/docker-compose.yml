@@ -2,7 +2,7 @@ version: "3.8"
 services:
   app:
     build: .
-    image: demo-app:latest
+    image: java-pilot-app:1.0.0
     privileged: true               # INTENTIONAL risk
     environment:
       - DB_USER=root               # INTENTIONAL plaintext
