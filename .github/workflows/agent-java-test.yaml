@@ -489,7 +489,7 @@ jobs:
     steps:
       # ➜ REQUIRED: make local actions (and your script) available
       - uses: actions/checkout@v4
-      
+
       - uses: actions/download-artifact@v4
         with:
           path: collected-reports
@@ -508,7 +508,40 @@ jobs:
           reports_dir: final-reports
           output_dir: final-reports
           min_severity: ${{ env.MIN_SEVERITY }}
-  
+      
+      # Display Decision and Total before upload
+      - name: Print decision and totals (debug)
+        run: |
+          echo "Decision": ${{steps.aggr.outputs.decision}}     
+          echo "Crtical": ${{steps.aggr.outputs.critical}}
+          echo "High": ${{steps.aggr.outputs.high}}
+          echo "Medium": ${{steps.aggr.outputs.medium}}
+          echo "low": ${{steps.aggr.outputs.low}} 
+      
+      - name: Append decision to Job Summary
+        run: |
+          {
+            echo "### Aggregate Decision"
+            echo ""
+            echo "- **Threshold (MIN_SEVERITY)**: \`${{ env.MIN_SEVERITY }}\`"
+            echo "- **Decision**: \`${{ steps.aggr.outputs.decision }}\`"
+            echo ""
+            echo "| Severity | Count |"
+            echo "|----------|------:|"
+            echo "| CRITICAL | ${{ steps.aggr.outputs.critical }} |"
+            echo "| HIGH     | ${{ steps.aggr.outputs.high }} |"
+            echo "| MEDIUM   | ${{ steps.aggr.outputs.medium }} |"
+            echo "| LOW      | ${{ steps.aggr.outputs.low }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show overall_summary.json
+        run: |
+          if command -v jq >/dev/null 2>&1; then
+            jq . final-reports/overall_summary.json || cat final-reports/overall_summary.json
+          else
+            cat final-reports/overall_summary.json
+          fi    
+    
       # (Optional) upload the overall summary for humans and downstream steps
       - uses: actions/upload-artifact@v4
         with:
