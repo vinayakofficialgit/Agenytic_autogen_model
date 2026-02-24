@@ -1,0 +1,43 @@
+name: "Severity Aggregate"
+description: "Dedupe + totalize severities across all scan reports and decide PASS/FAIL from MIN_SEVERITY."
+inputs:
+  reports_dir:
+    description: "Directory with all JSON reports (e.g., final-reports)"
+    required: true
+  output_dir:
+    description: "Output directory for overall_summary.(json|md)"
+    required: true
+  min_severity:
+    description: "Threshold: CRITICAL|HIGH|MEDIUM|LOW"
+    required: true
+outputs:
+  decision:
+    description: "PASS or FAIL"
+    value: ${{ steps.run.outputs.decision }}
+  critical:
+    description: "Total CRITICAL count"
+    value: ${{ steps.run.outputs.critical }}
+  high:
+    description: "Total HIGH count"
+    value: ${{ steps.run.outputs.high }}
+  medium:
+    description: "Total MEDIUM count"
+    value: ${{ steps.run.outputs.medium }}
+  low:
+    description: "Total LOW count"
+    value: ${{ steps.run.outputs.low }}
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - id: run
+      shell: bash
+      run: |
+        python "$GITHUB_ACTION_PATH/aggregate.py" \
+          --reports "${{ inputs.reports_dir }}" \
+          --out     "${{ inputs.output_dir }}" \
+          --min-severity "${{ inputs.min_severity }}"
