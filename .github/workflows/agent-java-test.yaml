@@ -351,7 +351,7 @@ jobs:
       - name: Build Docker image (build from app folder)
         id: buildimg
         run: |
-          if docker build -t java-pilot-app:1.0.0 "$APP_DIR" ; then
+          if docker build -t java-pilot-app:1.0.0 -f "$APP_DIR/Dockerfile" . ; then
             echo "built=true" >> $GITHUB_OUTPUT
           else
             echo "built=false" >> $GITHUB_OUTPUT

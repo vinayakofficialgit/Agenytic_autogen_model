@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Copy the JAR that your pipeline built earlier
 # (The docker build context must be `java-pilot-app/` so this path exists)
-COPY target/java-pilot-app-1.0.0.jar /app/app.jar
+COPY java-pilot-app/target/java-pilot-app-1.0.0.jar /app/app.jar
 
 # Optional: run as non-root (you can keep this commented for demo purposes)
 # RUN adduser --system --uid 10001 appuser
