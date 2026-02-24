@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.Random;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 
 @RestController
 public class InsecureController {
@@ -22,31 +23,34 @@ public class InsecureController {
   // 1) SQL injection: string concatenation
   @GetMapping("/search")
   public List<Map<String, Object>> search(@RequestParam String name) {
-    String sql = "SELECT * FROM USERS WHERE NAME = '" + name + "'"; // vuln
+    // INTENTIONAL VULNERABILITY: concatenated input
+    String sql = "SELECT * FROM USERS WHERE NAME = '" + name + "'";
     return jdbc.queryForList(sql);
   }
 
-  // 2) Command injection: unvalidated input into /bin/sh
+  // 2) Command injection: unvalidated input passed to /bin/sh
   @GetMapping("/ping")
   public String ping(@RequestParam String host) throws Exception {
-    Process p = Runtime.getRuntime().exec(new String[]{"/bin/sh","-c","ping -c 1 " + host}); // vuln
-    BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
+    // INTENTIONAL VULNERABILITY: no validation/sanitization
+    Process p = Runtime.getRuntime().exec(new String[]{"/bin/sh","-c","ping -c 1 " + host});
+    BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8));
     StringBuilder out = new StringBuilder();
     String line;
-    while ((line = br.readLine()) != null) out.append(line).append("
-");
+    while ((line = br.readLine()) != null) {
+      out.append(line).append("\n");
+    }
     return out.toString();
   }
 
   // 3) Weak token: predictable Random
   @GetMapping("/token")
   public String token() {
-    return "t-" + new Random().nextInt(1_000_000); // vuln
+    return "t-" + new Random().nextInt(1_000_000); // INTENTIONAL VULNERABILITY
   }
 
-  // 4) Leaks “secret” value (to test scanners)
+  // 4) Leaks "secret" value (to test scanners)
   @GetMapping("/leak")
   public String leak() {
-    return "apiKey=" + HARDCODED_API_KEY; // vuln
+    return "apiKey=" + HARDCODED_API_KEY; // INTENTIONAL VULNERABILITY
   }
 }
