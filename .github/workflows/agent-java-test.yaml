@@ -470,94 +470,171 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # ============================================================
-  # AGGREGATE
-  # ============================================================
+# ============================================================
+# AGGREGATE
+# ============================================================
   Aggregate-Scanning-Reports:
     runs-on: ubuntu-latest
     needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
-    # needs: [SAST-Scanning, IAC-Scanning]
-    
     if: always()
+  
+    # ➜ Expose outputs so later jobs (e.g., Severity-Gate / Agentic AI) can read them
+    outputs:
+      decision: ${{ steps.aggr.outputs.decision }}
+      critical: ${{ steps.aggr.outputs.critical }}
+      high:     ${{ steps.aggr.outputs.high }}
+      medium:   ${{ steps.aggr.outputs.medium }}
+      low:      ${{ steps.aggr.outputs.low }}
+  
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: collected-reports
-
+  
       - name: Collate JSON
         run: |
           mkdir -p final-reports
           find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
           echo "DEBUG: Aggregated files"
           ls -la final-reports || true
-
+  
+      - name: Aggregate & Decide
+        id: aggr
+        uses: ./.github/actions/severity-aggregate
+        with:
+          reports_dir: final-reports
+          output_dir: final-reports
+          min_severity: ${{ env.MIN_SEVERITY }}
+  
+      # (Optional) upload the overall summary for humans and downstream steps
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overall-summary
+          path: |
+            final-reports/overall_summary.json
+            final-reports/overall_summary.md
+  
+      # (Optional) also publish the normalized set of all JSONs in one artifact
       - uses: actions/upload-artifact@v4
         with:
           name: all-scan-reports
           path: final-reports/*.json
 
-  # ============================================================
-  # AI GATE
-  # ============================================================
-  # AI-Gate-Analysis:
+  # Aggregate-Scanning-Reports:
   #   runs-on: ubuntu-latest
-  #   needs: Aggregate-Scanning-Reports
+  #   needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
+  #   # needs: [SAST-Scanning, IAC-Scanning]
+    
+  #   if: always()
   #   steps:
-  #     - uses: actions/checkout@v4
-
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: ${{ env.PYTHON_VERSION }}
-
-  #     - run: pip install -r requirements.txt
-
   #     - uses: actions/download-artifact@v4
   #       with:
-  #         name: all-scan-reports
-  #         path: reports
+  #         path: collected-reports
 
-  #     - run: mkdir -p agent_output
-
-  #     - run: |
-  #         python main.py --reports-dir reports --output-dir agent_output --mode=gate --skip-llm
-
-  #     - name: Debug Gate Output
+  #     - name: Collate JSON
   #       run: |
-  #         echo "DEBUG decision.json"
-  #         cat agent_output/decision.json || true
-  #         echo "DEBUG files"
-  #         ls -la agent_output || true
-
+  #         mkdir -p final-reports
+  #         find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
+  #         echo "DEBUG: Aggregated files"
+  #         ls -la final-reports || true
+     
+  #     - name: Aggregate & Decide
+  #       id: aggr
+  #       uses: ./.github/actions/severity-aggregate
+  #       with:
+  #         reports_dir: final-reports
+  #         output_dir: final-reports
+  #         min_severity: ${{ env.MIN_SEVERITY }}
+    
   #     - uses: actions/upload-artifact@v4
   #       with:
-  #         name: ai-results
-  #         path: agent_output/
+  #         name: overall-summary
+  #         path: |
+  #           final-reports/overall_summary.json
+  #           final-reports/overall_summary.md
 
-  # # ============================================================
-  # # SECURITY GATE
-  # # ============================================================
-  # Security-Gate:
-  #   runs-on: ubuntu-latest
-  #   needs: AI-Gate-Analysis
-  #   outputs:
-  #     gate_failed: ${{ steps.read.outputs.gate_failed }}
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: ai-results
-  #         path: agent_output
+# # ============================================================
+# # AI GATE
+# # ============================================================
 
-  #     - run: sudo apt-get update && sudo apt-get install -y jq
+#   Severity-Gate:
+#     runs-on: ubuntu-latest
+#     needs: Aggregate-Scanning-Reports
+#     outputs:
+#       gate_failed: ${{ steps.set.outputs.gate_failed }}
+#     steps:
+#       - name: Decide from Aggregate
+#         id: set
+#         run: |
+#           echo "Decision: ${{ needs.Aggregate-Scanning-Reports.outputs.decision }}"
+#           if [ "${{ needs.Aggregate-Scanning-Reports.outputs.decision }}" = "FAIL" ]; then
+#             echo "gate_failed=true" >> $GITHUB_OUTPUT
+#           else
+#             echo "gate_failed=false" >> $GITHUB_OUTPUT
+#           fi            
 
-  #     - id: read
-  #       run: |
-  #         STATUS=$(jq -r '.decision' agent_output/decision.json)
-  #         echo "DEBUG Gate decision = $STATUS"
-  #         if [ "$STATUS" = "FAIL" ]; then
-  #           echo "gate_failed=true" >> $GITHUB_OUTPUT
-  #         else
-  #           echo "gate_failed=false" >> $GITHUB_OUTPUT
-  #         fi
+# # ============================================================
+# # AI GATE
+# # ============================================================
+#   AI-Gate-Analysis:
+#     runs-on: ubuntu-latest
+#     needs: Aggregate-Scanning-Reports
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+
+#       - run: pip install -r requirements.txt
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: all-scan-reports
+#           path: reports
+
+#       - run: mkdir -p agent_output
+
+#       - run: |
+#           python main.py --reports-dir reports --output-dir agent_output --mode=gate --skip-llm
+
+#       - name: Debug Gate Output
+#         run: |
+#           echo "DEBUG decision.json"
+#           cat agent_output/decision.json || true
+#           echo "DEBUG files"
+#           ls -la agent_output || true
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output/
+
+# # ============================================================
+# # SECURITY GATE
+# # ============================================================
+#   Security-Gate:
+#     runs-on: ubuntu-latest
+#     needs: AI-Gate-Analysis
+#     outputs:
+#       gate_failed: ${{ steps.read.outputs.gate_failed }}
+#     steps:
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output
+
+#       - run: sudo apt-get update && sudo apt-get install -y jq
+
+#       - id: read
+#         run: |
+#           STATUS=$(jq -r '.decision' agent_output/decision.json)
+#           echo "DEBUG Gate decision = $STATUS"
+#           if [ "$STATUS" = "FAIL" ]; then
+#             echo "gate_failed=true" >> $GITHUB_OUTPUT
+#           else
+#             echo "gate_failed=false" >> $GITHUB_OUTPUT
+#           fi
 
   # # ============================================================
   # # TRIAGE
