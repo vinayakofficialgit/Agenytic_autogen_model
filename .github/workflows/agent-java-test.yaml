@@ -108,8 +108,8 @@ jobs:
   
       - uses: actions/upload-artifact@v4
         with:
-          name: app-jar
-          path: ${{ env.APP_DIR }}/target/java-pilot-app-1.0.0.jar
+          name: app-target
+          path: ${{ env.APP_DIR }}/target/
 
   # ============================================================
   # SAST
@@ -119,20 +119,25 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
+  
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-
+  
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
+  
       - run: mkdir -p $REPORTS_DIR
-
-      - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
-
+  
+      # Reuse compiled classes (no rebuild)
+      - uses: actions/download-artifact@v4
+        with:
+          name: app-target
+          path: ${{ env.APP_DIR }}/target
+  
+      # Semgrep on source (no rebuild)
       - name: Semgrep (Java + OWASP Top 10)
         run: |
           pip install semgrep
@@ -142,13 +147,14 @@ jobs:
             --json \
             --output "$REPORTS_DIR/semgrep.json" \
             "$APP_DIR/src/main/java" || echo '{}' > "$REPORTS_DIR/semgrep.json"
-
-      - name: Run SpotBugs
+  
+      # SpotBugs on compiled classes already present in target/
+      - name: SpotBugs XML
         run: |
-          mvn -B verify spotbugs:spotbugs -f $APP_DIR/pom.xml || true
-
-      - name: Collect SpotBugs XML
-        run: |
+          # If you have a SpotBugs plugin configured in pom you can run mvn verify spotbugs:spotbugs
+          # but that would recompile. Instead, call the CLI if available; otherwise keep Maven but skip 'clean'.
+          # EASY path: run mvn but DON'T clean or recompile sources:
+          mvn -q -DskipTests -f $APP_DIR/pom.xml spotbugs:spotbugs || true
           if [ -f "$APP_DIR/target/spotbugsXml.xml" ]; then
             cp "$APP_DIR/target/spotbugsXml.xml" reports/spotbugs.xml
           else
@@ -158,16 +164,23 @@ jobs:
       - name: Convert SpotBugs XML → JSON
         run: |
           pip install xmltodict
-          cat <<'EOF' > convert_spotbugs.py
+          python - << 'PY'
           import xmltodict, json, pathlib
           p = pathlib.Path("reports/spotbugs.xml")
-          if p.exists():
+          out = pathlib.Path("reports/spotbugs.json")
+          if p.exists() and p.stat().st_size>0:
               data = xmltodict.parse(p.read_text())
-              pathlib.Path("reports/spotbugs.json").write_text(json.dumps(data, indent=2))
+              out.write_text(json.dumps(data, indent=2))
           else:
-              pathlib.Path("reports/spotbugs.json").write_text("{}")
-          EOF
-          python convert_spotbugs.py
+              out.write_text("{}")
+          PY
+
+      - name: SAST Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: SAST
+          reports_dir: reports
+          files: semgrep.json,spotbugs.json    
 
       - uses: actions/upload-artifact@v4
         with:
@@ -194,6 +207,14 @@ jobs:
         run: |
           gitleaks detect --source "$APP_DIR" --report-format json \
             --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
+      
+      - name: Secrets Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: Secrets
+          reports_dir: reports
+          files: gitleaks.json
+      
       - uses: actions/upload-artifact@v4
         with:
           name: secrets-reports
@@ -231,6 +252,13 @@ jobs:
           if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
             echo '{}' > "$REPORTS_DIR/trivy_fs.json"
           fi
+
+      - name: SCA Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: SCA
+          reports_dir: reports
+          files: trivy_fs.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -273,6 +301,13 @@ jobs:
           fi
           if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
   
+      - name: IaC Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: IaC
+          reports_dir: reports
+          files: checkov_tf.json,checkov_k8s.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: iac-reports
@@ -341,6 +376,13 @@ jobs:
         run: |
           echo '{}' > "$REPORTS_DIR/trivy_image.json"
   
+      - name: Container Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: Container
+          reports_dir: reports
+          files: trivy_image.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
@@ -388,6 +430,13 @@ jobs:
             echo '{}' > "$REPORTS_DIR/zap.json"
           fi
   
+      - name: DAST Stage Summary
+        uses: ./.github/actions/stage-summary
+        with:
+          stage: DAST
+          reports_dir: reports
+          files: zap.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: dast-reports

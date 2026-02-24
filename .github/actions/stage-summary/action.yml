@@ -1,0 +1,54 @@
+name: "Stage Summary"
+description: "Builds a per-stage security summary and uploads a small markdown artifact."
+inputs:
+  stage:
+    description: "Stage name (e.g., SAST, Secrets, SCA, IaC, Container, DAST)"
+    required: true
+  reports_dir:
+    description: "Directory where the JSON reports live (e.g., reports)"
+    required: true
+    default: reports
+  files:
+    description: "Comma-separated list of report files to parse (e.g., semgrep.json,spotbugs.json)"
+    required: true
+outputs:
+  summary_path:
+    description: "Path to the generated summary markdown file"
+    value: ${{ steps.run-script.outputs.summary_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install deps (tiny)
+      shell: bash
+      run: |
+        python -m pip install --upgrade pip
+        # xmltodict is only used if spotbugs.json is in XML form (we keep it installed for safety)
+        pip install xmltodict
+
+    - name: Generate summary
+      id: run-script
+      shell: bash
+      run: |
+        python "$GITHUB_ACTION_PATH/summary.py" \
+          --stage "${{ inputs.stage }}" \
+          --reports "${{ inputs.reports_dir }}" \
+          --files "${{ inputs.files }}"
+        # Script writes the summary file and echoes 'summary_path=' to GITHUB_OUTPUT
+
+    - name: Append to Job Summary
+      shell: bash
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        cat "${{ steps.run-script.outputs.summary_path }}" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload stage summary artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.stage }}-summary
+        path: ${{ steps.run-script.outputs.summary_path }}
