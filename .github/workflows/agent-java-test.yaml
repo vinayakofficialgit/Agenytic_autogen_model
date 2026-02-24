@@ -238,7 +238,6 @@ jobs:
   # =========================================================
   # IAC (tfsec and k8s)
   # =========================================================
-
   IAC-Scanning:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -248,28 +247,22 @@ jobs:
       - name: Prepare reports folder
         run: mkdir -p "$REPORTS_DIR"
   
-      # ---------- Terraform (tfsec) ----------
-      - name: Install tfsec
-        run: |
-          curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o tfsec
-          chmod +x tfsec && sudo mv tfsec /usr/local/bin/
-          tfsec --version || true
-  
-      - name: Run tfsec (Terraform)
-        run: |
-          : > "$REPORTS_DIR/tfsec.json"
-          if [ -d "$APP_DIR/terraform" ]; then
-            tfsec "$APP_DIR/terraform" --format json > "$REPORTS_DIR/tfsec.json" || true
-          else
-            echo '{}' > "$REPORTS_DIR/tfsec.json"
-          fi
-          if [ ! -s "$REPORTS_DIR/tfsec.json" ]; then echo '{}' > "$REPORTS_DIR/tfsec.json"; fi
-  
-      # ---------- Kubernetes (Checkov JSON) ----------
       - name: Install Checkov
         run: pip install checkov
   
-      - name: Run Checkov (Kubernetes JSON)
+      # Terraform -> JSON
+      - name: Checkov (Terraform JSON)
+        run: |
+          : > "$REPORTS_DIR/checkov_tf.json"
+          if [ -d "$APP_DIR/terraform" ]; then
+            checkov -d "$APP_DIR/terraform" --framework terraform -o json > "$REPORTS_DIR/checkov_tf.json" || true
+          else
+            echo '{}' > "$REPORTS_DIR/checkov_tf.json"
+          fi
+          if [ ! -s "$REPORTS_DIR/checkov_tf.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_tf.json"; fi
+  
+      # Kubernetes -> JSON
+      - name: Checkov (Kubernetes JSON)
         run: |
           : > "$REPORTS_DIR/checkov_k8s.json"
           if [ -d "$APP_DIR/kubernetes" ]; then
@@ -278,12 +271,12 @@ jobs:
             echo '{}' > "$REPORTS_DIR/checkov_k8s.json"
           fi
           if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
-  
-      - uses: actions/upload-artifact@v4
-        with:
-          name: iac-reports
-          path: reports/*.json
-          if-no-files-found: ignore
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: iac-reports
+        path: reports/*.json
+        if-no-files-found: ignore
 
   # ============================================================
   # CONTAINER (Trivy Image)
