@@ -416,6 +416,29 @@ jobs:
           java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
             --spring.config.import=optional:file:./config/*/ &
           sleep 40
+
+      # - name: Start Application (background) & wait for readiness
+      #   shell: bash
+      #   run: |
+      #     set -euxo pipefail
+      #     # Show what's in target/
+      #     ls -la "$APP_DIR/target"
+  
+      #     # Start app in background
+      #     nohup java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
+      #       --spring.config.import=optional:file:./config/*/ \
+      #       > app.log 2>&1 &
+  
+      #     # Poll for readiness using a simple app endpoint (/token)
+      #     for i in {1..60}; do
+      #       if curl -fsS http://localhost:8080/token >/dev/null; then
+      #         echo "App is up"; break
+      #       fi
+      #       sleep 2
+      #     done
+  
+      #     # If still not up, print logs and fail this step (but job is continue-on-error anyway)
+      #     curl -fsS http://localhost:8080/token >/dev/null || { echo "App did not start"; tail -n 200 app.log || true; exit 1; }
   
       - name: OWASP ZAP Baseline
         run: |
@@ -447,31 +470,31 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # # ============================================================
-  # # AGGREGATE
-  # # ============================================================
-  # Aggregate-Scanning-Reports:
-  #   runs-on: ubuntu-latest
-  #   needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
-  #   # needs: [SAST-Scanning, IAC-Scanning]
+  # ============================================================
+  # AGGREGATE
+  # ============================================================
+  Aggregate-Scanning-Reports:
+    runs-on: ubuntu-latest
+    needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
+    # needs: [SAST-Scanning, IAC-Scanning]
     
-  #   if: always()
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         path: collected-reports
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: collected-reports
 
-  #     - name: Collate JSON
-  #       run: |
-  #         mkdir -p final-reports
-  #         find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
-  #         echo "DEBUG: Aggregated files"
-  #         ls -la final-reports || true
+      - name: Collate JSON
+        run: |
+          mkdir -p final-reports
+          find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
+          echo "DEBUG: Aggregated files"
+          ls -la final-reports || true
 
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: all-scan-reports
-  #         path: final-reports/*.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-scan-reports
+          path: final-reports/*.json
 
   # ============================================================
   # AI GATE
