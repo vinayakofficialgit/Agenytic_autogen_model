@@ -576,8 +576,8 @@ jobs:
       - name: Decide from Aggregate
         id: set
         run: |
-          ls -la final-reports/*
-          cat final-reports/overall_summary.json || true
+          ls -la final-report/*
+          cat final-report/overall_summary.json || true
           echo "Decision: ${{ needs.Aggregate-Scanning-Reports.outputs.decision }}"
           if [ "${{ needs.Aggregate-Scanning-Reports.outputs.decision }}" = "FAIL" ]; then
             echo "gate_failed=true" >> $GITHUB_OUTPUT
