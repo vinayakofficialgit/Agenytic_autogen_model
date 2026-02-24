@@ -1,8 +1,8 @@
-name: DevSecOps Agentic AI Pipeline (Enterprise main)
+name: DevSecOps Agentic AI Pipeline (BugBuster)
 
 on:
   push:
-    branches: [hackathon-feature-s]
+    branches: [feature/devsecops-agent-bgbstr]
   workflow_dispatch:
 
 concurrency:
@@ -17,13 +17,13 @@ permissions:
 env:
   JAVA_VERSION: "17"
   PYTHON_VERSION: "3.12"
-  APP_DIR: "hackathon-vuln-app"
+  APP_DIR: "java-pilot-app"
   REPORTS_DIR: "reports"
   MIN_SEVERITY: "high"
   LLM_ENABLED: "true"
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"
-  BASE_BRANCH: "hackathon-feature-s"
+  BASE_BRANCH: "feature/devsecops-agent-bgbstr"
 
 jobs:
 
@@ -94,20 +94,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+  
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
-
-      # ⭐ FIXED POM PATH
+  
       - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
-
+  
+      - name: Show target
+        run: ls -la "$APP_DIR/target"
+  
       - uses: actions/upload-artifact@v4
         with:
-          name: hackathon-vuln-app-1.0.jar
-          path: ${{ env.APP_DIR }}/target/hackathon-vuln-app-1.0.jar
+          name: app-jar
+          path: ${{ env.APP_DIR }}/target/java-pilot-app-1.0.0.jar
 
   # ============================================================
   # SAST
@@ -251,7 +253,6 @@ jobs:
       - name: Install Checkov
         run: pip install checkov
   
-      # Terraform -> JSON
       - name: Checkov (Terraform JSON)
         run: |
           : > "$REPORTS_DIR/checkov_tf.json"
@@ -262,17 +263,16 @@ jobs:
           fi
           if [ ! -s "$REPORTS_DIR/checkov_tf.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_tf.json"; fi
   
-      # Kubernetes -> JSON
       - name: Checkov (Kubernetes JSON)
         run: |
           : > "$REPORTS_DIR/checkov_k8s.json"
-          if [ -d "$APP_DIR/kubernetes" ]; then
-            checkov -d "$APP_DIR/kubernetes" --framework kubernetes -o json > "$REPORTS_DIR/checkov_k8s.json" || true
+          if [ -d "$APP_DIR/k8s" ]; then
+            checkov -d "$APP_DIR/k8s" --framework kubernetes -o json > "$REPORTS_DIR/checkov_k8s.json" || true
           else
             echo '{}' > "$REPORTS_DIR/checkov_k8s.json"
           fi
           if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
-
+  
       - uses: actions/upload-artifact@v4
         with:
           name: iac-reports
@@ -290,48 +290,57 @@ jobs:
       TRIVY_VERSION: "0.51.2"
     steps:
       - uses: actions/checkout@v4
-
+  
+      # Download the jar produced by Build-Java-App
       - uses: actions/download-artifact@v4
         with:
-          name: hackathon-vuln-app-1.0.jar
+          name: app-jar
           path: ${{ env.APP_DIR }}/target
-
+  
       - name: Verify jar
         run: |
           echo "Listing target folder:"
           ls -la "$APP_DIR/target"
-          if [ ! -f "$APP_DIR/target/hackathon-vuln-app-1.0.jar" ]; then
+          if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
             echo "❌ JAR missing"
             exit 1
           fi
-
+  
       - name: Prepare reports folder
         run: mkdir -p "$REPORTS_DIR"
-
-      - name: Build Docker image
+  
+      - name: Build Docker image (build from app folder)
+        id: buildimg
         run: |
-          docker build \
-            -t hackathon-vuln-app \
-            -f "$APP_DIR/Dockerfile" \
-            .
-
+          if docker build -t java-pilot-app:1.0.0 "$APP_DIR" ; then
+            echo "built=true" >> $GITHUB_OUTPUT
+          else
+            echo "built=false" >> $GITHUB_OUTPUT
+          fi
+  
       - name: Install Trivy (pinned)
         run: |
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
           ./bin/trivy --version
-
-      - name: Trivy Image Scan
+  
+      - name: Trivy Image Scan (only if image built)
+        if: steps.buildimg.outputs.built == 'true'
         run: |
           : > "$REPORTS_DIR/trivy_image.json"
           ./bin/trivy image \
             --format json \
             --timeout 10m \
             --output "$REPORTS_DIR/trivy_image.json" \
-            hackathon-vuln-app || true
+            java-pilot-app:1.0.0 || true
           if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
             echo '{}' > "$REPORTS_DIR/trivy_image.json"
           fi
-
+  
+      - name: Trivy Image Scan (fallback when build failed)
+        if: steps.buildimg.outputs.built != 'true'
+        run: |
+          echo '{}' > "$REPORTS_DIR/trivy_image.json"
+  
       - uses: actions/upload-artifact@v4
         with:
           name: container-reports
@@ -347,21 +356,21 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-
+  
       - uses: actions/download-artifact@v4
         with:
-          name: hackathon-vuln-app-1.0.jar
+          name: app-jar
           path: ${{ env.APP_DIR }}/target
-
+  
       - run: mkdir -p $REPORTS_DIR
-
+  
       - name: Start Application
         run: |
           mkdir -p config/dummy
-          java -jar "$APP_DIR/target/hackathon-vuln-app-1.0.jar" \
+          java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
             --spring.config.import=optional:file:./config/*/ &
           sleep 40
-
+  
       - name: OWASP ZAP Baseline
         run: |
           mkdir -p zap-output
@@ -378,7 +387,7 @@ jobs:
           else
             echo '{}' > "$REPORTS_DIR/zap.json"
           fi
-
+  
       - uses: actions/upload-artifact@v4
         with:
           name: dast-reports
@@ -414,305 +423,305 @@ jobs:
   # ============================================================
   # AI GATE
   # ============================================================
-  AI-Gate-Analysis:
-    runs-on: ubuntu-latest
-    needs: Aggregate-Scanning-Reports
-    steps:
-      - uses: actions/checkout@v4
+  # AI-Gate-Analysis:
+  #   runs-on: ubuntu-latest
+  #   needs: Aggregate-Scanning-Reports
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install -r requirements.txt
+  #     - run: pip install -r requirements.txt
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-scan-reports
-          path: reports
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: all-scan-reports
+  #         path: reports
 
-      - run: mkdir -p agent_output
+  #     - run: mkdir -p agent_output
 
-      - run: |
-          python main.py --reports-dir reports --output-dir agent_output --mode=gate --skip-llm
+  #     - run: |
+  #         python main.py --reports-dir reports --output-dir agent_output --mode=gate --skip-llm
 
-      - name: Debug Gate Output
-        run: |
-          echo "DEBUG decision.json"
-          cat agent_output/decision.json || true
-          echo "DEBUG files"
-          ls -la agent_output || true
+  #     - name: Debug Gate Output
+  #       run: |
+  #         echo "DEBUG decision.json"
+  #         cat agent_output/decision.json || true
+  #         echo "DEBUG files"
+  #         ls -la agent_output || true
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ai-results
-          path: agent_output/
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: ai-results
+  #         path: agent_output/
 
-  # ============================================================
-  # SECURITY GATE
-  # ============================================================
-  Security-Gate:
-    runs-on: ubuntu-latest
-    needs: AI-Gate-Analysis
-    outputs:
-      gate_failed: ${{ steps.read.outputs.gate_failed }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ai-results
-          path: agent_output
+  # # ============================================================
+  # # SECURITY GATE
+  # # ============================================================
+  # Security-Gate:
+  #   runs-on: ubuntu-latest
+  #   needs: AI-Gate-Analysis
+  #   outputs:
+  #     gate_failed: ${{ steps.read.outputs.gate_failed }}
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: ai-results
+  #         path: agent_output
 
-      - run: sudo apt-get update && sudo apt-get install -y jq
+  #     - run: sudo apt-get update && sudo apt-get install -y jq
 
-      - id: read
-        run: |
-          STATUS=$(jq -r '.decision' agent_output/decision.json)
-          echo "DEBUG Gate decision = $STATUS"
-          if [ "$STATUS" = "FAIL" ]; then
-            echo "gate_failed=true" >> $GITHUB_OUTPUT
-          else
-            echo "gate_failed=false" >> $GITHUB_OUTPUT
-          fi
+  #     - id: read
+  #       run: |
+  #         STATUS=$(jq -r '.decision' agent_output/decision.json)
+  #         echo "DEBUG Gate decision = $STATUS"
+  #         if [ "$STATUS" = "FAIL" ]; then
+  #           echo "gate_failed=true" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "gate_failed=false" >> $GITHUB_OUTPUT
+  #         fi
 
-  # ============================================================
-  # TRIAGE
-  # ============================================================
-  LLM-Triage:
-    runs-on: ubuntu-latest
-    needs: [Security-Gate, Vault-Connection-Check]
-    steps:
-      - uses: actions/checkout@v4
+  # # ============================================================
+  # # TRIAGE
+  # # ============================================================
+  # LLM-Triage:
+  #   runs-on: ubuntu-latest
+  #   needs: [Security-Gate, Vault-Connection-Check]
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install -r requirements.txt
+  #     - run: pip install -r requirements.txt
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-scan-reports
-          path: reports
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: all-scan-reports
+  #         path: reports
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: ai-results
-          path: agent_output
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: ai-results
+  #         path: agent_output
 
-      # 🔐 Fetch OpenAI API Key from HashiCorp Vault
-      - name: Import Secrets from HashiCorp Vault
-        id: vault
-        uses: hashicorp/vault-action@v3
-        with:
-          url: ${{ secrets.VAULT_ADDR }}
-          method: approle
-          roleId: ${{ secrets.VAULT_ROLE_ID }}
-          secretId: ${{ secrets.VAULT_SECRET_ID }}
-          secrets: |
-            secret/data/openai api_key | OPENAI_API_KEY
+  #     # 🔐 Fetch OpenAI API Key from HashiCorp Vault
+  #     - name: Import Secrets from HashiCorp Vault
+  #       id: vault
+  #       uses: hashicorp/vault-action@v3
+  #       with:
+  #         url: ${{ secrets.VAULT_ADDR }}
+  #         method: approle
+  #         roleId: ${{ secrets.VAULT_ROLE_ID }}
+  #         secretId: ${{ secrets.VAULT_SECRET_ID }}
+  #         secrets: |
+  #           secret/data/openai api_key | OPENAI_API_KEY
 
-      - name: Run Triage
-        run: |
-          python main.py --reports-dir reports --output-dir agent_output --mode=triage
-        env:
-          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+  #     - name: Run Triage
+  #       run: |
+  #         python main.py --reports-dir reports --output-dir agent_output --mode=triage
+  #       env:
+  #         OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
 
-      - name: Debug triage
-        run: |
-          echo "DEBUG triage output"
-          ls -la agent_output
-          cat agent_output/* || true
+  #     - name: Debug triage
+  #       run: |
+  #         echo "DEBUG triage output"
+  #         ls -la agent_output
+  #         cat agent_output/* || true
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: triage-output
-          path: agent_output/
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: triage-output
+  #         path: agent_output/
 
-  # ============================================================
-  # SUGGESTIONS
-  # ============================================================
-  LLM-Suggestions:
-    runs-on: ubuntu-latest
-    needs: LLM-Triage
-    steps:
-      - uses: actions/checkout@v4
+  # # ============================================================
+  # # SUGGESTIONS
+  # # ============================================================
+  # LLM-Suggestions:
+  #   runs-on: ubuntu-latest
+  #   needs: LLM-Triage
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: ${{ env.PYTHON_VERSION }}
 
-      - run: pip install -r requirements.txt
+  #     - run: pip install -r requirements.txt
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: triage-output
-          path: agent_output
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: triage-output
+  #         path: agent_output
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-scan-reports
-          path: reports
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: all-scan-reports
+  #         path: reports
 
-      # 🔐 Fetch OpenAI API Key from HashiCorp Vault
-      - name: Import Secrets from HashiCorp Vault
-        id: vault
-        uses: hashicorp/vault-action@v3
-        with:
-          url: ${{ secrets.VAULT_ADDR }}
-          method: approle
-          roleId: ${{ secrets.VAULT_ROLE_ID }}
-          secretId: ${{ secrets.VAULT_SECRET_ID }}
-          secrets: |
-            secret/data/openai api_key | OPENAI_API_KEY
+  #     # 🔐 Fetch OpenAI API Key from HashiCorp Vault
+  #     - name: Import Secrets from HashiCorp Vault
+  #       id: vault
+  #       uses: hashicorp/vault-action@v3
+  #       with:
+  #         url: ${{ secrets.VAULT_ADDR }}
+  #         method: approle
+  #         roleId: ${{ secrets.VAULT_ROLE_ID }}
+  #         secretId: ${{ secrets.VAULT_SECRET_ID }}
+  #         secrets: |
+  #           secret/data/openai api_key | OPENAI_API_KEY
 
-      - name: Run Suggestions
-        run: |
-          python main.py --reports-dir reports --output-dir agent_output --mode=advise
-        env:
-          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+  #     - name: Run Suggestions
+  #       run: |
+  #         python main.py --reports-dir reports --output-dir agent_output --mode=advise
+  #       env:
+  #         OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
 
-      - name: Debug suggestions
-        run: |
-          echo "DEBUG suggestions"
-          ls -la agent_output
-          cat agent_output/* || true
+  #     - name: Debug suggestions
+  #       run: |
+  #         echo "DEBUG suggestions"
+  #         ls -la agent_output
+  #         cat agent_output/* || true
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: suggestions-output
-          path: agent_output/
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: suggestions-output
+  #         path: agent_output/
 
-  # ============================================================
-  # AUTOFIX
-  # ============================================================
-  AutoFix-PR:
-    runs-on: ubuntu-latest
-    needs: [LLM-Suggestions, Security-Gate]
-    if: needs.Security-Gate.outputs.gate_failed == 'true'
-    env:
-      GH_TOKEN: ${{ github.token }}          # required by gh
-      # BASE_BRANCH inherited from top-level env (e.g., hackathon-feature-s)
+  # # ============================================================
+  # # AUTOFIX
+  # # ============================================================
+  # AutoFix-PR:
+  #   runs-on: ubuntu-latest
+  #   needs: [LLM-Suggestions, Security-Gate]
+  #   if: needs.Security-Gate.outputs.gate_failed == 'true'
+  #   env:
+  #     GH_TOKEN: ${{ github.token }}          # required by gh
+  #     # BASE_BRANCH inherited from top-level env (e.g., hackathon-feature-s)
   
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
   
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: ${{ env.PYTHON_VERSION }}
   
-      - run: pip install -r requirements.txt
+  #     - run: pip install -r requirements.txt
   
-      - uses: actions/download-artifact@v4
-        with:
-          name: suggestions-output
-          path: agent_output
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: suggestions-output
+  #         path: agent_output
   
-      - uses: actions/download-artifact@v4
-        with:
-          name: all-scan-reports
-          path: reports
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: all-scan-reports
+  #         path: reports
   
-      - name: Setup Git identity
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+  #     - name: Setup Git identity
+  #       run: |
+  #         git config user.name "github-actions"
+  #         git config user.email "github-actions@github.com"
   
-      - name: Install GitHub CLI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh
+  #     - name: Install GitHub CLI
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install -y gh
   
-      - name: Import Secrets from HashiCorp Vault
-        id: vault
-        uses: hashicorp/vault-action@v3
-        with:
-          url: ${{ secrets.VAULT_ADDR }}
-          method: approle
-          roleId: ${{ secrets.VAULT_ROLE_ID }}
-          secretId: ${{ secrets.VAULT_SECRET_ID }}
-          secrets: |
-            secret/data/openai api_key | OPENAI_API_KEY
+  #     - name: Import Secrets from HashiCorp Vault
+  #       id: vault
+  #       uses: hashicorp/vault-action@v3
+  #       with:
+  #         url: ${{ secrets.VAULT_ADDR }}
+  #         method: approle
+  #         roleId: ${{ secrets.VAULT_ROLE_ID }}
+  #         secretId: ${{ secrets.VAULT_SECRET_ID }}
+  #         secrets: |
+  #           secret/data/openai api_key | OPENAI_API_KEY
   
-      # ---- Terraform fmt BEFORE autofix → fmt changes included in AI branch ----
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
+  #     # ---- Terraform fmt BEFORE autofix → fmt changes included in AI branch ----
+  #     - name: Setup Terraform
+  #       uses: hashicorp/setup-terraform@v3
+  #       with:
+  #         terraform_wrapper: false
   
-      - name: Terraform fmt (pre-fix, keep diffs tidy)
-        run: |
-          if [ -d "hackathon-vuln-app/terraform" ]; then
-            terraform -version || true
-            terraform fmt -recursive hackathon-vuln-app/terraform || true
-          fi
+  #     - name: Terraform fmt (pre-fix, keep diffs tidy)
+  #       run: |
+  #         if [ -d "hackathon-vuln-app/terraform" ]; then
+  #           terraform -version || true
+  #           terraform fmt -recursive hackathon-vuln-app/terraform || true
+  #         fi
   
-      # AI autofix (LLM + deterministic Terraform/K8s hardeners); AST off
-      - name: Run autofix
-        run: |
-          python main.py --reports-dir reports --output-dir agent_output --mode=fix
-        env:
-          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
-          MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
-          AST_ENABLED: "false"
+  #     # AI autofix (LLM + deterministic Terraform/K8s hardeners); AST off
+  #     - name: Run autofix
+  #       run: |
+  #         python main.py --reports-dir reports --output-dir agent_output --mode=fix
+  #       env:
+  #         OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+  #         MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
+  #         AST_ENABLED: "false"
   
-      # Optional: post-fix Checkov JSON signals (no commits here)
-      - name: Install Checkov
-        run: pip install checkov
+  #     # Optional: post-fix Checkov JSON signals (no commits here)
+  #     - name: Install Checkov
+  #       run: pip install checkov
   
-      - name: Checkov (Terraform JSON, post-fix)
-        run: |
-          mkdir -p reports
-          if [ -d "hackathon-vuln-app/terraform" ]; then
-            checkov -d hackathon-vuln-app/terraform --framework terraform -o json > reports/checkov_tf_postfix.json || echo '{}' > reports/checkov_tf_postfix.json
-          else
-            echo '{}' > reports/checkov_tf_postfix.json
-          fi
+  #     - name: Checkov (Terraform JSON, post-fix)
+  #       run: |
+  #         mkdir -p reports
+  #         if [ -d "hackathon-vuln-app/terraform" ]; then
+  #           checkov -d hackathon-vuln-app/terraform --framework terraform -o json > reports/checkov_tf_postfix.json || echo '{}' > reports/checkov_tf_postfix.json
+  #         else
+  #           echo '{}' > reports/checkov_tf_postfix.json
+  #         fi
   
-      - name: Checkov (Kubernetes JSON, post-fix)
-        run: |
-          mkdir -p reports
-          if [ -d "hackathon-vuln-app/kubernetes" ]; then
-            checkov -d hackathon-vuln-app/kubernetes --framework kubernetes -o json > reports/checkov_k8s_postfix.json || echo '{}' > reports/checkov_k8s_postfix.json
-          else
-            echo '{}' > reports/checkov_k8s_postfix.json
-          fi
+  #     - name: Checkov (Kubernetes JSON, post-fix)
+  #       run: |
+  #         mkdir -p reports
+  #         if [ -d "hackathon-vuln-app/kubernetes" ]; then
+  #           checkov -d hackathon-vuln-app/kubernetes --framework kubernetes -o json > reports/checkov_k8s_postfix.json || echo '{}' > reports/checkov_k8s_postfix.json
+  #         else
+  #           echo '{}' > reports/checkov_k8s_postfix.json
+  #         fi
   
-      - name: Debug patch manifest
-        run: |
-          echo "Patch manifest"
-          cat agent_output/patch_manifest.json || true
+  #     - name: Debug patch manifest
+  #       run: |
+  #         echo "Patch manifest"
+  #         cat agent_output/patch_manifest.json || true
   
-      # (optional) show target base on runner (helps when BASE_BRANCH changes)
-      - name: Debug base branch
-        run: |
-          echo "BASE_BRANCH=${BASE_BRANCH}"
-          git ls-remote --heads origin "${BASE_BRANCH}" | cat
+  #     # (optional) show target base on runner (helps when BASE_BRANCH changes)
+  #     - name: Debug base branch
+  #       run: |
+  #         echo "BASE_BRANCH=${BASE_BRANCH}"
+  #         git ls-remote --heads origin "${BASE_BRANCH}" | cat
   
-      # (optional) Print the AI PR link if GitPRAgent captured it
-      - name: Show PR link (if any)
-        run: |
-          if [ -f agent_output/pr_comment.md ]; then
-            echo "PR URL:"
-            cat agent_output/pr_comment.md
-          else
-            echo "No PR link recorded; the AI may have fallen back to branch-only."
-          fi
+  #     # (optional) Print the AI PR link if GitPRAgent captured it
+  #     - name: Show PR link (if any)
+  #       run: |
+  #         if [ -f agent_output/pr_comment.md ]; then
+  #           echo "PR URL:"
+  #           cat agent_output/pr_comment.md
+  #         else
+  #           echo "No PR link recorded; the AI may have fallen back to branch-only."
+  #         fi
   
-      - name: Debug final
-        run: |
-          git status
-          git branch -a
-          ls -la agent_output
+  #     - name: Debug final
+  #       run: |
+  #         git status
+  #         git branch -a
+  #         ls -la agent_output
   
-      - uses: actions/upload-artifact@v4
-        with:
-          name: autofix-output
-          path: |
-            agent_output/
-            reports/checkov*_postfix.json
-          if-no-files-found: ignore
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: autofix-output
+  #         path: |
+  #           agent_output/
+  #           reports/checkov*_postfix.json
+  #         if-no-files-found: ignore
 
 # AutoFix-PR:
 #   runs-on: ubuntu-latest

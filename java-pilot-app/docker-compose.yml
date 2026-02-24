@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  app:
+    build: .
+    image: demo-app:latest
+    privileged: true               # INTENTIONAL risk
+    environment:
+      - DB_USER=root               # INTENTIONAL plaintext
+      - DB_PASS=Root@123           # INTENTIONAL plaintext
+    ports:
+      - "8080:8080"
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock  # another risk if enabled
