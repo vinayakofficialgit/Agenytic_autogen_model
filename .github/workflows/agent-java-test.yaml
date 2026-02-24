@@ -317,9 +317,9 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-  # # ============================================================
-  # # CONTAINER (Trivy Image)
-  # # ============================================================
+# ============================================================
+# CONTAINER (Trivy Image)
+# ============================================================
   Container-Scanning:
     runs-on: ubuntu-latest
     needs: Build-Java-App
@@ -332,8 +332,8 @@ jobs:
       # Download the jar produced by Build-Java-App
       - uses: actions/download-artifact@v4
         with:
-          name: app-jar
-          path: ${{ env.APP_DIR }}/target
+          name: app-target
+          path: ${{ env.APP_DIR }}/target/
   
       - name: Verify jar
         run: |
