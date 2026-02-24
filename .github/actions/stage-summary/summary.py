@@ -1,35 +1,101 @@
 #!/usr/bin/env python3
-import argparse, json, pathlib, sys
+import argparse
+import json
+import os
+import pathlib
+from typing import Dict, Tuple
 
-def load_json(path: pathlib.Path):
+def load_json(path: pathlib.Path) -> Dict:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
-def count_semgrep(d):
+# ---------- Counters per tool ----------
+
+def count_semgrep(d: Dict) -> Tuple[int, Dict[str, int]]:
     results = d.get("results", []) or []
-    sev = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
+    sev = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for r in results:
         s = ((r.get("extra") or {}).get("severity") or "").upper()
-        # Map common Semgrep severities to our buckets
-        if s == "ERROR": s = "HIGH"
-        elif s == "WARNING": s = "MEDIUM"
-        elif s == "INFO": s = "LOW"
-        if s in sev: sev[s]+=1
+        # Map Semgrep severities to our buckets
+        if s == "ERROR":
+            s = "HIGH"
+        elif s == "WARNING":
+            s = "MEDIUM"
+        elif s == "INFO":
+            s = "LOW"
+        if s in sev:
+            sev[s] += 1
     return sum(sev.values()), sev
 
-def count_spotbugs(d):
-    # Expect JSON converted from", "0"))    # Expect JSON converted from XML; if still XML, caller should convert in pipeline
-            # ZAP: 0=info, 1=low, 2=medium, 3=high → map info→LOW for our table
-            if risk == "3": sev["HIGH"] += 1
-            elif risk == "2": sev["MEDIUM"] += 1
-            elif risk == "1": sev["LOW"] += 1
-            else: sev["LOW"] += 1
-            return total, sev
+def count_spotbugs(d: Dict) -> Tuple[int, Dict[str, int]]:
+    # Expect JSON converted from XML (BugCollection/BugInstance)
+    sev = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    coll = d.get("BugCollection", {}) or {}
+    bugs = coll.get("BugInstance", []) or []
+    if isinstance(bugs, dict):
+        bugs = [bugs]
+    for b in bugs:
+        # SpotBugs priority: 1=High, 2=Medium, else=Low
+        p = str(b.get("@priority") or b.get("priority") or "3")
+        if p == "1":
+            sev["HIGH"] += 1
+        elif p == "2":
+            sev["MEDIUM"] += 1
+        else:
+            sev["LOW"] += 1
+    return sum(sev.values()), sev
 
-# Heuristic router by filename
-def route(filename, data):
+def count_gitleaks(d: Dict) -> Tuple[int, Dict[str, int]]:
+    findings = d.get("findings") or d.get("leaks") or []
+    total = len(findings) if isinstance(findings, list) else 0
+    # Many outputs lack per-finding severity → count all as HIGH for visibility
+    sev = {"CRITICAL": 0, "HIGH": total, "MEDIUM": 0, "LOW": 0}
+    return total, sev
+
+def count_trivy(d: Dict) -> Tuple[int, Dict[str, int]]:
+    sev = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    total = 0
+    for r in d.get("Results", []) or []:
+        for v in r.get("Vulnerabilities") or []:
+            total += 1
+            s = (v.get("Severity") or "").upper()
+            if s in sev:
+                sev[s] += 1
+    return total, sev
+
+def count_checkov(d: Dict) -> Tuple[int, Dict[str, int]]:
+    sev = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    res = d.get("results", {}) or {}
+    failed = res.get("failed_checks") or []
+    for f in failed:
+        s = (f.get("severity") or "").upper()
+        if s in sev:
+            sev[s] += 1
+    return len(failed), sev
+
+def count_zap(d: Dict) -> Tuple[int, Dict[str, int]]:
+    sev = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    total = 0
+    for site in d.get("site", []) or []:
+        for a in site.get("alerts") or []:
+            total += 1
+            risk = str(a.get("riskcode", "0"))
+            # ZAP: 0=info, 1=low, 2=medium, 3=high
+            if risk == "3":
+                sev["HIGH"] += 1
+            elif risk == "2":
+                sev["MEDIUM"] += 1
+            elif risk == "1":
+                sev["LOW"] += 1
+            else:
+                sev["LOW"] += 1  # treat info as low in this table
+    return total, sev
+
+# ---------- Router by filename ----------
+
+def route(filename: str, data: Dict) -> Tuple[int, Dict[str, int]]:
     fn = filename.lower()
     if "semgrep" in fn:
         return count_semgrep(data)
@@ -45,8 +111,10 @@ def route(filename, data):
         return count_checkov(data)
     if "zap" in fn:
         return count_zap(data)
-    # Unknown → 0s
-    return 0, {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
+    # Unknown file → zeros
+    return 0, {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+
+# ---------- Main ----------
 
 def main():
     ap = argparse.ArgumentParser()
@@ -68,8 +136,7 @@ def main():
             rows.append((fn, t, sev))
             generated.append(fn)
         else:
-            # Still show zero row so table is consistent
-            rows.append((fn, 0, {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}))
+            rows.append((fn, 0, {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}))
 
     md = []
     md.append(f"### {args.stage} — Reports & Severity")
@@ -81,69 +148,21 @@ def main():
 
     md.append("\n**Files generated:**")
     if generated:
-        md.extend([f"- {g}" for g in generated])
+        for g in generated:
+            md.append(f"- {g}")
     else:
         md.append("- (none)")
 
     summary_path = reports_dir / f"{args.stage}-summary.md"
     summary_path.write_text("\n".join(md), encoding="utf-8")
 
-    # Expose output to composite action
     print("\n".join(md))
-    # Inform the wrapper step about the path via GITHUB_OUTPUT
-    gout = pathlib.Path(os.environ.get("GITHUB_OUTPUT", ""))
+
+    # Expose output path to the composite action wrapper
+    gout = os.environ.get("GITHUB_OUTPUT")
     if gout:
-        gout.write_text(f"summary_path={summary_path}\n", encoding="utf-8")
-    else:
-        # Fallback: echo the path in a marker the wrapper can ignore
-        print(f"::notice::summary_path={summary_path}")
+        with open(gout, "a", encoding="utf-8") as f:
+            f.write(f"summary_path={summary_path}\n")
 
 if __name__ == "__main__":
-    import os
     main()
-    sev = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
-    coll = d.get("BugCollection", {})
-    bugs = coll.get("BugInstance", [])
-    if isinstance(bugs, dict):
-        bugs = [bugs]
-    for b in bugs or []:
-        # SpotBugs priority: 1=High, 2=Medium, 3/else=Low
-        p = str(b.get("@priority") or b.get("priority") or "3")
-        if p == "1": sev["HIGH"] += 1
-        elif p == "2": sev["MEDIUM"] += 1
-        else: sev["LOW"] += 1
-    return sum(sev.values()), sev
-
-def count_gitleaks(d):
-    findings = d.get("findings") or d.get("leaks") or []
-    total = len(findings) if isinstance(findings, list) else 0
-    # Gitleaks has no uniform severity in all outputs → count all as HIGH by default
-    sev = {"CRITICAL":0,"HIGH":total,"MEDIUM":0,"LOW":0}
-    return total, sev
-
-def count_trivy(d):
-    sev = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
-    total = 0
-    for r in d.get("Results", []) or []:
-        vulns = r.get("Vulnerabilities") or []
-        total += len(vulns)
-        for v in vulns:
-            s = (v.get("Severity") or "").upper()
-            if s in sev: sev[s] += 1
-    return total, sev
-
-def count_checkov(d):
-    sev = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
-    res = d.get("results", {}) or {}
-    failed = res.get("failed_checks") or []
-    for f in failed:
-        s = (f.get("severity") or "").upper()
-        if s in sev: sev[s] += 1
-    return len(failed), sev
-
-def count_zap(d):
-    sev = {"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":0}
-    total = 0
-    for site in d.get("site", []) or []:
-        for a in site.get("alerts") or []:
-            total += 1
