@@ -23,6 +23,7 @@ env:
   LLM_ENABLED: "true"
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"
+  BASE_BRANCH: "hackathon-feature-s"
 
 jobs:
 
@@ -584,13 +585,13 @@ jobs:
   # ============================================================
   # AUTOFIX
   # ============================================================
-
   AutoFix-PR:
     runs-on: ubuntu-latest
     needs: [LLM-Suggestions, Security-Gate]
     if: needs.Security-Gate.outputs.gate_failed == 'true'
     env:
-      GH_TOKEN: ${{ github.token }}   # ensure gh works in all steps
+      GH_TOKEN: ${{ github.token }}          # required by gh
+      BASE_BRANCH: test-home-sachin          # <-- set your base branch here
   
     steps:
       - uses: actions/checkout@v4
@@ -613,24 +614,19 @@ jobs:
           name: all-scan-reports
           path: reports
   
-      # - name: Debug workspace & POMs
-      #   run: |
-      #     echo "PWD=$(pwd)"
-      #     find . -maxdepth 3 -type f -name pom.xml | sed 's|^\./||'
-  
-      # ⭐ Git identity
+      # Git identity
       - name: Setup Git identity
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
   
-      # ⭐ gh CLI
+      # gh CLI
       - name: Install GitHub CLI
         run: |
           sudo apt-get update
           sudo apt-get install -y gh
   
-      # 🔐 LLM secret from Vault
+      # LLM key from Vault
       - name: Import Secrets from HashiCorp Vault
         id: vault
         uses: hashicorp/vault-action@v3
@@ -642,7 +638,7 @@ jobs:
           secrets: |
             secret/data/openai api_key | OPENAI_API_KEY
   
-      # 🚀 Autofix (LLM + deterministic IaC; AST disabled)
+      # Run autofix (LLM + deterministic Terraform/K8s hardeners); AST off
       - name: Run autofix
         run: |
           python main.py --reports-dir reports --output-dir agent_output --mode=fix
@@ -651,24 +647,24 @@ jobs:
           MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
           AST_ENABLED: "false"
   
-      # # 💅 Terraform fmt (install CLI first)
-      # - name: Setup Terraform
-      #   uses: hashicorp/setup-terraform@v3
-      #   with:
-      #     terraform_wrapper: false
+      # Terraform fmt: install CLI first, then format
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
   
-      # - name: Terraform fmt (keep diffs tidy)
-      #   run: |
-      #     if [ -d "hackathon-vuln-app/terraform" ]; then
-      #       terraform -version || true
-      #       terraform fmt -recursive hackathon-vuln-app/terraform || true
-      #     fi
+      - name: Terraform fmt (keep diffs tidy)
+        run: |
+          if [ -d "hackathon-vuln-app/terraform" ]; then
+            terraform -version || true
+            terraform fmt -recursive hackathon-vuln-app/terraform || true
+          fi
   
-      # 📦 Install Checkov (JSON output; TF + K8s)
+      # Install Checkov (single IaC scanner → JSON)
       - name: Install Checkov
         run: pip install checkov
   
-      # 🧾 Optional post-fix JSON signals (handy in PR for reviewers)
+      # Optional post-fix signals (JSON) for reviewers
       - name: Checkov (Terraform JSON, post-fix)
         run: |
           mkdir -p reports
@@ -687,82 +683,74 @@ jobs:
             echo '{}' > reports/checkov_k8s_postfix.json
           fi
   
-      # ⭐ Patch manifest for visibility
+      # Debug manifest (optional)
       - name: Debug patch manifest
         run: |
           echo "Patch manifest"
           cat agent_output/patch_manifest.json || true
   
-      - name: Debug git diff before commit
+      - name: Debug repo status before branch
         run: |
           git status
-          git diff
           git diff --name-only || true
   
-      # ✅ Commit & push changes (handles both: our own branch OR branch already created by the fixer)
-      - name: Commit & push changes (if any)
+      # ============================
+      # ALWAYS create a NEW, UNIQUE branch per run
+      # Commit only into that new branch
+      # ============================
+      - name: Create unique branch & push
+        id: branchpush
         run: |
           set -e
-          CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-          echo "Current branch: $CURRENT_BRANCH"
   
-          # If the fixer already created a branch (e.g., ai-autofix-...), stay on it.
-          if [[ "$CURRENT_BRANCH" == ai-autofix-* ]]; then
-            echo "Detected fixer-created branch: $CURRENT_BRANCH"
-            git add -A
-            if git diff --cached --quiet; then
-              echo "No new staged changes to commit on $CURRENT_BRANCH"
-            else
-              git commit -m "Autofix: add post-fix formatting and reports"
-              git push origin "$CURRENT_BRANCH"
-            fi
-            echo "branch_name=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
-          else
-            # Otherwise, create our own branch only if there are changes
-            if ! git diff --quiet || ! git diff --cached --quiet; then
-              BR="autofix-$(date +%Y%m%d%H%M%S)"
-              git checkout -b "$BR"
-              git add -A
-              if git diff --cached --quiet; then
-                echo "No staged changes after add; skipping commit."
-                echo "branch_name=" >> $GITHUB_OUTPUT
-              else
-                git commit -m "Autofix: security scan fixes"
-                git push --set-upstream origin "$BR"
-                echo "branch_name=$BR" >> $GITHUB_OUTPUT
-              fi
-            else
-              echo "No changes to commit."
-              echo "branch_name=" >> $GITHUB_OUTPUT
-            fi
+          # Determine an upstream base to compare against
+          UPSTREAM="${BASE_BRANCH}"
+          git fetch origin "$UPSTREAM"
+  
+          # If nothing changed vs base, skip branch/PR entirely
+          if git diff --quiet "origin/$UPSTREAM"...HEAD && git diff --quiet; then
+            echo "No changes vs base → skipping branch and PR."
+            echo "no_changes=true" >> $GITHUB_OUTPUT
+            echo "new_branch=" >> $GITHUB_OUTPUT
+            exit 0
           fi
   
-      # ✅ Open PR (works for either ai-autofix-* or autofix-*)
+          # Create a guaranteed-unique branch name
+          BR="autofix-$(date +%Y%m%d%H%M%S)-${RANDOM}"
+          echo "new_branch=$BR" >> $GITHUB_OUTPUT
+  
+          # Branch from current HEAD (includes agent's commits if it created any)
+          git checkout -b "$BR"
+  
+          # Stage any additional changes from fmt/post-fix steps
+          git add -A
+          if git diff --cached --quiet; then
+            # No new staged changes, still push this new branch (contains previous commits)
+            git push --set-upstream origin "$BR"
+          else
+            git commit -m "Autofix: security scan fixes"
+            git push --set-upstream origin "$BR"
+          fi
+  
+      # Open PR ONLY for this new branch (no reuse, no duplicates)
       - name: Open PR
-        env:
-          BASE_BRANCH: hackathon-feature-s
+        if: ${{ steps.branchpush.outputs.no_changes != 'true' }}
         run: |
-          BR_OUT="$(grep '^branch_name=' $GITHUB_OUTPUT | cut -d'=' -f2 || true)"
-          BR="${BR_OUT:-$(git rev-parse --abbrev-ref HEAD)}"
-          echo "Using branch for PR: $BR"
-  
-          if [[ "$BR" == autofix-* || "$BR" == ai-autofix-* ]]; then
-            # Avoid duplicate PRs
-            COUNT=$(gh pr list --head "$BR" --state open --json number -q 'length(.)' || echo "0")
-            if [ "$COUNT" -eq 0 ]; then
-              gh pr create \
-                --title "Autofix: security scan fixes" \
-                --body "Automated patches generated by the security agent." \
-                --base "${BASE_BRANCH}" \
-                --head "$BR"
-            else
-              echo "Open PR from $BR already exists."
-            fi
-          else
-            echo "No autofix branch detected → no PR."
+          set -e
+          BR="${{ steps.branchpush.outputs.new_branch }}"
+          if [ -z "$BR" ]; then
+            echo "No new branch name → no PR."
+            exit 0
           fi
   
-      - name: Debug autofix
+          # Create PR (new branch each run → always a new PR)
+          gh pr create \
+            --title "Autofix: security scan fixes" \
+            --body "Automated patches generated by the security agent." \
+            --base "$BASE_BRANCH" \
+            --head "$BR"
+  
+      - name: Debug final
         run: |
           git status
           git branch -a
