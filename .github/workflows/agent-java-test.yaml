@@ -405,8 +405,8 @@ jobs:
   
       - uses: actions/download-artifact@v4
         with:
-          name: app-jar
-          path: ${{ env.APP_DIR }}/target
+          name: app-target
+          path: ${{ env.APP_DIR }}/target/
   
       - run: mkdir -p $REPORTS_DIR
   

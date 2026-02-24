@@ -65,6 +65,28 @@
         </configuration>
       </plugin>
 
+      <!-- SpotBugs plugin -->
+      <plugin>
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <version>4.8.6.3</version> <!-- or the latest stable -->
+        <configuration>
+          <!-- produce XML; our pipeline converts it to JSON -->
+          <xmlOutput>true</xmlOutput>
+          <!-- optional: limit effort or set threshold -->
+          <!-- <effort>Max</effort> -->
+          <!-- <threshold>Low</threshold> -->
+        </configuration>
+        <executions>
+          <execution>
+            <phase>verify</phase>
+            <goals>
+              <goal>spotbugs</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
       <!-- Compiler -->
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
