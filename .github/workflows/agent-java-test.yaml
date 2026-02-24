@@ -135,7 +135,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: java-pilot-app-1.0.0.jar
-          path: ${{ env.APP_DIR }}/target
+          path: ${{ env.APP_DIR }}/target/
   
       # Semgrep on source (no rebuild)
       - name: Semgrep (Java + OWASP Top 10)
