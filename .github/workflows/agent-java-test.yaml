@@ -87,9 +87,9 @@ jobs:
             echo "🔐 Secret is available for downstream jobs."
           fi
 
-  # ============================================================
-  # BUILD APP
-  # ============================================================
+# ============================================================
+# BUILD APP
+# ============================================================
   Build-Java-App:
     runs-on: ubuntu-latest
     steps:
@@ -106,16 +106,18 @@ jobs:
       - name: Show target
         run: ls -la "$APP_DIR/target"
   
+      # Upload the entire target/ so we can reuse compiled classes & the JAR
       - uses: actions/upload-artifact@v4
         with:
           name: app-target
           path: ${{ env.APP_DIR }}/target/
 
-  # ============================================================
-  # SAST
-  # ============================================================
+# ============================================================
+# SAST
+# ============================================================
   SAST-Scanning:
     runs-on: ubuntu-latest
+    needs: Build-Java-App
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -125,13 +127,13 @@ jobs:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
   
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+      # - uses: actions/setup-python@v5
+      #   with:
+      #     python-version: ${{ env.PYTHON_VERSION }}
   
       - run: mkdir -p $REPORTS_DIR
   
-      # Reuse compiled classes (no rebuild)
+      # Reuse compiled classes (no rebuild) from the same run
       - uses: actions/download-artifact@v4
         with:
           name: app-target
@@ -149,18 +151,16 @@ jobs:
             "$APP_DIR/src/main/java" || echo '{}' > "$REPORTS_DIR/semgrep.json"
   
       # SpotBugs on compiled classes already present in target/
+      # Note: this still triggers Maven's spotbugs goal, but does not clean/recompile sources.
       - name: SpotBugs XML
         run: |
-          # If you have a SpotBugs plugin configured in pom you can run mvn verify spotbugs:spotbugs
-          # but that would recompile. Instead, call the CLI if available; otherwise keep Maven but skip 'clean'.
-          # EASY path: run mvn but DON'T clean or recompile sources:
           mvn -q -DskipTests -f $APP_DIR/pom.xml spotbugs:spotbugs || true
           if [ -f "$APP_DIR/target/spotbugsXml.xml" ]; then
             cp "$APP_DIR/target/spotbugsXml.xml" reports/spotbugs.xml
           else
             echo "<BugCollection/>" > reports/spotbugs.xml
           fi
-
+  
       - name: Convert SpotBugs XML → JSON
         run: |
           pip install xmltodict
@@ -168,20 +168,24 @@ jobs:
           import xmltodict, json, pathlib
           p = pathlib.Path("reports/spotbugs.xml")
           out = pathlib.Path("reports/spotbugs.json")
-          if p.exists() and p.stat().st_size>0:
-              data = xmltodict.parse(p.read_text())
+          if p.exists() and p.stat().st_size > 0:
+              try:
+                  data = xmltodict.parse(p.read_text())
+              except Exception:
+                  data = {}
               out.write_text(json.dumps(data, indent=2))
           else:
               out.write_text("{}")
           PY
-
+  
+      # Per-stage summary (uses your local composite action)
       - name: SAST Stage Summary
         uses: ./.github/actions/stage-summary
         with:
           stage: SAST
           reports_dir: reports
-          files: semgrep.json,spotbugs.json    
-
+          files: semgrep.json,spotbugs.json
+  
       - uses: actions/upload-artifact@v4
         with:
           name: sast-reports
