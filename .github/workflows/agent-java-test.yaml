@@ -613,7 +613,6 @@ jobs:
     needs: [Aggregate-Scanning-Reports, Build-Repo-Index]
     if: needs.Aggregate-Scanning-Reports.outputs.decision == 'FAIL'
     env:
-      MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
       OPENAI_API_KEY: ${{ needs.Vault-Connection-Check.outputs.OPENAI_API_KEY }} # or from your Vault job outputs
     steps:
       - uses: actions/checkout@v4
