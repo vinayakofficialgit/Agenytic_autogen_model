@@ -556,58 +556,25 @@ jobs:
           name: all-scan-reports
           path: final-reports/*.json
 
-  # Aggregate-Scanning-Reports:
-  #   runs-on: ubuntu-latest
-  #   needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
-  #   # needs: [SAST-Scanning, IAC-Scanning]
-    
-  #   if: always()
-  #   steps:
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         path: collected-reports
 
-  #     - name: Collate JSON
-  #       run: |
-  #         mkdir -p final-reports
-  #         find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
-  #         echo "DEBUG: Aggregated files"
-  #         ls -la final-reports || true
-     
-  #     - name: Aggregate & Decide
-  #       id: aggr
-  #       uses: ./.github/actions/severity-aggregate
-  #       with:
-  #         reports_dir: final-reports
-  #         output_dir: final-reports
-  #         min_severity: ${{ env.MIN_SEVERITY }}
-    
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: overall-summary
-  #         path: |
-  #           final-reports/overall_summary.json
-  #           final-reports/overall_summary.md
-
-# # ============================================================
-# # AI GATE
-# # ============================================================
-
-#   Severity-Gate:
-#     runs-on: ubuntu-latest
-#     needs: Aggregate-Scanning-Reports
-#     outputs:
-#       gate_failed: ${{ steps.set.outputs.gate_failed }}
-#     steps:
-#       - name: Decide from Aggregate
-#         id: set
-#         run: |
-#           echo "Decision: ${{ needs.Aggregate-Scanning-Reports.outputs.decision }}"
-#           if [ "${{ needs.Aggregate-Scanning-Reports.outputs.decision }}" = "FAIL" ]; then
-#             echo "gate_failed=true" >> $GITHUB_OUTPUT
-#           else
-#             echo "gate_failed=false" >> $GITHUB_OUTPUT
-#           fi            
+# ============================================================
+# AI GATE
+# ============================================================
+  Severity-Gate:
+    runs-on: ubuntu-latest
+    needs: Aggregate-Scanning-Reports
+    outputs:
+      gate_failed: ${{ steps.set.outputs.gate_failed }}
+    steps:
+      - name: Decide from Aggregate
+        id: set
+        run: |
+          echo "Decision: ${{ needs.Aggregate-Scanning-Reports.outputs.decision }}"
+          if [ "${{ needs.Aggregate-Scanning-Reports.outputs.decision }}" = "FAIL" ]; then
+            echo "gate_failed=true" >> $GITHUB_OUTPUT
+          else
+            echo "gate_failed=false" >> $GITHUB_OUTPUT
+          fi        
 
 # # ============================================================
 # # AI GATE
