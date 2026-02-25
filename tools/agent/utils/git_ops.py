@@ -27,25 +27,22 @@ def ensure_git_identity():
 
 def _sanitize_patch(patch_text: str) -> str:
     """
-    Remove markdown code fences and HTML escapes that corrupt unified diffs.
-    Normalize line endings to LF.
+    Minimal sanitization: normalize EOLs and remove Markdown code fences.
+    DO NOT unescape HTML here to avoid altering paths.
     """
     t = patch_text.replace("\r\n", "\n").replace("\r", "\n")
-    # Drop lines that are just fences, e.g. ``` or ```lang
     t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)
-    # Basic HTML unescape (sufficient for XML/Java in this repo)
-    t = t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
     return t
 
 
 def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
     """
-    Prefix repo paths in unified diffs with <prefix> (e.g., 'java-pilot-app/').
+    Prefix repo paths with <prefix> (e.g., 'java-pilot-app/').
     Handles:
       - 'diff --git a/<path> b/<path>'
-      - '--- a/<path>' / '+++ b/<path>'
-      - '--- <path>'  / '+++ <path>'
-    Assumes the text is already sanitized and LF-normalized.
+      - '--- a/<path>[<TAB>meta]' / '+++ b/<path>[<TAB>meta]'
+      - '--- <path>[<TAB>meta]'  / '+++ <path>[<TAB>meta]'
+    Preserves trailing metadata (like timestamps) after a tab.
     """
     text = patch_text
 
@@ -62,26 +59,30 @@ def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
 
     text = re.sub(r"^diff --git a/(\S+) b/(\S+)$", repl_diff, text, flags=re.M)
 
-    # --- a/<path>  and  +++ b/<path>
-    def repl_hdr_ab(m: re.Match) -> str:
-        side = m.group(1)  # '--- a/' or '+++ b/'
-        pth = add_prefix_if_needed(m.group(2))
-        return f"{side}{pth}"
+    # --- a/<path>[<TAB>meta]   and   +++ b/<path>[<TAB>meta]
+    def repl_hdr_ab(mark: str):
+        def _inner(m: re.Match) -> str:
+            # m.group(1) is the path part, m.group(2) optional meta (tab + rest)
+            head = add_prefix_if_needed(m.group(1))
+            meta = m.group(2) or ""
+            return f"{mark}{head}{meta}"
+        return _inner
 
-    text = re.sub(r"^(--- a/)(\S+)$", repl_hdr_ab, text, flags=re.M)
-    text = re.sub(r"^(\+\+\+ b/)(\S+)$", repl_hdr_ab, text, flags=re.M)
+    text = re.sub(r"^--- a/([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_ab("--- a/"), text, flags=re.M)
+    text = re.sub(r"^\+\+\+ b/([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_ab("+++ b/"), text, flags=re.M)
 
-    # Plain headers: --- <path>  and  +++ <path>
-    def repl_hdr_plain(m: re.Match) -> str:
-        mark = m.group(1)  # '--- ' or '+++ '
-        pth = m.group(2)
-        if pth.startswith("a/") or pth.startswith("b/"):
-            return f"{mark}{pth}"
-        pth = add_prefix_if_needed(pth)
-        return f"{mark}{pth}"
+    # Plain headers: --- <path>[meta] and +++ <path>[meta]
+    def repl_hdr_plain(mark: str):
+        def _inner(m: re.Match) -> str:
+            head = m.group(1)
+            meta = m.group(2) or ""
+            if not (head.startswith("a/") or head.startswith("b/")):
+                head = add_prefix_if_needed(head)
+            return f"{mark}{head}{meta}"
+        return _inner
 
-    text = re.sub(r"^(--- )([^\t\n\r]+)$", repl_hdr_plain, text, flags=re.M)
-    text = re.sub(r"^(\+\+\+ )([^\t\n\r]+)$", repl_hdr_plain, text, flags=re.M)
+    text = re.sub(r"^--- ([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_plain("--- "), text, flags=re.M)
+    text = re.sub(r"^\+\+\+ ([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_plain("+++ "), text, flags=re.M)
 
     return text
 
@@ -90,40 +91,30 @@ def ensure_branch_and_apply_diff(
     patch_path: pathlib.Path, module_prefix: Optional[str] = None
 ) -> str:
     """
-    Create a new branch, try to apply the patch. If it fails,
-    sanitize + rewrite paths with the module prefix and retry once.
+    Create a new branch and apply a path-rewritten patch (prefix enforced) once.
     """
     ensure_git_identity()
     br = f"ai-autofix-{int(time.time())}"
     run(f"git checkout -b {br}")
 
     patch_path = pathlib.Path(patch_path).resolve()
+    prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
 
-    # --- First attempt: sanitize original and apply ---
-    raw_txt = patch_path.read_text(encoding="utf-8", errors="ignore")
-    sanitized_txt = _sanitize_patch(raw_txt)
-    sanitized = patch_path.with_suffix(".sanitized.diff")
-    sanitized.write_text(sanitized_txt, encoding="utf-8")
+    # Read, sanitize minimally, REWRITE paths BEFORE applying.
+    txt = patch_path.read_text(encoding="utf-8", errors="ignore")
+    txt = _sanitize_patch(txt)
+    txt = _rewrite_patch_paths(txt, prefix)
 
-    run(f"sed -n '1,150p' {sanitized}")
-    run(f"git apply --check {sanitized} || true")
+    prefixed = patch_path.with_suffix(".prefixed.diff")
+    prefixed.write_text(txt, encoding="utf-8")
 
-    try:
-        run(f"git apply --whitespace=fix {sanitized}")
-        return br
-    except subprocess.CalledProcessError:
-        # --- Second attempt: prefix paths on sanitized text ---
-        prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
-        print(f"Patch apply failed once. Retrying with module prefix '{prefix}' ...")
-        prefixed_txt = _rewrite_patch_paths(sanitized_txt, prefix)
-        prefixed = patch_path.with_suffix(".prefixed.diff")
-        prefixed.write_text(prefixed_txt, encoding="utf-8")
+    # Preview & dry-run check
+    run(f"sed -n '1,150p' {prefixed}")
+    run(f"git apply --check {prefixed} || true")
 
-        run(f"sed -n '1,150p' {prefixed}")
-        run(f"git apply --check {prefixed} || true")
-
-        run(f"git apply --whitespace=fix {prefixed}")
-        return br
+    # Apply once
+    run(f"git apply --whitespace=fix {prefixed}")
+    return br
 
 
 def open_pr(branch: str, title: str, body: str) -> str:

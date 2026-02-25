@@ -21,7 +21,7 @@ from agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
 from agent.utils.git_ops import (
     ensure_branch_and_apply_diff,
     open_pr,
-    _rewrite_patch_paths,  # keep for git-style path normalization
+    _rewrite_patch_paths,  # used to normalize git-style a/ b/ lines
 )
 
 # fixers
@@ -35,7 +35,7 @@ def _extract_diff_segments(text: str) -> List[str]:
     """
     Extract valid diff segments without altering file paths.
     Only normalize EOLs. Do NOT unescape HTML or strip prefixes here.
-    We accept:
+    Accept:
       - git-style blocks starting with 'diff --git ' (must contain at least one '@@')
       - plain unified blocks starting with '--- <path>' then '+++ <path>' (must contain at least one '@@')
     """
@@ -47,7 +47,7 @@ def _extract_diff_segments(text: str) -> List[str]:
     n = len(lines)
 
     def has_hunk_markers(block: str) -> bool:
-        return "@@" in block  # minimal, but effective
+        return "@@" in block
 
     def flush(start: int, end: int):
         seg = "\n".join(lines[start:end]).strip("\n")
@@ -59,21 +59,19 @@ def _extract_diff_segments(text: str) -> List[str]:
     while i < n:
         line = lines[i]
 
-        # Case 1: git-style segment
+        # Case 1: git-style
         if line.startswith("diff --git "):
             start = i
             i += 1
-            # consume until next git-style header or EOF
             while i < n and not lines[i].startswith("diff --git "):
                 i += 1
             flush(start, i)
             continue
 
-        # Case 2: plain unified segment '--- ' followed by '+++ '
+        # Case 2: plain unified ('--- ' then '+++ ')
         if line.startswith("--- ") and (i + 1 < n) and lines[i + 1].startswith("+++ "):
             start = i
             i += 2
-            # consume until next segment start (--- or diff --git) or EOF
             while i < n and not (
                 lines[i].startswith("--- ") or lines[i].startswith("diff --git ")
             ):
@@ -81,40 +79,49 @@ def _extract_diff_segments(text: str) -> List[str]:
             flush(start, i)
             continue
 
-        # Otherwise skip noise line
         i += 1
 
     return segs
 
 
-def _git_apply_check(segment_text: str, prefix: str | None) -> Tuple[bool, str]:
+def _git_apply_check(segment_text: str, prefix: str) -> Tuple[bool, str]:
     """
-    Enforce module prefix on plain unified path headers (---/+++), but leave 'a/' or 'b/' paths intact.
-    Then optionally run the advanced path rewriter (handles 'diff --git a/... b/...', --- a/..., +++ b/...).
+    Enforce module prefix on plain unified path headers (---/+++), keep git-style a/ or b/ intact.
+    Then normalize any git-style paths with _rewrite_patch_paths.
     Validate with 'git apply --check'.
     Returns (ok, possibly-rewritten-segment-text).
     """
-    assert prefix, "prefix must be provided"
-
     seg = segment_text
 
-    # 1) Enforce prefix for plain headers (not for a/ or b/ git-style headers)
+    # 1) Force prefix on plain headers
     enforced_lines: List[str] = []
     for line in seg.split("\n"):
         if line.startswith("--- "):
-            p = line[4:].strip()
-            # Keep git-style intact; enforce on plain paths only
-            if not (p.startswith("a/") or p.startswith("b/") or p.startswith(prefix) or p.startswith("/") or p.startswith("./")):
-                line = f"--- {prefix}{p}"
+            p = line[4:].rstrip()
+            # allow trailing metadata (tab + timestamp) -> split once on tab
+            if "\t" in p:
+                head, tail = p.split("\t", 1)
+                meta = "\t" + tail
+            else:
+                head, meta = p, ""
+            if not (head.startswith("a/") or head.startswith("b/") or head.startswith(prefix) or head.startswith("/") or head.startswith("./")):
+                head = prefix + head
+            line = f"--- {head}{meta}"
         elif line.startswith("+++ "):
-            p = line[4:].strip()
-            if not (p.startswith("a/") or p.startswith("b/") or p.startswith(prefix) or p.startswith("/") or p.startswith("./")):
-                line = f"+++ {prefix}{p}"
+            p = line[4:].rstrip()
+            if "\t" in p:
+                head, tail = p.split("\t", 1)
+                meta = "\t" + tail
+            else:
+                head, meta = p, ""
+            if not (head.startswith("a/") or head.startswith("b/") or head.startswith(prefix) or head.startswith("/") or head.startswith("./")):
+                head = prefix + head
+            line = f"+++ {head}{meta}"
         enforced_lines.append(line)
 
     seg = "\n".join(enforced_lines)
 
-    # 2) Let the rewriter normalize any remaining git-style paths (diff --git / a/ / b/)
+    # 2) Normalize git-style paths and diff --git headers
     seg = _rewrite_patch_paths(seg, prefix)
 
     # 3) Dry-run check with git
@@ -140,7 +147,7 @@ def _git_apply_check(segment_text: str, prefix: str | None) -> Tuple[bool, str]:
 def _validate_and_collect(segments: List[str]) -> List[str]:
     """
     Keep only segments that pass 'git apply --check' after mandatory prefixing.
-    Deduplicate segments (exact text) to avoid repetitions.
+    Deduplicate segments.
     """
     prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
     kept: List[str] = []
