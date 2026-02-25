@@ -2,10 +2,9 @@
 import os
 import sys
 import json
-import tempfile
-import subprocess
 import pathlib
-from typing import List, Tuple
+import re
+from typing import List
 
 # ── Make 'tools/' the package root so 'agent' and 'embeddings' imports work ──
 HERE = pathlib.Path(__file__).resolve()
@@ -21,7 +20,7 @@ from agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
 from agent.utils.git_ops import (
     ensure_branch_and_apply_diff,
     open_pr,
-    _rewrite_patch_paths,  # used to normalize git-style a/ b/ lines
+    _rewrite_patch_paths,  # normalize git-style diff paths
 )
 
 # fixers
@@ -30,6 +29,7 @@ from agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
 OUTPUT = pathlib.Path(REPO_ROOT, "agent_output")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
+# --- Extraction helpers -------------------------------------------------------
 
 def _extract_diff_segments(text: str) -> List[str]:
     """
@@ -46,147 +46,101 @@ def _extract_diff_segments(text: str) -> List[str]:
     i = 0
     n = len(lines)
 
-    def has_hunk_markers(block: str) -> bool:
-        return "@@" in block
+    def has_hunk(seg: str) -> bool:
+        return "@@" in seg
 
     def flush(start: int, end: int):
         seg = "\n".join(lines[start:end]).strip("\n")
-        if seg and ("--- " in seg) and ("+++ " in seg) and has_hunk_markers(seg):
-            if not seg.endswith("\n"):
-                seg += "\n"
-            segs.append(seg)
+        if seg and ("--- " in seg) and ("+++ " in seg) and has_hunk(seg):
+            segs.append(seg + "\n")
 
     while i < n:
         line = lines[i]
 
-        # Case 1: git-style
+        # git-style segment
         if line.startswith("diff --git "):
-            start = i
+            s = i
             i += 1
             while i < n and not lines[i].startswith("diff --git "):
                 i += 1
-            flush(start, i)
+            flush(s, i)
             continue
 
-        # Case 2: plain unified ('--- ' then '+++ ')
-        if line.startswith("--- ") and (i + 1 < n) and lines[i + 1].startswith("+++ "):
-            start = i
+        # plain unified segment
+        if line.startswith("--- ") and i + 1 < n and lines[i + 1].startswith("+++ "):
+            s = i
             i += 2
-            while i < n and not (
-                lines[i].startswith("--- ") or lines[i].startswith("diff --git ")
-            ):
+            while i < n and not (lines[i].startswith("--- ") or lines[i].startswith("diff --git ")):
                 i += 1
-            flush(start, i)
+            flush(s, i)
             continue
 
         i += 1
 
     return segs
 
+HEADER_RE = re.compile(r"^(---|\+\+\+)\s+(\S+)(.*)$")
 
-def _git_apply_check(segment_text: str, prefix: str) -> Tuple[bool, str]:
+def _force_prefix_all_headers(segment: str, prefix: str) -> str:
     """
-    Enforce module prefix on plain unified path headers (---/+++), keep git-style a/ or b/ intact.
-    Then normalize any git-style paths with _rewrite_patch_paths.
-    Validate with 'git apply --check'.
-    Returns (ok, possibly-rewritten-segment-text).
+    Bulletproof header prefixing: rewrite ANY ---/+++ line
+    including those with trailing metadata (tabs/timestamps).
     """
-    seg = segment_text
+    out = []
+    for line in segment.split("\n"):
+        m = HEADER_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
 
-    # 1) Force prefix on plain headers
-    enforced_lines: List[str] = []
-    for line in seg.split("\n"):
-        if line.startswith("--- "):
-            p = line[4:].rstrip()
-            # allow trailing metadata (tab + timestamp) -> split once on tab
-            if "\t" in p:
-                head, tail = p.split("\t", 1)
-                meta = "\t" + tail
-            else:
-                head, meta = p, ""
-            if not (head.startswith("a/") or head.startswith("b/") or head.startswith(prefix) or head.startswith("/") or head.startswith("./")):
-                head = prefix + head
-            line = f"--- {head}{meta}"
-        elif line.startswith("+++ "):
-            p = line[4:].rstrip()
-            if "\t" in p:
-                head, tail = p.split("\t", 1)
-                meta = "\t" + tail
-            else:
-                head, meta = p, ""
-            if not (head.startswith("a/") or head.startswith("b/") or head.startswith(prefix) or head.startswith("/") or head.startswith("./")):
-                head = prefix + head
-            line = f"+++ {head}{meta}"
-        enforced_lines.append(line)
+        mark, path, meta = m.groups()
+        # keep git-style a/ b/ intact; enforce on plain paths
+        if not (path.startswith(prefix) or path.startswith("a/") or path.startswith("b/") or path.startswith("/") or path.startswith("./")):
+            path = prefix + path
 
-    seg = "\n".join(enforced_lines)
+        out.append(f"{mark} {path}{meta}")
+    return "\n".join(out)
 
-    # 2) Normalize git-style paths and diff --git headers
-    seg = _rewrite_patch_paths(seg, prefix)
-
-    # 3) Dry-run check with git
-    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".diff", encoding="utf-8") as tf:
-        tf.write(seg)
-        tf.flush()
-        tmp_path = tf.name
-
-    try:
-        subprocess.check_call(f"git apply --check {tmp_path}", shell=True, cwd=REPO_ROOT)
-        ok = True
-    except subprocess.CalledProcessError:
-        ok = False
-    finally:
-        try:
-            pathlib.Path(tmp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    return ok, seg
-
-
-def _validate_and_collect(segments: List[str]) -> List[str]:
+def _normalize_segment(segment: str, app_prefix: str) -> str:
     """
-    Keep only segments that pass 'git apply --check' after mandatory prefixing.
-    Deduplicate segments.
+    Force APP_DIR prefix on plain headers and normalize git-style headers.
+    No per-segment git check here; final apply happens once in git_ops.
     """
-    prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
-    kept: List[str] = []
-    seen = set()
+    # 1) Force prefix on ALL plain unified headers
+    seg = _force_prefix_all_headers(segment, app_prefix)
+    # 2) Normalize any git-style ('diff --git', '--- a/', '+++ b/') headers
+    seg = _rewrite_patch_paths(seg, app_prefix)
+    return seg if seg.endswith("\n") else seg + "\n"
 
-    for seg in segments:
-        ok, fixed_seg = _git_apply_check(seg, prefix=prefix)
-        if ok and fixed_seg not in seen:
-            kept.append(fixed_seg.rstrip("\n") + "\n")
-            seen.add(fixed_seg)
-
-    return kept
-
-
-def _append_candidate(container: List[str], candidate: str):
-    """Extract → validate → collect segments from candidate text and append to container."""
+def _append_candidate(container: List[str], candidate: str, app_prefix: str):
     segs = _extract_diff_segments(candidate)
-    valid = _validate_and_collect(segs)
-    container.extend(valid)
+    if not segs:
+        return
+    for s in segs:
+        normalized = _normalize_segment(s, app_prefix)
+        if normalized not in container:
+            container.append(normalized)
 
+# --- Orchestration ------------------------------------------------------------
 
-def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list):
+def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list, app_prefix: str):
     if not items:
         return
 
-    fx_map = {
+    fixers = {
         "k8s": fixer_k8s,
         "tf": fixer_tf,
         "java": fixer_java,
         "docker": fixer_docker,
     }
-    fx = fx_map[kind]
+    fx = fixers[kind]
 
     for it in items:
         # 1) Deterministic
         d = fx.try_deterministic(it)
         if d:
             log_topk(kind, it, query="(deterministic)", topk=[], mode="deterministic")
-            _append_candidate(diffs, d)
+            _append_candidate(diffs, d, app_prefix)
             continue
 
         # 2) RAG (repo-aware)
@@ -195,46 +149,40 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
         d = fx.try_rag_style(it, topk)
         if d:
             log_topk(kind, it, query=q, topk=topk, mode="rag")
-            _append_candidate(diffs, d)
+            _append_candidate(diffs, d, app_prefix)
             continue
 
         # 3) Trained-knowledge fallback (LLM prompt → diff)
         log_topk(kind, it, query=q or "(no-query)", topk=topk, mode="trained")
         prompt = build_patch_prompt(kind, it, topk)
         d = call_llm_for_diff(prompt)
-        _append_candidate(diffs, d)
-
+        _append_candidate(diffs, d, app_prefix)
 
 def main():
+    app_prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
+
     min_sev = os.getenv("MIN_SEVERITY", "HIGH").upper()
     findings = get_findings(min_sev)
     retriever = RepoRetriever(top_k=6)
     diffs: List[str] = []
 
-    handle_findings("k8s", findings.get("k8s", []), retriever, diffs)
-    handle_findings("tf", findings.get("tf", []), retriever, diffs)
-    handle_findings("java", findings.get("java", []), retriever, diffs)
-    handle_findings("docker", findings.get("docker", []), retriever, diffs)
+    handle_findings("k8s", findings.get("k8s", []), retriever, diffs, app_prefix)
+    handle_findings("tf", findings.get("tf", []), retriever, diffs, app_prefix)
+    handle_findings("java", findings.get("java", []), retriever, diffs, app_prefix)
+    handle_findings("docker", findings.get("docker", []), retriever, diffs, app_prefix)
 
     if not diffs:
         print("Agent generated no diffs; exiting.")
         return
 
-    # Join with blank line between segments
+    # Join with a blank line between segments
     patch = OUTPUT / "agent_patch.diff"
     patch.write_text("\n\n".join(diffs), encoding="utf-8")
 
-    # Apply diff on a new AI branch and open a PR
+    # Apply the rewritten patch once and open a PR
     br = ensure_branch_and_apply_diff(patch)
     pr = open_pr(br, "Agentic AI autofix (deterministic→RAG→trained)", f"Threshold: {min_sev}\nAutomated minimal diffs.")
-
-    # Save PR meta so the workflow can comment reliably
-    (OUTPUT / "agent_meta.json").write_text(
-        json.dumps({"branch": br, "pr_url": pr}, indent=2),
-        encoding="utf-8",
-    )
     print(f"Branch: {br}\nPR: {pr}")
-
 
 if __name__ == "__main__":
     main()
