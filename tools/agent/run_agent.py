@@ -4,7 +4,7 @@ import sys
 import json
 import pathlib
 import re
-from typing import List
+from typing import List, Set, Optional
 
 # ── Make 'tools/' the package root so 'agent' and 'embeddings' imports work ──
 HERE = pathlib.Path(__file__).resolve()
@@ -52,7 +52,9 @@ def _extract_diff_segments(text: str) -> List[str]:
     def flush(start: int, end: int):
         seg = "\n".join(lines[start:end]).strip("\n")
         if seg and ("--- " in seg) and ("+++ " in seg) and has_hunk(seg):
-            segs.append(seg + "\n")
+            if not seg.endswith("\n"):
+                seg += "\n"
+            segs.append(seg)
 
     while i < n:
         line = lines[i]
@@ -101,29 +103,65 @@ def _force_prefix_all_headers(segment: str, prefix: str) -> str:
         out.append(f"{mark} {path}{meta}")
     return "\n".join(out)
 
-def _normalize_segment(segment: str, app_prefix: str) -> str:
+def _html_unescape(text: str) -> str:
     """
-    Force APP_DIR prefix on plain headers and normalize git-style headers.
-    No per-segment git check here; final apply happens once in git_ops.
+    Unescape minimal HTML entities frequently seen in LLM outputs.
+    IMPORTANT: apply after headers were fixed (so we don't alter paths).
     """
-    # 1) Force prefix on ALL plain unified headers
+    # Order matters if inputs are double-encoded. Common case is single-encoded.
+    t = text
+    t = t.replace("&lt;", "<").replace("&gt;", ">")
+    t = t.replace("&quot;", '"').replace("&#39;", "'")
+    # Unescape '&' last to avoid turning &lt; into < prematurely
+    t = t.replace("&amp;", "&")
+    return t
+
+def _rewrite_and_unescape_segment(segment: str, app_prefix: str) -> str:
+    """
+    Force APP_DIR prefix on plain headers, normalize git-style headers,
+    then unescape HTML in the whole segment so body matches files.
+    """
     seg = _force_prefix_all_headers(segment, app_prefix)
-    # 2) Normalize any git-style ('diff --git', '--- a/', '+++ b/') headers
     seg = _rewrite_patch_paths(seg, app_prefix)
+    seg = _html_unescape(seg)
     return seg if seg.endswith("\n") else seg + "\n"
 
-def _append_candidate(container: List[str], candidate: str, app_prefix: str):
+def _target_file_from_segment(segment: str) -> Optional[str]:
+    """
+    Extract the target file path from the first '+++ ' header.
+    Return a normalized path without leading a/ or b/.
+    """
+    for line in segment.split("\n"):
+        if line.startswith("+++ "):
+            p = line[4:].strip()
+            # Strip trailing metadata after a tab, if present
+            if "\t" in p:
+                p = p.split("\t", 1)[0]
+            # Strip Git-style prefixes
+            if p.startswith("a/") or p.startswith("b/"):
+                p = p[2:]
+            return p
+    return None
+
+def _append_candidate(container: List[str], candidate: str, app_prefix: str, seen_paths: Set[str]):
     segs = _extract_diff_segments(candidate)
     if not segs:
         return
+
     for s in segs:
-        normalized = _normalize_segment(s, app_prefix)
+        normalized = _rewrite_and_unescape_segment(s, app_prefix)
+        # De-duplicate per target file to avoid conflicting hunks (e.g., multiple pom.xml changes)
+        target = _target_file_from_segment(normalized)
+        if target and target in seen_paths:
+            continue
         if normalized not in container:
             container.append(normalized)
+            if target:
+                seen_paths.add(target)
 
 # --- Orchestration ------------------------------------------------------------
 
-def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list, app_prefix: str):
+def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list, app_prefix: str, seen_paths: Set[str]):
     if not items:
         return
 
@@ -140,7 +178,7 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
         d = fx.try_deterministic(it)
         if d:
             log_topk(kind, it, query="(deterministic)", topk=[], mode="deterministic")
-            _append_candidate(diffs, d, app_prefix)
+            _append_candidate(diffs, d, app_prefix, seen_paths)
             continue
 
         # 2) RAG (repo-aware)
@@ -149,14 +187,14 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
         d = fx.try_rag_style(it, topk)
         if d:
             log_topk(kind, it, query=q, topk=topk, mode="rag")
-            _append_candidate(diffs, d, app_prefix)
+            _append_candidate(diffs, d, app_prefix, seen_paths)
             continue
 
         # 3) Trained-knowledge fallback (LLM prompt → diff)
         log_topk(kind, it, query=q or "(no-query)", topk=topk, mode="trained")
         prompt = build_patch_prompt(kind, it, topk)
         d = call_llm_for_diff(prompt)
-        _append_candidate(diffs, d, app_prefix)
+        _append_candidate(diffs, d, app_prefix, seen_paths)
 
 def main():
     app_prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
@@ -165,11 +203,12 @@ def main():
     findings = get_findings(min_sev)
     retriever = RepoRetriever(top_k=6)
     diffs: List[str] = []
+    seen_paths: Set[str] = set()
 
-    handle_findings("k8s", findings.get("k8s", []), retriever, diffs, app_prefix)
-    handle_findings("tf", findings.get("tf", []), retriever, diffs, app_prefix)
-    handle_findings("java", findings.get("java", []), retriever, diffs, app_prefix)
-    handle_findings("docker", findings.get("docker", []), retriever, diffs, app_prefix)
+    handle_findings("k8s", findings.get("k8s", []), retriever, diffs, app_prefix, seen_paths)
+    handle_findings("tf", findings.get("tf", []), retriever, diffs, app_prefix, seen_paths)
+    handle_findings("java", findings.get("java", []), retriever, diffs, app_prefix, seen_paths)
+    handle_findings("docker", findings.get("docker", []), retriever, diffs, app_prefix, seen_paths)
 
     if not diffs:
         print("Agent generated no diffs; exiting.")
