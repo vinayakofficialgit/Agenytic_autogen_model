@@ -25,13 +25,30 @@ def ensure_git_identity():
         run('git config user.name "CI Bot"')
 
 
+# ---------- Text transforms (order matters) ----------
+
 def _sanitize_patch(patch_text: str) -> str:
     """
     Minimal sanitization: normalize EOLs and remove Markdown code fences.
-    DO NOT unescape HTML here to avoid altering paths.
+    Do NOT do any path changes here.
     """
     t = patch_text.replace("\r\n", "\n").replace("\r", "\n")
-    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)
+    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)  # drop lines like ``` or ```lang
+    return t
+
+
+def _html_unescape(text: str) -> str:
+    """
+    Unescape minimal HTML entities AFTER headers have been normalized.
+    This ensures hunk bodies match repository files (e.g., pom.xml).
+    """
+    t = text
+    # Unescape < and > first (common in XML/Java bodies)
+    t = t.replace("&lt;", "<").replace("&gt;", ">")
+    # Quotes
+    t = t.replace("&quot;", '"').replace("&#39;", "'")
+    # Ampersand last
+    t = t.replace("&amp;", "&")
     return t
 
 
@@ -62,7 +79,6 @@ def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
     # --- a/<path>[<TAB>meta]   and   +++ b/<path>[<TAB>meta]
     def repl_hdr_ab(mark: str):
         def _inner(m: re.Match) -> str:
-            # m.group(1) is the path part, m.group(2) optional meta (tab + rest)
             head = add_prefix_if_needed(m.group(1))
             meta = m.group(2) or ""
             return f"{mark}{head}{meta}"
@@ -87,11 +103,25 @@ def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
     return text
 
 
+# Force ALL headers to have the prefix even if they escaped the regexes above (belt & suspenders)
+_HEADER_LINE = re.compile(r"^(---|\+\+\+)\s+(\S+)(.*)$", re.M)
+
+def _force_prefix_all_headers(text: str, prefix: str) -> str:
+    def repl(m: re.Match) -> str:
+        mark, path, meta = m.groups()
+        if not (path.startswith(prefix) or path.startswith("a/") or path.startswith("b/") or path.startswith("/") or path.startswith("./")):
+            path = prefix + path
+        return f"{mark} {path}{meta}"
+    return _HEADER_LINE.sub(repl, text)
+
+
+# ---------- Main apply flow ----------
+
 def ensure_branch_and_apply_diff(
     patch_path: pathlib.Path, module_prefix: Optional[str] = None
 ) -> str:
     """
-    Create a new branch and apply a path-rewritten patch (prefix enforced) once.
+    Create a new branch and apply a fully-rewritten patch (prefix enforced + HTML unescaped) once.
     """
     ensure_git_identity()
     br = f"ai-autofix-{int(time.time())}"
@@ -100,16 +130,25 @@ def ensure_branch_and_apply_diff(
     patch_path = pathlib.Path(patch_path).resolve()
     prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
 
-    # Read, sanitize minimally, REWRITE paths BEFORE applying.
+    # 1) Read & sanitize
     txt = patch_path.read_text(encoding="utf-8", errors="ignore")
     txt = _sanitize_patch(txt)
+
+    # 2) Rewrite paths (git-style + plain unified)
     txt = _rewrite_patch_paths(txt, prefix)
 
+    # 3) Force prefix on ANY remaining ---/+++ headers (with or without metadata)
+    txt = _force_prefix_all_headers(txt, prefix)
+
+    # 4) Unescape HTML entities in BODY so hunks match real files
+    txt = _html_unescape(txt)
+
+    # Save final patch we will apply
     prefixed = patch_path.with_suffix(".prefixed.diff")
     prefixed.write_text(txt, encoding="utf-8")
 
-    # Preview & dry-run check
-    run(f"sed -n '1,150p' {prefixed}")
+    # Preview & dry-run check (show more for visibility)
+    run(f"sed -n '1,300p' {prefixed}")
     run(f"git apply --check {prefixed} || true")
 
     # Apply once
