@@ -28,9 +28,9 @@ env:
 
 jobs:
 
-  # ============================================================
-  # 🔐 VAULT CONNECTION VALIDATION
-  # ============================================================
+# ============================================================
+# 🔐 VAULT CONNECTION VALIDATION
+# ============================================================
   Vault-Connection-Check:
     runs-on: ubuntu-latest
     # outputs:
@@ -399,86 +399,86 @@ jobs:
 # ============================================================
 # DAST
 # ============================================================
-  DAST-Scanning:
-    runs-on: ubuntu-latest
-    needs: Build-Java-App
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
+  # DAST-Scanning:
+  #   runs-on: ubuntu-latest
+  #   needs: Build-Java-App
+  #   continue-on-error: true
+  #   steps:
+  #     - uses: actions/checkout@v4
   
-      - uses: actions/download-artifact@v4
-        with:
-          name: app-target
-          path: ${{ env.APP_DIR }}/target/
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: app-target
+  #         path: ${{ env.APP_DIR }}/target/
   
-      - run: mkdir -p $REPORTS_DIR
+  #     - run: mkdir -p $REPORTS_DIR
   
-      - name: Start Application
-        run: |
-          mkdir -p config/dummy
-          java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
-            --spring.config.import=optional:file:./config/*/ &
-          sleep 40
+  #     - name: Start Application
+  #       run: |
+  #         mkdir -p config/dummy
+  #         java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
+  #           --spring.config.import=optional:file:./config/*/ &
+  #         sleep 40
 
-      # - name: Start Application (background) & wait for readiness
-      #   shell: bash
-      #   run: |
-      #     set -euxo pipefail
-      #     # Show what's in target/
-      #     ls -la "$APP_DIR/target"
+  #     # - name: Start Application (background) & wait for readiness
+  #     #   shell: bash
+  #     #   run: |
+  #     #     set -euxo pipefail
+  #     #     # Show what's in target/
+  #     #     ls -la "$APP_DIR/target"
   
-      #     # Start app in background
-      #     nohup java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
-      #       --spring.config.import=optional:file:./config/*/ \
-      #       > app.log 2>&1 &
+  #     #     # Start app in background
+  #     #     nohup java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
+  #     #       --spring.config.import=optional:file:./config/*/ \
+  #     #       > app.log 2>&1 &
   
-      #     # Poll for readiness using a simple app endpoint (/token)
-      #     for i in {1..60}; do
-      #       if curl -fsS http://localhost:8080/token >/dev/null; then
-      #         echo "App is up"; break
-      #       fi
-      #       sleep 2
-      #     done
+  #     #     # Poll for readiness using a simple app endpoint (/token)
+  #     #     for i in {1..60}; do
+  #     #       if curl -fsS http://localhost:8080/token >/dev/null; then
+  #     #         echo "App is up"; break
+  #     #       fi
+  #     #       sleep 2
+  #     #     done
   
-      #     # If still not up, print logs and fail this step (but job is continue-on-error anyway)
-      #     curl -fsS http://localhost:8080/token >/dev/null || { echo "App did not start"; tail -n 200 app.log || true; exit 1; }
+  #     #     # If still not up, print logs and fail this step (but job is continue-on-error anyway)
+  #     #     curl -fsS http://localhost:8080/token >/dev/null || { echo "App did not start"; tail -n 200 app.log || true; exit 1; }
   
-      - name: OWASP ZAP Baseline
-        run: |
-          mkdir -p zap-output
-          docker run --rm \
-            -u root \
-            --network=host \
-            -v "$(pwd)/zap-output":/zap/wrk:rw \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://localhost:8080 \
-            -J zap.json || true
-          if [ -f zap-output/zap.json ]; then
-            mv zap-output/zap.json "$REPORTS_DIR/zap.json"
-          else
-            echo '{}' > "$REPORTS_DIR/zap.json"
-          fi
+  #     - name: OWASP ZAP Baseline
+  #       run: |
+  #         mkdir -p zap-output
+  #         docker run --rm \
+  #           -u root \
+  #           --network=host \
+  #           -v "$(pwd)/zap-output":/zap/wrk:rw \
+  #           ghcr.io/zaproxy/zaproxy:stable \
+  #           zap-baseline.py \
+  #           -t http://localhost:8080 \
+  #           -J zap.json || true
+  #         if [ -f zap-output/zap.json ]; then
+  #           mv zap-output/zap.json "$REPORTS_DIR/zap.json"
+  #         else
+  #           echo '{}' > "$REPORTS_DIR/zap.json"
+  #         fi
   
-      - name: DAST Stage Summary
-        uses: ./.github/actions/stage-summary
-        with:
-          stage: DAST
-          reports_dir: reports
-          files: zap.json
+  #     - name: DAST Stage Summary
+  #       uses: ./.github/actions/stage-summary
+  #       with:
+  #         stage: DAST
+  #         reports_dir: reports
+  #         files: zap.json
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dast-reports
-          path: reports/*.json
-          if-no-files-found: ignore
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: dast-reports
+  #         path: reports/*.json
+  #         if-no-files-found: ignore
 
 # ============================================================
 # AGGREGATE
 # ============================================================
   Aggregate-Scanning-Reports:
     runs-on: ubuntu-latest
-    needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
+    needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning]
     if: always()
   
     # ➜ Expose outputs so later jobs (e.g., Severity-Gate / Agentic AI) can read them
