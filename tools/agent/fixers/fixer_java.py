@@ -32,30 +32,16 @@ def try_deterministic(item: dict) -> str | None:
     changed = raw
 
     # Replace concatenated SQL + subsequent return with parameterized version.
-    # Matches: String sql = "... '" + name + "'";  <newline>  return jdbc.queryForList(sql);
+    # Capture and reuse indentation so braces remain intact.
     pattern = re.compile(
-        r'(?ms)'
-        r'(String\s+sql\s*=\s*"SELECT\s+\*\s+FROM\s+USERS\s+WHERE\s+NAME\s*=\s*\'"\s*\+\s*name\s*\+\s*"\'";\s*)'
-        r'(return\s+jdbc\.queryForList\s*\(\s*sql\s*\)\s*;\s*)'
+        r'(?ms)^([ \t]*)String\s+sql\s*=\s*"SELECT\s+\*\s+FROM\s+USERS\s+WHERE\s+NAME\s*=\s*\'"\s*\+\s*name\s*\+\s*"\'";\s*\n'
+        r'([ \t]*)return\s+jdbc\.queryForList\s*\(\s*sql\s*\)\s*;\s*'
     )
     replacement = (
-        'String sql = "SELECT * FROM USERS WHERE NAME = ?";\n'
-        '        return jdbc.queryForList(sql, name);\n'
+        r'\1String sql = "SELECT * FROM USERS WHERE NAME = ?";\n'
+        r'\2return jdbc.queryForList(sql, name);\n'
     )
-    changed, n = pattern.subn(replacement, changed)
-
-    if n == 0:
-        # Fallback: only swap the SQL and upgrade the return if present
-        changed = re.sub(
-            r'String\s+sql\s*=\s*"SELECT\s+\*\s+FROM\s+USERS\s+WHERE\s+NAME\s*=\s*\'"\s*\+\s*name\s*\+\s*"\'";',
-            'String sql = "SELECT * FROM USERS WHERE NAME = ?";',
-            changed,
-        )
-        changed = re.sub(
-            r'return\s+jdbc\.queryForList\s*\(\s*sql\s*\)\s*;',
-            'return jdbc.queryForList(sql, name);',
-            changed,
-        )
+    changed, _ = pattern.subn(replacement, changed)
 
     if changed != raw:
         return _write_diff(raw, changed, path)

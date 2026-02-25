@@ -2,8 +2,11 @@
 import os
 import sys
 import json
+import shutil
+import tempfile
+import subprocess
 import pathlib
-from typing import List
+from typing import List, Tuple
 
 # ── Make 'tools/' the package root so 'agent' and 'embeddings' imports work ──
 HERE = pathlib.Path(__file__).resolve()
@@ -16,7 +19,13 @@ from agent.utils.debug import log_topk
 from embeddings.retriever import RepoRetriever
 from agent.pick_findings import get_findings
 from agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
-from agent.utils.git_ops import ensure_branch_and_apply_diff, open_pr
+# reuse sanitizers/rewriter for consistent behavior
+from agent.utils.git_ops import (
+    ensure_branch_and_apply_diff,
+    open_pr,
+    _sanitize_patch as sanitize_patch_text,
+    _rewrite_patch_paths,
+)
 
 # fixers
 from agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
@@ -25,44 +34,30 @@ OUTPUT = pathlib.Path(REPO_ROOT, "agent_output")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
-def _sanitize_text(text: str) -> str:
-    """Remove markdown fences, unescape HTML, normalize EOLs to LF."""
-    if not text:
-        return ""
-    t = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Drop lines that are just code fences (``` or ```lang)
-    lines = []
-    for line in t.split("\n"):
-        if line.strip().startswith("```"):
-            continue
-        lines.append(line)
-    t = "\n".join(lines)
-    # Basic HTML unescape sufficient for our content
-    t = t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-    return t
-
-
 def _extract_diff_segments(text: str) -> List[str]:
     """
-    Extract only valid diff segments from text, in order.
-      - git-style blocks that start with 'diff --git' (kept verbatim)
-      - plain unified blocks that start with '--- <path>' then '+++ <path>'
-    All other text is discarded.
+    Extract only valid diff segments from arbitrary text, in order.
+    We accept:
+      - git-style blocks starting with 'diff --git ' (and containing at least one '@@')
+      - plain unified blocks starting with '--- <path>' then '+++ <path>' (with at least one '@@')
+    All other text is dropped.
     """
-    t = _sanitize_text(text)
+    # First sanitize: normalize EOLs, drop code fences, unescape HTML
+    t = sanitize_patch_text(text)
     lines = t.split("\n")
     segs: List[str] = []
-    i = 0
-    n = len(lines)
+    i, n = 0, len(lines)
 
-    def flush_segment(start: int, end: int):
+    def has_hunk_markers(block: str) -> bool:
+        # Minimal validity check: unified hunks must contain at least one '@@'
+        return "@@ " in block
+
+    def flush(start: int, end: int):
         seg = "\n".join(lines[start:end]).strip("\n")
-        if seg:
-            # minimal validity check: must contain both headers
-            if ("--- " in seg) and ("+++ " in seg):
-                if not seg.endswith("\n"):
-                    seg += "\n"
-                segs.append(seg)
+        if seg and ("--- " in seg) and ("+++ " in seg) and has_hunk_markers(seg):
+            if not seg.endswith("\n"):
+                seg += "\n"
+            segs.append(seg)
 
     while i < n:
         line = lines[i]
@@ -71,34 +66,88 @@ def _extract_diff_segments(text: str) -> List[str]:
         if line.startswith("diff --git "):
             start = i
             i += 1
-            # consume until next 'diff --git ' or EOF
+            # consume until next git-style header or EOF
             while i < n and not lines[i].startswith("diff --git "):
                 i += 1
-            flush_segment(start, i)
+            flush(start, i)
             continue
 
-        # Case 2: plain unified segment '--- <path>' followed by '+++ <path>'
+        # Case 2: plain unified '--- ' then '+++ '
         if line.startswith("--- ") and (i + 1 < n) and lines[i + 1].startswith("+++ "):
             start = i
             i += 2
-            # consume until next segment start (--- or diff --git) or EOF
-            while i < n and not (
-                lines[i].startswith("--- ") or lines[i].startswith("diff --git ")
-            ):
+            # consume until next '--- ' or 'diff --git ' or EOF
+            while i < n and not (lines[i].startswith("--- ") or lines[i].startswith("diff --git ")):
                 i += 1
-            flush_segment(start, i)
+            flush(start, i)
             continue
 
-        # Otherwise skip noise line
+        # otherwise skip
         i += 1
 
     return segs
 
 
+def _git_apply_check(segment_text: str, prefix: str | None = None) -> Tuple[bool, str]:
+    """
+    Write the segment to a temp file and run 'git apply --check'.
+    If prefix is provided, rewrite paths before checking.
+    Returns (ok, possibly_rewritten_segment_text).
+    """
+    seg = segment_text
+    if prefix:
+        seg = _rewrite_patch_paths(seg, prefix)
+
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".diff", encoding="utf-8") as tf:
+        tf.write(seg)
+        tf.flush()
+        tmp_path = tf.name
+
+    try:
+        subprocess.check_call(f"git apply --check {tmp_path}", shell=True, cwd=REPO_ROOT)
+        ok = True
+    except subprocess.CalledProcessError:
+        ok = False
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    return ok, seg
+
+
+def _validate_and_collect(segments: List[str]) -> List[str]:
+    """
+    Keep only segments that pass 'git apply --check' as-is OR with module prefix.
+    Deduplicate segments (exact text) to avoid repetitions.
+    """
+    prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
+    kept: List[str] = []
+    seen = set()
+
+    for seg in segments:
+        # Try as-is
+        ok, use_seg = _git_apply_check(seg, prefix=None)
+        if not ok:
+            # Try with module prefix
+            ok, use_seg = _git_apply_check(seg, prefix=prefix)
+        if ok:
+            if use_seg not in seen:
+                kept.append(use_seg.rstrip("\n") + "\n")
+                seen.add(use_seg)
+        else:
+            # Drop invalid segment silently; it's not safe to apply.
+            pass
+
+    return kept
+
+
 def _append_candidate(container: List[str], candidate: str):
-    """Extract segments from candidate and append them to container."""
-    for seg in _extract_diff_segments(candidate):
-        container.append(seg)
+    """Extract → validate → collect segments from candidate."""
+    segs = _extract_diff_segments(candidate)
+    valid = _validate_and_collect(segs)
+    container.extend(valid)
 
 
 def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list):
@@ -131,6 +180,7 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
             continue
 
         # 3) Trained-knowledge fallback (LLM prompt → diff)
+        # NOTE: We'll only keep it if it survives segment validation.
         log_topk(kind, it, query=q or "(no-query)", topk=topk, mode="trained")
         prompt = build_patch_prompt(kind, it, topk)
         d = call_llm_for_diff(prompt)
