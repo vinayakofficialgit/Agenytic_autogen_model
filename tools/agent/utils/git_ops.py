@@ -4,6 +4,7 @@ import time
 import os
 import pathlib
 import re
+from typing import Optional
 
 
 def run(cmd: str):
@@ -35,17 +36,20 @@ def _sanitize(text: str) -> str:
 
 
 def _html_unescape_recursive(text: str) -> str:
-    """Repeated HTML unescaping until stable."""
+    """
+    Fully unescape HTML entities (recursively) so diff hunks match repo files.
+    Order matters: unescape & first, then the rest; repeat until stable.
+    """
     prev = None
     cur = text
-    for _ in range(10):  # enough to unwrap nested escapes
+    for _ in range(10):  # handles nested/double encodings
         prev = cur
         cur = (cur
+               .replace("&amp;", "&")
                .replace("&lt;", "<")
                .replace("&gt;", ">")
                .replace("&quot;", '"')
-               .replace("&#39;", "'")
-               .replace("&amp;", "&"))
+               .replace("&#39;", "'"))
         if cur == prev:
             break
     return cur
@@ -55,53 +59,63 @@ def _html_unescape_recursive(text: str) -> str:
 #           PATH REWRITING (BULLETPROOF)
 # ---------------------------------------------------------
 
-HEADER = re.compile(r"^(---|\+\+\+)\s+(\S+)(.*)$")
+_HEADER_RE = re.compile(r"^(---|\+\+\+)\s+([^\t\r\n]+)(\t[^\r\n]+)?$")
 
 def _normalize_header(line: str, prefix: str) -> str:
-    m = HEADER.match(line)
+    """
+    Normalize ANY '--- path[<meta>]' or '+++ path[<meta>]' header.
+    Preserves trailing metadata (tabs/timestamps).
+    """
+    m = _HEADER_RE.match(line)
     if not m:
         return line
-    mark, path, meta = m.groups()
 
-    # handle git-style a/ and b/
+    mark, path, meta = m.groups()
+    meta = meta or ""
+
+    # Git-style a/ and b/
     if path.startswith("a/") or path.startswith("b/"):
-        lead = path[:2]   # 'a/' or 'b/'
+        lead = path[:2]  # 'a/' or 'b/'
         core = path[2:]
         if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
             core = prefix + core
         return f"{mark} {lead}{core}{meta}"
 
-    # plain unified header
+    # Plain unified header
     if not (
-        path.startswith(prefix)
-        or path.startswith("/")
-        or path.startswith("./")
+        path.startswith(prefix) or path.startswith("/") or path.startswith("./")
     ):
         path = prefix + path
 
     return f"{mark} {path}{meta}"
 
 
+_DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+
 def _normalize_diff_git(line: str, prefix: str) -> str:
-    if not line.startswith("diff --git "):
+    """
+    Normalize: diff --git a/<path> b/<path>
+    """
+    m = _DIFF_GIT_RE.match(line)
+    if not m:
         return line
 
-    parts = line.strip().split()
-    # expect: diff --git a/foo b/bar
-    if len(parts) >= 4 and parts[2].startswith("a/") and parts[3].startswith("b/"):
-        a_path = parts[2][2:]
-        b_path = parts[3][2:]
-        if not a_path.startswith(prefix):
-            a_path = prefix + a_path
-        if not b_path.startswith(prefix):
-            b_path = prefix + b_path
-        return f"diff --git a/{a_path} b/{b_path}"
-
-    return line
+    a_path, b_path = m.groups()
+    if not (a_path.startswith(prefix) or a_path.startswith("/") or a_path.startswith("./")):
+        a_path = prefix + a_path
+    if not (b_path.startswith(prefix) or b_path.startswith("/") or b_path.startswith("./")):
+        b_path = prefix + b_path
+    return f"diff --git a/{a_path} b/{b_path}"
 
 
 def _rewrite_patch_paths(text: str, prefix: str) -> str:
-    """Normalize ALL headers across the file."""
+    """
+    PUBLIC helper:
+    Normalize ALL headers across the patch:
+      - 'diff --git a/... b/...'
+      - '--- a/<path>[meta]' / '+++ b/<path>[meta]'
+      - '--- <path>[meta]'  / '+++ <path>[meta]'
+    """
     out = []
     for line in text.split("\n"):
         if line.startswith("diff --git "):
@@ -116,7 +130,10 @@ def _rewrite_patch_paths(text: str, prefix: str) -> str:
 #                    MAIN APPLY FLOW
 # ---------------------------------------------------------
 
-def ensure_branch_and_apply_diff(patch_path: pathlib.Path, module_prefix=None) -> str:
+def ensure_branch_and_apply_diff(
+    patch_path: pathlib.Path, module_prefix: Optional[str] = None
+) -> str:
+    """Create branch, rewrite patch, unescape HTML, apply once."""
     ensure_git_identity()
 
     branch = f"ai-autofix-{int(time.time())}"
@@ -124,23 +141,23 @@ def ensure_branch_and_apply_diff(patch_path: pathlib.Path, module_prefix=None) -
 
     prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
 
-    # 1) load raw patch
+    # 1) Load raw patch
     raw = pathlib.Path(patch_path).read_text(encoding="utf-8", errors="ignore")
 
-    # 2) sanitize markdown & normalize EOL
+    # 2) Sanitize markdown + normalize EOLs
     patched = _sanitize(raw)
 
-    # 3) rewrite ALL headers (diff --git, ---/+++)
+    # 3) Rewrite ALL headers
     patched = _rewrite_patch_paths(patched, prefix)
 
-    # 4) NOW unescape HTML entities everywhere
+    # 4) Fully unescape HTML so hunks match actual files
     patched = _html_unescape_recursive(patched)
 
-    # 5) write final patch
+    # 5) Write final patch
     out = patch_path.with_suffix(".prefixed.diff")
     out.write_text(patched, encoding="utf-8")
 
-    # 6) Preview ENTIRE patch so CI logs show everything
+    # 6) Show full patch
     run(f"echo '--- FINAL PATCH START ---'")
     run(f"wc -l {out}")
     run(f"cat {out}")
@@ -149,7 +166,20 @@ def ensure_branch_and_apply_diff(patch_path: pathlib.Path, module_prefix=None) -
     # 7) Dry run (non-fatal)
     run(f"git apply --check {out} || true")
 
-    # 8) Apply for real
+    # 8) Apply
     run(f"git apply --whitespace=fix {out}")
 
     return branch
+
+
+def open_pr(branch: str, title: str, body: str) -> str:
+    """Used by run_agent.py to open PR via gh."""
+    try:
+        out = subprocess.check_output(
+            f'gh pr create --title "{title}" --body "{body}" --head "{branch}"',
+            shell=True, stderr=subprocess.STDOUT
+        ).decode()
+        return out.strip()
+    except Exception as e:
+        print(f"gh failed: {e}")
+        return "(install gh to auto-open PR)"
