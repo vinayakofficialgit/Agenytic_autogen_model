@@ -95,9 +95,27 @@ def _git_apply_check(segment_text: str, prefix: str | None = None) -> Tuple[bool
     Returns (ok, possibly_rewritten_segment_text).
     """
     seg = segment_text
+
+    # ALWAYS enforce prefix normalization first
+    enforced = []
+    for line in seg.split("\n"):
+        if line.startswith("--- "):
+            path = line[4:].strip()
+            if not path.startswith(prefix):
+                line = "--- " + prefix + path
+        elif line.startswith("+++ "):
+            path = line[4:].strip()
+            if not path.startswith(prefix):
+                line = "+++ " + prefix + path
+        enforced.append(line)
+
+    seg = "\n".join(enforced)
+
+    # Now optionally try rewrite using the advanced path rewriter
     if prefix:
         seg = _rewrite_patch_paths(seg, prefix)
 
+    # Write to temp file
     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".diff", encoding="utf-8") as tf:
         tf.write(seg)
         tf.flush()
@@ -109,38 +127,82 @@ def _git_apply_check(segment_text: str, prefix: str | None = None) -> Tuple[bool
     except subprocess.CalledProcessError:
         ok = False
     finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        os.unlink(tmp_path)
 
     return ok, seg
 
 
 def _validate_and_collect(segments: List[str]) -> List[str]:
     """
-    Keep only segments that pass 'git apply --check' as-is OR with module prefix.
-    Deduplicate segments (exact text) to avoid repetitions.
+    Keep only segments that pass 'git apply --check' after mandatory prefixing.
+    Deduplicate segments.
     """
     prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
     kept: List[str] = []
     seen = set()
 
     for seg in segments:
-        # Try as-is
-        ok, use_seg = _git_apply_check(seg, prefix=None)
-        if not ok:
-            # Try with module prefix
-            ok, use_seg = _git_apply_check(seg, prefix=prefix)
+        ok, fixed_seg = _git_apply_check(seg, prefix=prefix)
         if ok:
-            if use_seg not in seen:
-                kept.append(use_seg.rstrip("\n") + "\n")
-                seen.add(use_seg)
-        else:
-            # Drop invalid segment silently; it's not safe to apply.
-            pass
+            if fixed_seg not in seen:
+                kept.append(fixed_seg.rstrip("\n") + "\n")
+                seen.add(fixed_seg)
 
     return kept
+
+# def _git_apply_check(segment_text: str, prefix: str | None = None) -> Tuple[bool, str]:
+#     """
+#     Write the segment to a temp file and run 'git apply --check'.
+#     If prefix is provided, rewrite paths before checking.
+#     Returns (ok, possibly_rewritten_segment_text).
+#     """
+#     seg = segment_text
+#     if prefix:
+#         seg = _rewrite_patch_paths(seg, prefix)
+
+#     with tempfile.NamedTemporaryFile("w", delete=False, suffix=".diff", encoding="utf-8") as tf:
+#         tf.write(seg)
+#         tf.flush()
+#         tmp_path = tf.name
+
+#     try:
+#         subprocess.check_call(f"git apply --check {tmp_path}", shell=True, cwd=REPO_ROOT)
+#         ok = True
+#     except subprocess.CalledProcessError:
+#         ok = False
+#     finally:
+#         try:
+#             os.unlink(tmp_path)
+#         except Exception:
+#             pass
+
+#     return ok, seg
+
+
+# def _validate_and_collect(segments: List[str]) -> List[str]:
+#     """
+#     Keep only segments that pass 'git apply --check' as-is OR with module prefix.
+#     Deduplicate segments (exact text) to avoid repetitions.
+#     """
+#     prefix = (os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
+#     kept: List[str] = []
+#     seen = set()
+
+#     for seg in segments:
+#         # Try as-is
+#         ok, use_seg = _git_apply_check(seg, prefix=None)
+#         if not ok:
+#             # Try with module prefix
+#             ok, use_seg = _git_apply_check(seg, prefix=prefix)
+#         if ok:
+#             if use_seg not in seen:
+#                 kept.append(use_seg.rstrip("\n") + "\n")
+#                 seen.add(use_seg)
+#         else:
+#             # Drop invalid segment silently; it's not safe to apply.
+#             pass
+
+#     return kept
 
 
 def _append_candidate(container: List[str], candidate: str):
