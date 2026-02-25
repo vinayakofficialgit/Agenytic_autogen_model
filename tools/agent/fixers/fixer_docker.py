@@ -1,4 +1,5 @@
-import pathlib, difflib, re
+import pathlib
+import difflib
 from typing import List, Dict, Any
 
 def query_for(item: dict) -> str:
@@ -12,12 +13,16 @@ def _write_diff(old: str, new: str, path: str) -> str:
     b = new.splitlines(keepends=True)
     return "".join(difflib.unified_diff(a, b, fromfile=path, tofile=path))
 
-def try_deterministic(item: dict) -> str|None:
+def try_deterministic(item: dict) -> str | None:
     # We’ll harden java-pilot-app/Dockerfile if present
     path = "java-pilot-app/Dockerfile"
     p = pathlib.Path(path)
-    if not p.exists(): return None
+    if not p.exists():
+        return None
+
     raw = _read(path)
+
+    # If already using eclipse-temurin:17-jre and has USER, consider it somewhat hardened
     if "FROM eclipse-temurin:17-jre" in raw and "USER" in raw:
         return None  # already somewhat hardened
 
@@ -40,5 +45,5 @@ ENTRYPOINT ["java","-jar","/app/app.jar"]
 """
     return _write_diff(raw, hardened, path)
 
-def try_rag_style(item: dict, topk: List[Dict[str,Any]]) -> str|None:
+def try_rag_style(item: dict, topk: List[Dict[str, Any]]) -> str | None:
     return None
