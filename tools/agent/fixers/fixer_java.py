@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import pathlib
 import difflib
 import re
@@ -16,7 +17,10 @@ def _read(p: str) -> str:
 def _write_diff(old: str, new: str, path: str) -> str:
     a = old.splitlines(keepends=True)
     b = new.splitlines(keepends=True)
-    return "".join(difflib.unified_diff(a, b, fromfile=path, tofile=path))
+    out = "".join(difflib.unified_diff(a, b, fromfile=path, tofile=path))
+    if not out.endswith("\n"):
+        out += "\n"
+    return out
 
 
 def try_deterministic(item: dict) -> str | None:
@@ -27,12 +31,31 @@ def try_deterministic(item: dict) -> str | None:
     raw = _read(path)
     changed = raw
 
-    # Very targeted SQL concat → parameterized pattern (example)
-    changed = re.sub(
-        r'String\s+sql\s*=\s*"SELECT \* FROM USERS WHERE NAME = \'" \+ ([a-zA-Z_][a-zA-Z0-9_]*) \+ "\'"',
-        r'String sql = "SELECT * FROM USERS WHERE NAME = ?";\n        return jdbc.queryForList(sql, \1);',
-        changed,
+    # Replace concatenated SQL + subsequent return with parameterized version.
+    # Matches: String sql = "... '" + name + "'";  <newline>  return jdbc.queryForList(sql);
+    pattern = re.compile(
+        r'(?ms)'
+        r'(String\s+sql\s*=\s*"SELECT\s+\*\s+FROM\s+USERS\s+WHERE\s+NAME\s*=\s*\'"\s*\+\s*name\s*\+\s*"\'";\s*)'
+        r'(return\s+jdbc\.queryForList\s*\(\s*sql\s*\)\s*;\s*)'
     )
+    replacement = (
+        'String sql = "SELECT * FROM USERS WHERE NAME = ?";\n'
+        '        return jdbc.queryForList(sql, name);\n'
+    )
+    changed, n = pattern.subn(replacement, changed)
+
+    if n == 0:
+        # Fallback: only swap the SQL and upgrade the return if present
+        changed = re.sub(
+            r'String\s+sql\s*=\s*"SELECT\s+\*\s+FROM\s+USERS\s+WHERE\s+NAME\s*=\s*\'"\s*\+\s*name\s*\+\s*"\'";',
+            'String sql = "SELECT * FROM USERS WHERE NAME = ?";',
+            changed,
+        )
+        changed = re.sub(
+            r'return\s+jdbc\.queryForList\s*\(\s*sql\s*\)\s*;',
+            'return jdbc.queryForList(sql, name);',
+            changed,
+        )
 
     if changed != raw:
         return _write_diff(raw, changed, path)

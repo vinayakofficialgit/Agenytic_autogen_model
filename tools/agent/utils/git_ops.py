@@ -25,6 +25,19 @@ def ensure_git_identity():
         run('git config user.name "CI Bot"')
 
 
+def _sanitize_patch(patch_text: str) -> str:
+    """
+    Remove markdown code fences and HTML escapes that corrupt unified diffs.
+    Normalize line endings to LF.
+    """
+    t = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    # Drop lines that are just fences, e.g. ``` or ```lang
+    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)
+    # Basic HTML unescape (sufficient for XML/Java in this repo)
+    t = t.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    return t
+
+
 def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
     """
     Prefix repo paths in unified diffs with <prefix> (e.g., 'java-pilot-app/').
@@ -32,9 +45,9 @@ def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
       - 'diff --git a/<path> b/<path>'
       - '--- a/<path>' / '+++ b/<path>'
       - '--- <path>'  / '+++ <path>'
-    Normalizes line endings to LF.
+    Assumes the text is already sanitized and LF-normalized.
     """
-    text = patch_text.replace("\r\n", "\n").replace("\r", "\n")
+    text = patch_text
 
     def add_prefix_if_needed(p: str) -> str:
         if p.startswith(prefix) or p.startswith("/") or p.startswith("./"):
@@ -78,7 +91,7 @@ def ensure_branch_and_apply_diff(
 ) -> str:
     """
     Create a new branch, try to apply the patch. If it fails,
-    rewrite paths with the module prefix (env APP_DIR or 'java-pilot-app/') and retry once.
+    sanitize + rewrite paths with the module prefix and retry once.
     """
     ensure_git_identity()
     br = f"ai-autofix-{int(time.time())}"
@@ -86,28 +99,30 @@ def ensure_branch_and_apply_diff(
 
     patch_path = pathlib.Path(patch_path).resolve()
 
-    # Preview & validate BEFORE first apply
-    run(f"sed -n '1,150p' {patch_path}")
-    run(f"git apply --check {patch_path} || true")
+    # --- First attempt: sanitize original and apply ---
+    raw_txt = patch_path.read_text(encoding="utf-8", errors="ignore")
+    sanitized_txt = _sanitize_patch(raw_txt)
+    sanitized = patch_path.with_suffix(".sanitized.diff")
+    sanitized.write_text(sanitized_txt, encoding="utf-8")
+
+    run(f"sed -n '1,150p' {sanitized}")
+    run(f"git apply --check {sanitized} || true")
 
     try:
-        run(f"git apply --whitespace=fix {patch_path}")
+        run(f"git apply --whitespace=fix {sanitized}")
         return br
     except subprocess.CalledProcessError:
-        # Fallback: rewrite paths and retry
+        # --- Second attempt: prefix paths on sanitized text ---
         prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
         print(f"Patch apply failed once. Retrying with module prefix '{prefix}' ...")
-        txt = patch_path.read_text(encoding="utf-8", errors="ignore")
-        txt = txt.replace("\r\n", "\n").replace("\r", "\n")
-        txt2 = _rewrite_patch_paths(txt, prefix)
-        patched = patch_path.with_suffix(".prefixed.diff")
-        patched.write_text(txt2, encoding="utf-8")
+        prefixed_txt = _rewrite_patch_paths(sanitized_txt, prefix)
+        prefixed = patch_path.with_suffix(".prefixed.diff")
+        prefixed.write_text(prefixed_txt, encoding="utf-8")
 
-        # Preview & validate the prefixed patch BEFORE second apply
-        run(f"sed -n '1,150p' {patched}")
-        run(f"git apply --check {patched} || true")
+        run(f"sed -n '1,150p' {prefixed}")
+        run(f"git apply --check {prefixed} || true")
 
-        run(f"git apply --whitespace=fix {patched}")
+        run(f"git apply --whitespace=fix {prefixed}")
         return br
 
 
