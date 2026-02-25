@@ -33,18 +33,18 @@ def _sanitize_patch(patch_text: str) -> str:
     Do NOT touch paths here.
     """
     t = patch_text.replace("\r\n", "\n").replace("\r", "\n")
-    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)  # drop ``` or ```lang lines
+    # Drop lines that are just code fences like ``` or ```lang
+    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)
     return t
 
 
 def _html_unescape_all(text: str) -> str:
     """
     Unescape HTML entities in the entire patch AFTER headers have been normalized.
-    Repeat until stabilized to handle doubly-encoded input.
+    Repeat a few times in case of double encoding.
     """
     prev = None
     cur = text
-    # repeat a few times until no change
     for _ in range(3):
         prev = cur
         cur = (cur
@@ -64,11 +64,11 @@ def _rewrite_diff_git_line(line: str, prefix: str) -> str:
     """
     if not line.startswith("diff --git "):
         return line
-    # Format: diff --git a/foo b/bar
     parts = line.strip().split()
-    if len(parts) >= 4 and parts[1].startswith("a/") and parts[2].startswith("b/"):
-        a_path = parts[1][2:]
-        b_path = parts[2][2:]
+    # Expected: ["diff", "--git", "a/...", "b/..."]
+    if len(parts) >= 4 and parts[2].startswith("a/") and parts[3].startswith("b/"):
+        a_path = parts[2][2:]
+        b_path = parts[3][2:]
         if not (a_path.startswith(prefix) or a_path.startswith("/") or a_path.startswith("./")):
             a_path = prefix + a_path
         if not (b_path.startswith(prefix) or b_path.startswith("/") or b_path.startswith("./")):
@@ -83,7 +83,7 @@ def _rewrite_header_line(line: str, prefix: str) -> str:
     """
     Normalize any '--- <path>[<meta>]' or '+++ <path>[<meta>]' header.
     Preserve trailing metadata (tabs/timestamps).
-    Leave 'a/' and 'b/' git-style prefixes intact (we rewrite those separately).
+    If header uses git-style 'a/' or 'b/', rewrite the core path too.
     """
     m = _HEADER_RE.match(line)
     if not m:
@@ -91,12 +91,12 @@ def _rewrite_header_line(line: str, prefix: str) -> str:
 
     mark, path, meta = m.groups()
 
-    # If git-style paths, rewrite inside 'a/'/'b/' too.
     if path.startswith("a/"):
         core = path[2:]
         if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
             core = prefix + core
         return f"{mark} a/{core}{meta}"
+
     if path.startswith("b/"):
         core = path[2:]
         if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
@@ -109,11 +109,13 @@ def _rewrite_header_line(line: str, prefix: str) -> str:
     return f"{mark} {path}{meta}"
 
 
-def _rewrite_patch_paths_entire_file(patch_text: str, prefix: str) -> str:
+def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
     """
-    Bulletproof per-line normalization:
-      - normalize 'diff --git a/... b/...'
-      - normalize ALL '---'/'+++' headers (with or without metadata)
+    PUBLIC helper (backward compatible):
+    Rewrite ALL diff headers in the given patch text:
+      - 'diff --git a/... b/...'
+      - '--- a/<path>[meta]' / '+++ b/<path>[meta]'
+      - '--- <path>[meta]'  / '+++ <path>[meta]'
     """
     out_lines = []
     for line in patch_text.split("\n"):
@@ -145,7 +147,7 @@ def ensure_branch_and_apply_diff(
     txt = _sanitize_patch(txt)
 
     # 2) Rebuild ALL path headers across entire file
-    txt = _rewrite_patch_paths_entire_file(txt, prefix)
+    txt = _rewrite_patch_paths(txt, prefix)
 
     # 3) Unescape HTML entities so body hunks match repo files
     txt = _html_unescape_all(txt)
@@ -154,14 +156,12 @@ def ensure_branch_and_apply_diff(
     prefixed = patch_path.with_suffix(".prefixed.diff")
     prefixed.write_text(txt, encoding="utf-8")
 
-    # Preview ENTIRE patch for absolute transparency
+    # Preview ENTIRE patch for full visibility
     run(f"wc -l {prefixed}")
     run(f"cat {prefixed}")
 
-    # Dry-run check (non-fatal)
+    # Dry-run check (non-fatal) then apply once
     run(f"git apply --check {prefixed} || true")
-
-    # Apply once
     run(f"git apply --whitespace=fix {prefixed}")
     return br
 
