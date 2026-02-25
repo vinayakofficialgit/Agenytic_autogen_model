@@ -30,89 +30,99 @@ def ensure_git_identity():
 def _sanitize_patch(patch_text: str) -> str:
     """
     Minimal sanitization: normalize EOLs and remove Markdown code fences.
-    Do NOT do any path changes here.
+    Do NOT touch paths here.
     """
     t = patch_text.replace("\r\n", "\n").replace("\r", "\n")
-    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)  # drop lines like ``` or ```lang
+    t = re.sub(r"^\s*`{3,}.*\n?", "", t, flags=re.M)  # drop ``` or ```lang lines
     return t
 
 
-def _html_unescape(text: str) -> str:
+def _html_unescape_all(text: str) -> str:
     """
-    Unescape minimal HTML entities AFTER headers have been normalized.
-    This ensures hunk bodies match repository files (e.g., pom.xml).
+    Unescape HTML entities in the entire patch AFTER headers have been normalized.
+    Repeat until stabilized to handle doubly-encoded input.
     """
-    t = text
-    # Unescape < and > first (common in XML/Java bodies)
-    t = t.replace("&lt;", "<").replace("&gt;", ">")
-    # Quotes
-    t = t.replace("&quot;", '"').replace("&#39;", "'")
-    # Ampersand last
-    t = t.replace("&amp;", "&")
-    return t
+    prev = None
+    cur = text
+    # repeat a few times until no change
+    for _ in range(3):
+        prev = cur
+        cur = (cur
+               .replace("&lt;", "<").replace("&gt;", ">")
+               .replace("&quot;", '"').replace("&#39;", "'")
+               .replace("&amp;", "&"))
+        if cur == prev:
+            break
+    return cur
 
 
-def _rewrite_patch_paths(patch_text: str, prefix: str) -> str:
-    """
-    Prefix repo paths with <prefix> (e.g., 'java-pilot-app/').
-    Handles:
-      - 'diff --git a/<path> b/<path>'
-      - '--- a/<path>[<TAB>meta]' / '+++ b/<path>[<TAB>meta]'
-      - '--- <path>[<TAB>meta]'  / '+++ <path>[<TAB>meta]'
-    Preserves trailing metadata (like timestamps) after a tab.
-    """
-    text = patch_text
+# ---------- Path rewriting (bulletproof) ----------
 
-    def add_prefix_if_needed(p: str) -> str:
-        if p.startswith(prefix) or p.startswith("/") or p.startswith("./"):
-            return p
-        return prefix + p
-
-    # diff --git a/<path> b/<path>
-    def repl_diff(m: re.Match) -> str:
-        a_path = add_prefix_if_needed(m.group(1))
-        b_path = add_prefix_if_needed(m.group(2))
+def _rewrite_diff_git_line(line: str, prefix: str) -> str:
+    """
+    Normalize: diff --git a/<path> b/<path>
+    """
+    if not line.startswith("diff --git "):
+        return line
+    # Format: diff --git a/foo b/bar
+    parts = line.strip().split()
+    if len(parts) >= 4 and parts[1].startswith("a/") and parts[2].startswith("b/"):
+        a_path = parts[1][2:]
+        b_path = parts[2][2:]
+        if not (a_path.startswith(prefix) or a_path.startswith("/") or a_path.startswith("./")):
+            a_path = prefix + a_path
+        if not (b_path.startswith(prefix) or b_path.startswith("/") or b_path.startswith("./")):
+            b_path = prefix + b_path
         return f"diff --git a/{a_path} b/{b_path}"
-
-    text = re.sub(r"^diff --git a/(\S+) b/(\S+)$", repl_diff, text, flags=re.M)
-
-    # --- a/<path>[<TAB>meta]   and   +++ b/<path>[<TAB>meta]
-    def repl_hdr_ab(mark: str):
-        def _inner(m: re.Match) -> str:
-            head = add_prefix_if_needed(m.group(1))
-            meta = m.group(2) or ""
-            return f"{mark}{head}{meta}"
-        return _inner
-
-    text = re.sub(r"^--- a/([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_ab("--- a/"), text, flags=re.M)
-    text = re.sub(r"^\+\+\+ b/([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_ab("+++ b/"), text, flags=re.M)
-
-    # Plain headers: --- <path>[meta] and +++ <path>[meta]
-    def repl_hdr_plain(mark: str):
-        def _inner(m: re.Match) -> str:
-            head = m.group(1)
-            meta = m.group(2) or ""
-            if not (head.startswith("a/") or head.startswith("b/")):
-                head = add_prefix_if_needed(head)
-            return f"{mark}{head}{meta}"
-        return _inner
-
-    text = re.sub(r"^--- ([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_plain("--- "), text, flags=re.M)
-    text = re.sub(r"^\+\+\+ ([^\t\r\n]+)(\t[^\r\n]+)?$", repl_hdr_plain("+++ "), text, flags=re.M)
-
-    return text
+    return line
 
 
-# Force ALL headers to have the prefix even if they escaped the regexes above (belt & suspenders)
-_HEADER_LINE = re.compile(r"^(---|\+\+\+)\s+(\S+)(.*)$", re.M)
+_HEADER_RE = re.compile(r"^(---|\+\+\+)\s+(\S+)(.*)$")
 
-def _force_prefix_all_headers(text: str, prefix: str) -> str:
-    def repl(m: re.Match) -> str:
-        mark, path, meta = m.groups()
-        if not (path.startswith(prefix) or path.startswith("a/") or path.startswith("b/") or path.startswith("/") or path.startswith("./")):
-            path = prefix + path
-        return f"{mark} {path}{meta}"
-    return _HEADER_LINE.sub(repl, text)
+def _rewrite_header_line(line: str, prefix: str) -> str:
+    """
+    Normalize any '--- <path>[<meta>]' or '+++ <path>[<meta>]' header.
+    Preserve trailing metadata (tabs/timestamps).
+    Leave 'a/' and 'b/' git-style prefixes intact (we rewrite those separately).
+    """
+    m = _HEADER_RE.match(line)
+    if not m:
+        return line
+
+    mark, path, meta = m.groups()
+
+    # If git-style paths, rewrite inside 'a/'/'b/' too.
+    if path.startswith("a/"):
+        core = path[2:]
+        if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
+            core = prefix + core
+        return f"{mark} a/{core}{meta}"
+    if path.startswith("b/"):
+        core = path[2:]
+        if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
+            core = prefix + core
+        return f"{mark} b/{core}{meta}"
+
+    # Plain unified header: enforce prefix unless absolute/relative already
+    if not (path.startswith(prefix) or path.startswith("/") or path.startswith("./")):
+        path = prefix + path
+    return f"{mark} {path}{meta}"
+
+
+def _rewrite_patch_paths_entire_file(patch_text: str, prefix: str) -> str:
+    """
+    Bulletproof per-line normalization:
+      - normalize 'diff --git a/... b/...'
+      - normalize ALL '---'/'+++' headers (with or without metadata)
+    """
+    out_lines = []
+    for line in patch_text.split("\n"):
+        if line.startswith("diff --git "):
+            line = _rewrite_diff_git_line(line, prefix)
+        elif line.startswith("--- ") or line.startswith("+++ "):
+            line = _rewrite_header_line(line, prefix)
+        out_lines.append(line)
+    return "\n".join(out_lines)
 
 
 # ---------- Main apply flow ----------
@@ -130,25 +140,25 @@ def ensure_branch_and_apply_diff(
     patch_path = pathlib.Path(patch_path).resolve()
     prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
 
-    # 1) Read & sanitize
+    # 1) Read & sanitize (normalize EOLs, drop code fences)
     txt = patch_path.read_text(encoding="utf-8", errors="ignore")
     txt = _sanitize_patch(txt)
 
-    # 2) Rewrite paths (git-style + plain unified)
-    txt = _rewrite_patch_paths(txt, prefix)
+    # 2) Rebuild ALL path headers across entire file
+    txt = _rewrite_patch_paths_entire_file(txt, prefix)
 
-    # 3) Force prefix on ANY remaining ---/+++ headers (with or without metadata)
-    txt = _force_prefix_all_headers(txt, prefix)
-
-    # 4) Unescape HTML entities in BODY so hunks match real files
-    txt = _html_unescape(txt)
+    # 3) Unescape HTML entities so body hunks match repo files
+    txt = _html_unescape_all(txt)
 
     # Save final patch we will apply
     prefixed = patch_path.with_suffix(".prefixed.diff")
     prefixed.write_text(txt, encoding="utf-8")
 
-    # Preview & dry-run check (show more for visibility)
-    run(f"sed -n '1,300p' {prefixed}")
+    # Preview ENTIRE patch for absolute transparency
+    run(f"wc -l {prefixed}")
+    run(f"cat {prefixed}")
+
+    # Dry-run check (non-fatal)
     run(f"git apply --check {prefixed} || true")
 
     # Apply once
