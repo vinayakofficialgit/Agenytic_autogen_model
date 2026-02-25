@@ -20,12 +20,18 @@ from embeddings.retriever import RepoRetriever
 from agent.pick_findings import get_findings
 from agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
 # reuse sanitizers/rewriter for consistent behavior
+# from agent.utils.git_ops import (
+#     ensure_branch_and_apply_diff,
+#     open_pr,
+#     _sanitize_patch as sanitize_patch_text,
+#     _rewrite_patch_paths,
+# )
 from agent.utils.git_ops import (
     ensure_branch_and_apply_diff,
     open_pr,
-    _sanitize_patch as sanitize_patch_text,
-    _rewrite_patch_paths,
+    _rewrite_patch_paths,     # KEEP
 )
+# DO NOT IMPORT sanitize_patch_text
 
 # fixers
 from agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
@@ -33,28 +39,24 @@ from agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
 OUTPUT = pathlib.Path(REPO_ROOT, "agent_output")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
-
 def _extract_diff_segments(text: str) -> List[str]:
     """
-    Extract only valid diff segments from arbitrary text, in order.
-    We accept:
-      - git-style blocks starting with 'diff --git ' (and containing at least one '@@')
-      - plain unified blocks starting with '--- <path>' then '+++ <path>' (with at least one '@@')
-    All other text is dropped.
+    Extract valid diff segments without altering file paths.
+    Only normalize EOLs. Do NOT sanitize file paths.
     """
-    # First sanitize: normalize EOLs, drop code fences, unescape HTML
-    t = sanitize_patch_text(text)
+    t = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = t.split("\n")
-    segs: List[str] = []
-    i, n = 0, len(lines)
+
+    segs = []
+    i = 0
+    n = len(lines)
 
     def has_hunk_markers(block: str) -> bool:
-        # Minimal validity check: unified hunks must contain at least one '@@'
-        return "@@ " in block
+        return "@@" in block
 
-    def flush(start: int, end: int):
+    def flush(start, end):
         seg = "\n".join(lines[start:end]).strip("\n")
-        if seg and ("--- " in seg) and ("+++ " in seg) and has_hunk_markers(seg):
+        if seg and "--- " in seg and "+++ " in seg and has_hunk_markers(seg):
             if not seg.endswith("\n"):
                 seg += "\n"
             segs.append(seg)
@@ -62,30 +64,86 @@ def _extract_diff_segments(text: str) -> List[str]:
     while i < n:
         line = lines[i]
 
-        # Case 1: git-style segment
+        # git-style
         if line.startswith("diff --git "):
             start = i
             i += 1
-            # consume until next git-style header or EOF
             while i < n and not lines[i].startswith("diff --git "):
                 i += 1
             flush(start, i)
             continue
 
-        # Case 2: plain unified '--- ' then '+++ '
-        if line.startswith("--- ") and (i + 1 < n) and lines[i + 1].startswith("+++ "):
+        # unified
+        if line.startswith("--- ") and i + 1 < n and lines[i + 1].startswith("+++ "):
             start = i
             i += 2
-            # consume until next '--- ' or 'diff --git ' or EOF
-            while i < n and not (lines[i].startswith("--- ") or lines[i].startswith("diff --git ")):
+            while i < n and not (
+                lines[i].startswith("--- ") or lines[i].startswith("diff --git ")
+            ):
                 i += 1
             flush(start, i)
             continue
 
-        # otherwise skip
         i += 1
 
     return segs
+
+# def _extract_diff_segments(text: str) -> List[str]:
+#     """
+#     Extract only valid diff segments from arbitrary text, in order.
+#     We accept:
+#       - git-style blocks starting with 'diff --git ' (and containing at least one '@@')
+#       - plain unified blocks starting with '--- <path>' then '+++ <path>' (with at least one '@@')
+#     All other text is dropped.
+#     """
+#     # First sanitize: normalize EOLs, drop code fences, unescape HTML
+#     # t = sanitize_patch_text(text)
+#     t = text.replace("\r\n", "\n").replace("\r", "\n")
+#     # DO NOT UNESCAPE HTML HERE
+#     lines = t.split("\n")
+#     segs: List[str] = []
+#     i, n = 0, len(lines)
+
+#     def has_hunk_markers(block: str) -> bool:
+#         # Minimal validity check: unified hunks must contain at least one '@@'
+#         return "@@ " in block
+
+#     def flush(start: int, end: int):
+#         seg = "\n".join(lines[start:end]).strip("\n")
+#         if seg and ("--- " in seg) and ("+++ " in seg) and has_hunk_markers(seg):
+#             if not seg.endswith("\n"):
+#                 seg += "\n"
+#             segs.append(seg)
+
+#     while i < n:
+#         line = lines[i]
+
+#         # Case 1: git-style segment
+#         if line.startswith("diff --git "):
+#             start = i
+#             i += 1
+#             # consume until next git-style header or EOF
+#             while i < n and not lines[i].startswith("diff --git "):
+#                 i += 1
+#             flush(start, i)
+#             continue
+
+#         # Case 2: plain unified '--- ' then '+++ '
+#         if line.startswith("--- ") and (i + 1 < n) and lines[i + 1].startswith("+++ "):
+#             start = i
+#             i += 2
+#             # consume until next '--- ' or 'diff --git ' or EOF
+#             while i < n and not (lines[i].startswith("--- ") or lines[i].startswith("diff --git ")):
+#                 i += 1
+#             flush(start, i)
+#             continue
+
+#         # otherwise skip
+#         i += 1
+
+#     return segs
+
+
 
 
 def _git_apply_check(segment_text: str, prefix: str | None = None) -> Tuple[bool, str]:
