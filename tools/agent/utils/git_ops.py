@@ -4,6 +4,7 @@ import time
 import os
 import pathlib
 import re
+import html
 from typing import Optional
 
 
@@ -32,24 +33,20 @@ def ensure_git_identity():
 def _sanitize(text: str) -> str:
     """Normalize EOLs and remove markdown ``` lines."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Drop any fence lines like ``` or ```lang
     return re.sub(r"^\s*`{3,}.*$", "", text, flags=re.M)
 
 
 def _html_unescape_recursive(text: str) -> str:
     """
-    Fully unescape HTML entities (recursively) so diff hunks match repo files.
-    Order matters: unescape & first, then the rest; repeat until stable.
+    Fully unescape HTML entities so diff hunks match repo files.
+    Use stdlib html.unescape repeatedly until no changes remain.
     """
     prev = None
     cur = text
-    for _ in range(10):  # handles nested/double encodings
+    for _ in range(10):  # enough to unwrap nested escapes (&amp;lt; → &lt; → <)
         prev = cur
-        cur = (cur
-               .replace("&amp;", "&")
-               .replace("&lt;", "<")
-               .replace("&gt;", ">")
-               .replace("&quot;", '"')
-               .replace("&#39;", "'"))
+        cur = html.unescape(cur)
         if cur == prev:
             break
     return cur
