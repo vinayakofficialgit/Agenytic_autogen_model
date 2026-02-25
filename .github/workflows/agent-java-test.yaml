@@ -672,7 +672,9 @@ jobs:
       - name: Run Agent
         run: python tools/agent/run_agent.py
         env: 
-          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}        
+          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+          PYTHONPATH: tools
+          RAG_DEBUG: "true"        
 
       - uses: actions/upload-artifact@v4
         with:
