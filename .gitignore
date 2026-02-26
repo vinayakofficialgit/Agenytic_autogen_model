@@ -3,3 +3,6 @@ reports/
 **/__pycache__/
 *.pyc
 tools/java-ast-fixer/target/
+java-pilot-app/target/
+final-reports/
+.venv/
