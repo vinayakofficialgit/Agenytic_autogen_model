@@ -44,12 +44,11 @@ def _html_unescape_recursive(text: str) -> str:
     """
     prev = None
     cur = text
-    for _ in range(10):  # unwrap nested encodings (&amp;lt; -> &lt; -> <)
+    for _ in range(10):
         prev = cur
         cur = html.unescape(cur)
         if cur == prev:
             break
-    # Final defensive pass for common leftovers (rare but safe)
     cur = (cur
            .replace("&lt;", "<")
            .replace("&gt;", ">")
@@ -82,9 +81,9 @@ def _ensure_prefix(path: str, prefix: str) -> str:
 
 def _normalize_header(line: str, prefix: str) -> str:
     """
-    Normalize ANY '--- path[<meta>]' or '+++ path[<meta>]' header.
-    Always emits git-style a/ or b/ prefixed paths so that
-    `git apply -p1` strips the a/b prefix and keeps the module prefix.
+    Normalize '--- path' or '+++ path' headers.
+    Always emits git-style a/ or b/ so `git apply -p1` works:
+      -p1 strips a/ or b/ → leaves <prefix>/<relative-path>
     """
     m = _HEADER_RE.match(line)
     if not m:
@@ -93,13 +92,8 @@ def _normalize_header(line: str, prefix: str) -> str:
     mark, path, meta = m.groups()
     meta = meta or ""
 
-    # Determine the correct git-style lead: --- → a/, +++ → b/
     lead = "a/" if mark == "---" else "b/"
-
-    # Strip any existing a/ or b/ to get the core path
     core = _strip_ab(path)
-
-    # Ensure module prefix is present
     core = _ensure_prefix(core, prefix)
 
     return f"{mark} {lead}{core}{meta}"
@@ -109,9 +103,7 @@ _DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
 
 
 def _normalize_diff_git(line: str, prefix: str) -> str:
-    """
-    Normalize: diff --git a/<path> b/<path>
-    """
+    """Normalize: diff --git a/<path> b/<path>"""
     m = _DIFF_GIT_RE.match(line)
     if not m:
         return line
@@ -132,37 +124,87 @@ def _extract_path_from_header(line: str) -> str:
 
 def _rewrite_patch_paths(text: str, prefix: str) -> str:
     """
-    PUBLIC helper:
     Normalize ALL headers across the patch and ensure every segment
     has a proper 'diff --git a/... b/...' header line.
 
-    This guarantees `git apply -p1` will:
-      1. Strip the a/b prefix
-      2. Find the file at <prefix>/<relative-path> in the repo
+    CRITICAL: The seen_diff_git flag is ONLY reset when we reach a
+    '--- ' line. Intermediate lines like 'index ...', 'old mode ...',
+    'new mode ...' appear between 'diff --git' and '---' and must
+    NOT reset the flag — otherwise we inject duplicate headers which
+    corrupts the patch.
     """
     out = []
-    prev_was_diff_git = False
+    seen_diff_git = False
 
     for line in text.split("\n"):
         if line.startswith("diff --git "):
             line = _normalize_diff_git(line, prefix)
-            prev_was_diff_git = True
+            seen_diff_git = True
         elif line.startswith("--- "):
-            if not prev_was_diff_git:
-                # Plain unified segment with no diff --git header.
+            if not seen_diff_git:
+                # Plain unified segment missing a diff --git header.
                 # Inject one so git treats it as a proper git diff.
                 target = _extract_path_from_header(line)
                 target = _ensure_prefix(target, prefix)
                 out.append(f"diff --git a/{target} b/{target}")
             line = _normalize_header(line, prefix)
-            prev_was_diff_git = False
+            # Reset ONLY here — we've consumed the diff --git context
+            seen_diff_git = False
         elif line.startswith("+++ "):
             line = _normalize_header(line, prefix)
-        else:
-            prev_was_diff_git = False
+        # NOTE: Do NOT reset seen_diff_git on other lines.
+        # Lines like 'index abc..def', 'old mode', 'new mode', 'similarity'
+        # appear between 'diff --git' and '---' and must not clear the flag.
         out.append(line)
 
     return "\n".join(out)
+
+
+# ---------------------------------------------------------
+#              PATCH VALIDATION
+# ---------------------------------------------------------
+
+def _validate_patch(text: str) -> list:
+    """
+    Light structural validation of a unified diff.
+    Returns a list of warning strings (empty = looks OK).
+    """
+    warnings = []
+    lines = text.split("\n")
+    n = len(lines)
+
+    # Check for duplicate consecutive diff --git headers
+    prev_diff_git = False
+    for i, line in enumerate(lines, 1):
+        if line.startswith("diff --git "):
+            if prev_diff_git:
+                warnings.append(f"Line {i}: consecutive diff --git without --- header")
+            prev_diff_git = True
+        elif line.startswith("--- "):
+            prev_diff_git = False
+        elif line.strip() == "":
+            pass  # blank lines between segments are OK
+        else:
+            # intermediate meta lines (index, mode, etc.) keep the flag
+            if not (line.startswith("index ") or line.startswith("old mode") or
+                    line.startswith("new mode") or line.startswith("similarity") or
+                    line.startswith("rename") or line.startswith("copy")):
+                prev_diff_git = False
+
+    # Check hunk body lines
+    in_hunk = False
+    for i, line in enumerate(lines, 1):
+        if line.startswith("@@ "):
+            in_hunk = True
+            continue
+        if line.startswith("diff --git ") or line.startswith("--- ") or line.startswith("+++ "):
+            in_hunk = False
+            continue
+        if in_hunk and line:
+            if line[0] not in (' ', '+', '-', '\\'):
+                warnings.append(f"Line {i}: unexpected char '{line[0]}' in hunk: {line[:80]}")
+
+    return warnings
 
 
 # ---------------------------------------------------------
@@ -186,7 +228,7 @@ def ensure_branch_and_apply_diff(
     # 2) Sanitize markdown + normalize EOLs
     patched = _sanitize(raw)
 
-    # 3) Rewrite ALL headers (git-style and plain unified → proper git-style)
+    # 3) Rewrite ALL headers (plain unified → proper git-style a/b)
     patched = _rewrite_patch_paths(patched, prefix)
 
     # 4) Fully unescape HTML so hunks match actual files
@@ -196,10 +238,8 @@ def ensure_branch_and_apply_diff(
     after_lt = patched.count("&lt;")
     after_gt = patched.count("&gt;")
 
-    # Diagnostics to prove we unescaped
     print(f"[patch-info] &lt; count: {before_lt} -> {after_lt} ; &gt; count: {before_gt} -> {after_gt}")
 
-    # If anything still escaped, abort early with a clear message
     if after_lt or after_gt:
         final_preview = (patched[:4000] + "...\n") if len(patched) > 4000 else patched
         raise RuntimeError(
@@ -207,21 +247,32 @@ def ensure_branch_and_apply_diff(
             "Please check generators. Preview:\n" + final_preview
         )
 
-    # 5) Write final patch
+    # 5) Validate patch structure before writing
+    warnings = _validate_patch(patched)
+    if warnings:
+        print("[patch-validation] Warnings found:")
+        for w in warnings:
+            print(f"  WARNING: {w}")
+        # Dump numbered lines for debugging
+        print("[patch-content-debug]")
+        for idx, line in enumerate(patched.split("\n"), 1):
+            print(f"  {idx:4d}: {line}")
+
+    # 6) Write final patch
     out = patch_path.with_suffix(".prefixed.diff")
     out.write_text(patched, encoding="utf-8")
 
-    # 6) Show full patch (so logs match exactly what git sees)
+    # 7) Show full patch (so logs match exactly what git sees)
     run(f"echo '--- FINAL PATCH START ---'")
     run(f"wc -l {out}")
     run(f"cat {out}")
     run(f"echo '--- FINAL PATCH END ---'")
 
-    # 7) Dry run (non-fatal)
-    run(f"git apply --check {out} || true")
+    # 8) Dry run (non-fatal, with verbose for diagnostics)
+    run(f"git apply --check -v {out} || true")
 
-    # 8) Apply with -p1 (strips a/ and b/, preserves module prefix)
-    run(f"git apply --whitespace=fix {out}")
+    # 9) Apply (-p1 strips a/ b/, preserves module prefix)
+    run(f"git apply --whitespace=fix -v {out}")
 
     return branch
 
