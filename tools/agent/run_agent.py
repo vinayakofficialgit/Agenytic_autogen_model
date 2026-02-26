@@ -1,149 +1,149 @@
 #!/usr/bin/env python3
 import os
-import sys
 import json
 import pathlib
 import subprocess
-from typing import List, Set
+from typing import Dict, List
 
-HERE = pathlib.Path(__file__).resolve()
-TOOLS_ROOT = HERE.parents[1]
-REPO_ROOT = HERE.parents[2]
+from retriever import RepoRetriever
+from prompt_lib import build_patch_prompt, call_llm_for_diff
+from pick_findings import get_findings
+from git_ops import ensure_git_identity
 
-if str(TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(TOOLS_ROOT))
-
-from embeddings.retriever import RepoRetriever
-from agent.pick_findings import get_findings
-from agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
-from agent.utils.git_ops import ensure_branch_and_apply_diff
-from agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
-
-OUTPUT = pathlib.Path(REPO_ROOT, "agent_output")
-OUTPUT.mkdir(parents=True, exist_ok=True)
+APP_DIR = os.getenv("APP_DIR", "java-pilot-app")
+MIN_SEVERITY = os.getenv("MIN_SEVERITY", "high")
+RAG_DEBUG = os.getenv("RAG_DEBUG", "false").lower() == "true"
 
 
-# ---------------------------------------------------------
-# STRICT DIFF VALIDATION
-# ---------------------------------------------------------
+def run(cmd: str, check=True):
+    print(f"+ {cmd}")
+    return subprocess.run(cmd, shell=True, check=check)
 
-def is_valid_unified_diff(text: str) -> bool:
-    """
-    Validate minimal unified diff structure.
-    """
-    if not text:
+
+def validate_diff_structure(diff: str) -> bool:
+    if not diff.strip().startswith("--- "):
         return False
-    if not text.startswith("--- "):
-        return False
-    if "+++ " not in text:
-        return False
-    if "@@" not in text:
+    if "@@" not in diff:
         return False
     return True
 
 
-def extract_valid_segments(text: str) -> List[str]:
-    """
-    Split multiple diffs and keep only structurally valid ones.
-    """
-    segments = []
-    blocks = text.split("\ndiff --git ")
+def apply_single_patch(branch: str, diff_text: str, index: int) -> bool:
+    tmp_patch = pathlib.Path(f"agent_output/temp_patch_{index}.diff")
+    tmp_patch.write_text(diff_text, encoding="utf-8")
 
-    for i, block in enumerate(blocks):
-        if i > 0:
-            block = "diff --git " + block
-        block = block.strip()
-        if is_valid_unified_diff(block):
-            segments.append(block)
+    # Dry run
+    result = subprocess.run(
+        f"git apply --check {tmp_patch}",
+        shell=True,
+        capture_output=True,
+        text=True
+    )
 
-    return segments
+    if result.returncode != 0:
+        print(f"⚠ Patch {index} failed validation:")
+        print(result.stderr)
+        return False
+
+    # Apply
+    subprocess.check_call(
+        f"git apply --whitespace=fix {tmp_patch}",
+        shell=True
+    )
+
+    return True
 
 
-# ---------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------
+def has_git_changes() -> bool:
+    result = subprocess.run(
+        "git status --porcelain",
+        shell=True,
+        capture_output=True,
+        text=True
+    )
+    return bool(result.stdout.strip())
+
 
 def main():
-    try:
-        min_sev = os.getenv("MIN_SEVERITY", "HIGH").upper()
-        findings = get_findings(min_sev)
+    pathlib.Path("agent_output").mkdir(exist_ok=True)
 
-        retriever = RepoRetriever(top_k=6)
+    findings = get_findings(MIN_SEVERITY)
 
-        diffs: List[str] = []
-        seen_paths: Set[str] = set()
+    if not any(findings.values()):
+        print("No findings to fix.")
+        return
 
-        def handle(kind, items):
-            fx_map = {
-                "k8s": fixer_k8s,
-                "tf": fixer_tf,
-                "java": fixer_java,
-                "docker": fixer_docker,
-            }
-            fx = fx_map[kind]
+    retriever = RepoRetriever(top_k=6)
 
-            for it in items:
+    ensure_git_identity()
 
-                # 1️⃣ Deterministic
-                d = fx.try_deterministic(it)
-                if is_valid_unified_diff(d):
-                    diffs.append(d)
-                    continue
+    branch = f"ai-autofix-{os.urandom(4).hex()}"
+    run(f"git checkout -b {branch}")
 
-                # 2️⃣ RAG
-                q = fx.query_for(it)
-                topk = retriever.search(q) if q else []
-                d = fx.try_rag_style(it, topk)
-                if is_valid_unified_diff(d):
-                    diffs.append(d)
-                    continue
+    patch_counter = 0
+    applied_count = 0
 
-                # 3️⃣ LLM fallback
-                prompt = build_patch_prompt(kind, it, topk)
-                d = call_llm_for_diff(prompt)
+    def handle(kind: str, items: List[Dict]):
+        nonlocal patch_counter, applied_count
 
-                if not d:
-                    continue
+        for finding in items:
+            patch_counter += 1
+            print(f"\n--- Processing {kind} finding #{patch_counter} ---")
 
-                segments = extract_valid_segments(d)
-
-                for seg in segments:
-                    diffs.append(seg)
-
-        handle("k8s", findings.get("k8s", []))
-        handle("tf", findings.get("tf", []))
-        handle("java", findings.get("java", []))
-        handle("docker", findings.get("docker", []))
-
-        if not diffs:
-            print("⚠ No valid diffs generated. Skipping branch creation.")
-            return
-
-        # Write combined patch
-        patch = OUTPUT / "agent_patch.diff"
-        patch.write_text("\n\n".join(diffs), encoding="utf-8")
-
-        # 🔥 Validate BEFORE branch creation
-        try:
-            subprocess.check_call(
-                f"git apply --check {patch}",
-                shell=True
+            context = retriever.search(
+                f"{finding.get('file')} {finding.get('rule')} {finding.get('detail')}"
             )
-        except subprocess.CalledProcessError:
-            print("⚠ Generated patch is invalid. Skipping branch creation.")
-            return
 
-        # Apply + push branch
-        branch = ensure_branch_and_apply_diff(patch)
+            if RAG_DEBUG:
+                print(f"Context chunks: {len(context)}")
 
-        meta = OUTPUT / "agent_meta.json"
-        meta.write_text(json.dumps({"branch": branch}), encoding="utf-8")
+            prompt = build_patch_prompt(kind, finding, context)
+            diff = call_llm_for_diff(prompt)
 
-        print(f"✅ Branch created: {branch}")
+            if not validate_diff_structure(diff):
+                print("⚠ Invalid diff structure. Skipping.")
+                continue
 
-    except Exception as e:
-        print(f"Agent failed safely: {e}")
-        sys.exit(0)
+            success = apply_single_patch(branch, diff, patch_counter)
+
+            if success:
+                applied_count += 1
+                print("✓ Patch applied")
+            else:
+                print("⚠ Patch skipped due to git apply failure")
+
+    handle("k8s", findings.get("k8s", []))
+    handle("tf", findings.get("tf", []))
+    handle("java", findings.get("java", []))
+    handle("docker", findings.get("docker", []))
+
+    if applied_count == 0:
+        print("⚠ No patches successfully applied.")
+        run("git checkout -", check=False)
+        run(f"git branch -D {branch}", check=False)
+        return
+
+    if not has_git_changes():
+        print("⚠ No actual file changes detected.")
+        run("git checkout -", check=False)
+        run(f"git branch -D {branch}", check=False)
+        return
+
+    run("git add .")
+    run('git commit -m "Agentic AI security autofix"')
+    run(f"git push origin {branch}")
+
+    meta = {
+        "branch": branch,
+        "applied_patches": applied_count
+    }
+
+    pathlib.Path("agent_output/agent_meta.json").write_text(
+        json.dumps(meta, indent=2),
+        encoding="utf-8"
+    )
+
+    print(f"\n✓ Branch {branch} pushed with {applied_count} fixes.")
 
 
 if __name__ == "__main__":
