@@ -2,8 +2,7 @@
 import os
 import subprocess
 import pathlib
-import tempfile
-from typing import Dict, List
+from typing import Dict
 
 from tools.embeddings.retriever import RepoRetriever
 from tools.agent.pick_findings import get_findings
@@ -11,8 +10,6 @@ from tools.agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
 from tools.agent.utils.prompt_lib import call_llm_rewrite
 
 REPO_ROOT = pathlib.Path(".").resolve()
-OUTPUT = REPO_ROOT / "agent_output"
-OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -30,65 +27,19 @@ def create_branch() -> str:
     return branch
 
 
-def commit_and_push(branch: str):
-    subprocess.run(["git", "add", "-u"], check=True)
-    subprocess.run(["git", "commit", "-m", "Agentic AI Autofix"], check=True)
-    subprocess.run(["git", "push", "--set-upstream", "origin", branch], check=True)
-
-
-# ============================================================
-# Patch Generator (Enterprise Safe)
-# ============================================================
-
-def generate_git_patch(file_path: str, new_content: str) -> str | None:
-    original = pathlib.Path(file_path)
-
-    if not original.exists():
-        print(f"⚠ File not found: {file_path}")
-        return None
-
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        tmp.write(new_content.encode("utf-8"))
-        tmp_path = tmp.name
-
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--no-index", file_path, tmp_path],
-            capture_output=True,
-            text=True,
-        )
-
-        patch = result.stdout
-        if not patch.strip():
-            return None
-
-        # BLOCK destructive diff
-        if "+++ /dev/null" in patch:
-            print("⚠ Destructive patch detected. Skipping.")
-            return None
-
-        return patch
-    finally:
-        os.unlink(tmp_path)
-
-
-def apply_patch(patch: str) -> bool:
-    patch_file = OUTPUT / "agent_patch.diff"
-    patch_file.write_text(patch, encoding="utf-8")
-
+def has_changes() -> bool:
     result = subprocess.run(
-        ["git", "apply", "--check", str(patch_file)],
+        ["git", "status", "--porcelain"],
         capture_output=True,
         text=True,
     )
+    return bool(result.stdout.strip())
 
-    if result.returncode != 0:
-        print("⚠ Patch validation failed:")
-        print(result.stderr)
-        return False
 
-    subprocess.run(["git", "apply", str(patch_file)], check=True)
-    return True
+def commit_and_push(branch: str):
+    subprocess.run(["git", "add", "-A"], check=True)
+    subprocess.run(["git", "commit", "-m", "Agentic AI Autofix"], check=True)
+    subprocess.run(["git", "push", "--set-upstream", "origin", branch], check=True)
 
 
 # ============================================================
@@ -96,7 +47,6 @@ def apply_patch(patch: str) -> bool:
 # ============================================================
 
 def collect_file_updates(findings: Dict[str, list], retriever: RepoRetriever):
-    file_updates: Dict[str, str] = {}
 
     fx_map = {
         "k8s": fixer_k8s,
@@ -104,6 +54,8 @@ def collect_file_updates(findings: Dict[str, list], retriever: RepoRetriever):
         "java": fixer_java,
         "docker": fixer_docker,
     }
+
+    resolved_any = False
 
     for kind, items in findings.items():
         if kind not in fx_map:
@@ -117,16 +69,16 @@ def collect_file_updates(findings: Dict[str, list], retriever: RepoRetriever):
             result = None
             resolution_stage = None
 
-            # ====================================================
+            # ---------------------------
             # Stage 1 — Deterministic
-            # ====================================================
+            # ---------------------------
             result = fx.try_deterministic(item)
             if result:
                 resolution_stage = "DETERMINISTIC"
 
-            # ====================================================
+            # ---------------------------
             # Stage 2 — RAG
-            # ====================================================
+            # ---------------------------
             if not result:
                 q = fx.query_for(item)
                 topk = retriever.search(q) if q else []
@@ -134,65 +86,76 @@ def collect_file_updates(findings: Dict[str, list], retriever: RepoRetriever):
                 if result:
                     resolution_stage = "RAG"
 
-            # ====================================================
-            # Stage 3 — LLM Fallback (Enterprise Safe)
-            # ====================================================
+            # ---------------------------
+            # Stage 3 — LLM
+            # ---------------------------
             if not result:
                 print("→ Falling back to LLM rewrite")
 
-                original_path = item.get("file")
-                if not original_path:
+                path = item.get("file")
+                if not path:
                     print("⚠ No file path available")
                     continue
 
-                original_file = pathlib.Path(original_path)
-                if not original_file.exists():
-                    print(f"⚠ File not found: {original_path}")
+                file_path = pathlib.Path(path)
+                if not file_path.exists():
+                    print(f"⚠ File not found: {path}")
                     continue
 
-                original_content = original_file.read_text(encoding="utf-8")
+                original = file_path.read_text(encoding="utf-8")
 
                 new_content = call_llm_rewrite(
                     kind=kind,
                     finding=item,
-                    original_content=original_content
+                    original_content=original
                 )
 
                 if not new_content or not new_content.strip():
                     print("⚠ LLM returned empty content")
                     continue
 
-                # Prevent suspicious wipe
-                if len(new_content) < len(original_content) * 0.5:
+                if len(new_content) < len(original) * 0.5:
                     print("⚠ LLM output suspiciously small — skipping")
                     continue
 
-                result = {
-                    "file": original_path,
-                    "content": new_content
-                }
-
+                file_path.write_text(new_content, encoding="utf-8")
                 resolution_stage = "LLM"
+                resolved_any = True
 
-            if not result:
-                print("⚠ No fix generated")
+                print(f"""
+                -----------------------------------------
+                ✔ RESOLVED
+                File : {path}
+                Stage: {resolution_stage}
+                -----------------------------------------
+                """)
                 continue
 
-            path = result["file"]
-            content = result["content"]
+            if result:
+                resolved_any = True
+                print(f"""
+                -----------------------------------------
+                ✔ RESOLVED
+                File : {result['file']}
+                Stage: {resolution_stage}
+                -----------------------------------------
+                """)
 
-            # print(f"✓ Resolved by: {resolution_stage}")
-            print(f"""
-            -----------------------------------------
-            ✔ RESOLVED
-            File : {path}
-            Stage: {resolution_stage}
-            -----------------------------------------
-            """)
-            file_updates[path] = content
+            else:
+                print(f"""
+                -----------------------------------------
+                ✖ NOT RESOLVED
+                File : {item.get('file')}
+                Stage: NONE
+                -----------------------------------------
+                """)
 
-    return file_updates
+    return resolved_any
 
+
+# ============================================================
+# Main
+# ============================================================
 
 def main():
     ensure_git_identity()
@@ -200,35 +163,25 @@ def main():
     min_sev = os.getenv("MIN_SEVERITY", "HIGH").upper()
     findings = get_findings(min_sev)
 
-    retriever = RepoRetriever(top_k=6)
-    print("RAG ready.")
-
-    file_updates = collect_file_updates(findings, retriever)
-
-    if not file_updates:
-        print("⚠ No patches generated.")
+    if not findings:
+        print("⚠ No findings.")
         return
 
     branch = create_branch()
 
-    applied_any = False
+    retriever = RepoRetriever(top_k=6)
+    print("RAG ready.")
 
-    for path, new_content in file_updates.items():
-        print(f"\n📦 Generating patch for {path}")
+    resolved_any = collect_file_updates(findings, retriever)
 
-        patch = generate_git_patch(path, new_content)
-        if not patch:
-            print("⚠ No diff generated")
-            continue
+    if not resolved_any:
+        print("⚠ No patches generated.")
+        subprocess.run(["git", "checkout", "-"], check=False)
+        subprocess.run(["git", "branch", "-D", branch], check=False)
+        return
 
-        if apply_patch(patch):
-            print("✓ Patch applied")
-            applied_any = True
-        else:
-            print("⚠ Patch skipped")
-
-    if not applied_any:
-        print("⚠ No patches successfully applied.")
+    if not has_changes():
+        print("⚠ No actual file changes detected.")
         subprocess.run(["git", "checkout", "-"], check=False)
         subprocess.run(["git", "branch", "-D", branch], check=False)
         return

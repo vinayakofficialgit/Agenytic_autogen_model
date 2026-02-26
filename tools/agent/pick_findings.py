@@ -1,108 +1,176 @@
 #!/usr/bin/env python3
-import json, pathlib, os
+import json
+import pathlib
 from typing import List, Dict, Any
 
-SEV_ORDER = {"CRITICAL":3,"HIGH":2,"MEDIUM":1,"LOW":0}
+# ============================================================
+# Severity Model (Single Source of Truth)
+# ============================================================
+
+SEV_ORDER = {
+    "CRITICAL": 3,
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 0,
+}
 
 FINAL_DIR = pathlib.Path("final-reports")
 
-def _load(fn: str):
-    p = FINAL_DIR/fn
-    if not p.exists(): return None
+
+def _load(filename: str) -> Dict[str, Any] | None:
+    path = FINAL_DIR / filename
+    if not path.exists():
+        return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
 
-def _want(sev: str, threshold: str) -> bool:
-    s = (sev or "").upper()
-    return SEV_ORDER.get(s,0) >= SEV_ORDER.get(threshold.upper(), 2)
 
-def from_checkov_k8s(threshold: str) -> List[Dict[str,Any]]:
-    d = _load("checkov_k8s.json") or {}
-    out = []
-    for f in (d.get("results",{}) or {}).get("failed_checks",[]) or []:
-        sev = (f.get("severity") or "LOW").upper()
-        if not _want(sev, threshold): continue
-        out.append({
-            "tool":"checkov_k8s",
-            "severity": sev,
-            "file": f.get("file_path") or "",
-            "line": f.get("file_line_range",[0])[0] if f.get("file_line_range") else 0,
-            "rule": f.get("check_id"),
-            "detail": f.get("check_name") or ""
-        })
-    return out
+def _want(severity: str, threshold: str) -> bool:
+    s = (severity or "").upper()
+    t = (threshold or "HIGH").upper()
+    return SEV_ORDER.get(s, 0) >= SEV_ORDER.get(t, 2)
 
-def from_checkov_tf(threshold: str) -> List[Dict[str,Any]]:
-    d = _load("checkov_tf.json") or {}
-    out = []
-    for f in (d.get("results",{}) or {}).get("failed_checks",[]) or []:
-        sev = (f.get("severity") or "LOW").upper()
-        if not _want(sev, threshold): continue
-        out.append({
-            "tool":"checkov_tf",
-            "severity": sev,
-            "file": f.get("file_path") or "",
-            "line": f.get("file_line_range",[0])[0] if f.get("file_line_range") else 0,
-            "rule": f.get("check_id"),
-            "detail": f.get("check_name") or ""
-        })
-    return out
 
-def from_semgrep(threshold: str) -> List[Dict[str,Any]]:
-    d = _load("semgrep.json") or {}
-    out=[]
-    for r in d.get("results",[]) or []:
-        sev = ((r.get("extra") or {}).get("severity") or "LOW").upper()
-        # map ERROR->HIGH, WARNING->MEDIUM, INFO->LOW
-        if sev == "ERROR": sev="HIGH"
-        elif sev == "WARNING": sev="MEDIUM"
-        elif sev == "INFO": sev="LOW"
-        if not _want(sev, threshold): continue
+# ============================================================
+# Tool Parsers
+# ============================================================
+
+def from_semgrep(threshold: str) -> List[Dict[str, Any]]:
+    data = _load("semgrep.json") or {}
+    findings = []
+
+    for r in data.get("results", []) or []:
+        extra = r.get("extra") or {}
+        sev = (extra.get("severity") or "LOW").upper()
+
+        # Normalize Semgrep severity
+        if sev == "ERROR":
+            sev = "HIGH"
+        elif sev == "WARNING":
+            sev = "MEDIUM"
+        elif sev == "INFO":
+            sev = "LOW"
+
+        if not _want(sev, threshold):
+            continue
+
         path = r.get("path") or ""
-        start = ((r.get("start") or {}).get("line")) or ((r.get("start",{}).get("location") or {}).get("line")) or 0
-        rule = ((r.get("extra") or {}).get("rule_id")) or ((r.get("extra") or {}).get("engine_rule_id")) or ""
-        out.append({
-            "tool":"semgrep",
+        line = (r.get("start") or {}).get("line", 0)
+
+        findings.append({
+            "tool": "semgrep",
             "severity": sev,
             "file": path,
-            "line": start,
-            "rule": rule,
-            "detail": (r.get("extra") or {}).get("message") or ""
+            "line": line,
+            "rule": extra.get("rule_id") or extra.get("engine_rule_id") or "",
+            "detail": extra.get("message") or "",
         })
-    return out
 
-def from_trivy_image(threshold: str) -> List[Dict[str,Any]]:
-    d = _load("trivy_image.json") or {}
-    out=[]
-    for r in d.get("Results",[]) or []:
-        target = r.get("Target") or ""
-        for v in r.get("Vulnerabilities") or []:
-            sev = (v.get("Severity") or "LOW").upper()
-            if not _want(sev, threshold): continue
-            out.append({
-                "tool":"trivy_image",
+    return findings
+
+
+def from_checkov_k8s(threshold: str) -> List[Dict[str, Any]]:
+    data = _load("checkov_k8s.json") or {}
+    findings = []
+
+    for f in (data.get("results", {}) or {}).get("failed_checks", []) or []:
+        sev = (f.get("severity") or "LOW").upper()
+
+        if not _want(sev, threshold):
+            continue
+
+        findings.append({
+            "tool": "checkov_k8s",
+            "severity": sev,
+            "file": f.get("file_path") or "",
+            "line": (f.get("file_line_range") or [0])[0],
+            "rule": f.get("check_id") or "",
+            "detail": f.get("check_name") or "",
+        })
+
+    return findings
+
+
+def from_checkov_tf(threshold: str) -> List[Dict[str, Any]]:
+    data = _load("checkov_tf.json") or {}
+    findings = []
+
+    for f in (data.get("results", {}) or {}).get("failed_checks", []) or []:
+        sev = (f.get("severity") or "LOW").upper()
+
+        if not _want(sev, threshold):
+            continue
+
+        findings.append({
+            "tool": "checkov_tf",
+            "severity": sev,
+            "file": f.get("file_path") or "",
+            "line": (f.get("file_line_range") or [0])[0],
+            "rule": f.get("check_id") or "",
+            "detail": f.get("check_name") or "",
+        })
+
+    return findings
+
+
+def from_trivy_image(threshold: str) -> List[Dict[str, Any]]:
+    data = _load("trivy_image.json") or {}
+    findings = []
+
+    for result in data.get("Results", []) or []:
+        target = result.get("Target") or ""
+
+        for vuln in result.get("Vulnerabilities") or []:
+            sev = (vuln.get("Severity") or "LOW").upper()
+
+            if not _want(sev, threshold):
+                continue
+
+            findings.append({
+                "tool": "trivy_image",
                 "severity": sev,
                 "file": target,
                 "line": 0,
-                "rule": v.get("VulnerabilityID") or "",
-                "detail": f"{v.get('PkgName','')} {v.get('InstalledVersion','')}"
+                "rule": vuln.get("VulnerabilityID") or "",
+                "detail": f"{vuln.get('PkgName','')} {vuln.get('InstalledVersion','')}",
             })
-    return out
 
-def get_findings(min_severity: str) -> Dict[str, List[Dict[str,Any]]]:
-    """Return findings grouped by fixer family."""
-    k8s = from_checkov_k8s(min_severity)
-    tf  = from_checkov_tf(min_severity)
-    java= from_semgrep(min_severity)
-    img = from_trivy_image(min_severity)
+    return findings
 
-    # Simple routing by file/type
-    k8s_only = [f for f in k8s if f["file"].endswith((".yml",".yaml"))]
-    tf_only  = [f for f in tf  if f["file"].endswith(".tf")]
-    java_only= [f for f in java if f["file"].endswith(".java")]
-    dock = [{"file": "java-pilot-app/Dockerfile", **f} for f in img]
-    # dock     = img  # we’ll drive Docker best‑practice from image results
 
-    return {"k8s": k8s_only, "tf": tf_only, "java": java_only, "docker": dock}
+# ============================================================
+# Master Entry
+# ============================================================
+
+def get_findings(min_severity: str) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Returns findings grouped by fixer family.
+    Severity filtering handled per tool.
+    """
+
+    java_findings = from_semgrep(min_severity)
+    k8s_findings = from_checkov_k8s(min_severity)
+    tf_findings = from_checkov_tf(min_severity)
+    docker_findings = from_trivy_image(min_severity)
+
+    # Strict routing by file extension
+    java_only = [f for f in java_findings if f["file"].endswith(".java")]
+    k8s_only = [f for f in k8s_findings if f["file"].endswith((".yml", ".yaml"))]
+    tf_only = [f for f in tf_findings if f["file"].endswith(".tf")]
+
+    # Image findings mapped to Dockerfile
+    docker_only = []
+    for f in docker_findings:
+        docker_only.append({
+            **f,
+            "file": "java-pilot-app/Dockerfile"
+        })
+
+    return {
+        "java": java_only,
+        "k8s": k8s_only,
+        "tf": tf_only,
+        "docker": docker_only,
+    }
