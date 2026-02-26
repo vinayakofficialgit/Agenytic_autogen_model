@@ -33,8 +33,7 @@ public class InsecureController {
     BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
     StringBuilder out = new StringBuilder();
     String line;
-    while ((line = br.readLine()) != null) out.append(line).append("
-");
+    while ((line = br.readLine()) != null) out.append(line).append("");
     return out.toString();
   }
 
