@@ -19,7 +19,7 @@ env:
   PYTHON_VERSION: "3.12"
   APP_DIR: "java-pilot-app"
   REPORTS_DIR: "reports"
-  MIN_SEVERITY: "high"
+  MIN_SEVERITY: "medium"
   LLM_ENABLED: "true"
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"

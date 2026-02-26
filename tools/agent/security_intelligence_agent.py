@@ -22,6 +22,13 @@ from datetime import datetime, UTC
 from typing import List, Dict, Any
 from collections import Counter, defaultdict
 from openai import OpenAI
+import sys
+import pathlib
+
+# Ensure repo root is in sys.path (CI-safe)
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from tools.agent.utils.severity_policy import want, MIN_SEVERITY, SEVERITY_MODE
 
