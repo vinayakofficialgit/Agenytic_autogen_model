@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-git_ops.py — Branch creation, patch rewriting, self-healing apply.
+git_ops.py — Branch creation, patch rewriting, self-healing apply, commit & push.
 
 Self-healing strategy when `git apply` fails:
   1. Fuzzy context repair: read the actual file, fix context lines
      in the patch that differ only by Unicode or whitespace.
   2. LLM regeneration: call OpenAI to produce a corrected diff
      using the real file content as ground truth.
-  3. Partial apply (--reject): apply whatever hunks work.
+  3. Partial apply (--reject) as last resort.
+
+After successful apply, changes are staged, committed, and pushed
+so the PR branch actually contains the modifications.
 """
 import subprocess
 import time
@@ -16,7 +19,6 @@ import pathlib
 import re
 import html
 import json
-import unicodedata
 from typing import Optional, List, Tuple
 
 
@@ -40,6 +42,7 @@ def run_capture(cmd: str) -> Tuple[int, str]:
     print(f"+ {cmd}")
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     output = (result.stdout or "") + (result.stderr or "")
+    print(output)
     return result.returncode, output
 
 
@@ -56,6 +59,60 @@ def ensure_git_identity():
         run('git config user.name "CI Bot"')
 
 
+def _commit_and_verify(message: str) -> bool:
+    """
+    Stage ALL changes, commit, and verify the commit contains modified files.
+    Returns True if commit succeeded with actual changes.
+    """
+    print("\n[commit] Staging and committing changes...")
+
+    # Stage all changes
+    rc_add, add_out = run_capture("git add -A")
+    if rc_add != 0:
+        print(f"[commit] ERROR: git add failed: {add_out}")
+        return False
+
+    # Show what's staged (this is the key diagnostic)
+    rc_status, status_out = run_capture("git status --short")
+    print(f"[commit] Staged files:\n{status_out}")
+
+    if not status_out.strip():
+        print("[commit] WARNING: Nothing staged — git apply may not have changed any files!")
+
+        # Extra diagnostic: check if working tree has any changes at all
+        rc_diff, diff_out = run_capture("git diff --name-only")
+        print(f"[commit] Unstaged changes: {diff_out}")
+        rc_diff2, diff_out2 = run_capture("git diff --cached --name-only")
+        print(f"[commit] Cached changes: {diff_out2}")
+        return False
+
+    # Commit
+    rc_commit, commit_out = run_capture(f'git commit -m "{message}"')
+    if rc_commit != 0:
+        if "nothing to commit" in commit_out:
+            print("[commit] WARNING: nothing to commit.")
+            return False
+        print(f"[commit] ERROR: git commit failed: {commit_out}")
+        return False
+
+    # Verify: show what the commit contains
+    print("[commit] ✓ Commit created. Verifying contents...")
+    rc_show, show_out = run_capture("git log --oneline -1")
+    print(f"[commit] Latest commit: {show_out.strip()}")
+    rc_show2, show_out2 = run_capture("git diff --stat HEAD~1 HEAD")
+    print(f"[commit] Commit diff stat:\n{show_out2}")
+
+    # Double check: show the actual file diff to confirm changes
+    rc_show3, show_out3 = run_capture("git diff HEAD~1 HEAD")
+    if show_out3.strip():
+        print(f"[commit] Commit diff preview (first 2000 chars):\n{show_out3[:2000]}")
+    else:
+        print("[commit] WARNING: Commit appears empty!")
+        return False
+
+    return True
+
+
 # ---------------------------------------------------------
 #               SAFE, GLOBAL TRANSFORMS
 # ---------------------------------------------------------
@@ -67,9 +124,7 @@ def _sanitize(text: str) -> str:
 
 
 def _html_unescape_recursive(text: str) -> str:
-    """
-    Fully unescape HTML entities so diff hunks match repo files.
-    """
+    """Fully unescape HTML entities so diff hunks match repo files."""
     prev = None
     cur = text
     for _ in range(10):
@@ -94,36 +149,26 @@ _HEADER_RE = re.compile(r"^(---|\+\+\+)\s+([^\t\r\n]+)(\t[^\r\n]+)?$")
 
 
 def _strip_ab(path: str) -> str:
-    """Strip leading a/ or b/ from a path."""
     if path.startswith("a/") or path.startswith("b/"):
         return path[2:]
     return path
 
 
 def _ensure_prefix(path: str, prefix: str) -> str:
-    """Prepend module prefix if not already present."""
     if path.startswith(prefix) or path.startswith("/") or path.startswith("./"):
         return path
     return prefix + path
 
 
 def _normalize_header(line: str, prefix: str) -> str:
-    """
-    Normalize '--- path' or '+++ path' headers.
-    Always emits git-style a/ or b/ so `git apply -p1` works:
-      -p1 strips a/ or b/ → leaves <prefix>/<relative-path>
-    """
     m = _HEADER_RE.match(line)
     if not m:
         return line
-
     mark, path, meta = m.groups()
     meta = meta or ""
-
     lead = "a/" if mark == "---" else "b/"
     core = _strip_ab(path)
     core = _ensure_prefix(core, prefix)
-
     return f"{mark} {lead}{core}{meta}"
 
 
@@ -131,11 +176,9 @@ _DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
 
 
 def _normalize_diff_git(line: str, prefix: str) -> str:
-    """Normalize: diff --git a/<path> b/<path>"""
     m = _DIFF_GIT_RE.match(line)
     if not m:
         return line
-
     a_path, b_path = m.groups()
     a_path = _ensure_prefix(a_path, prefix)
     b_path = _ensure_prefix(b_path, prefix)
@@ -143,7 +186,6 @@ def _normalize_diff_git(line: str, prefix: str) -> str:
 
 
 def _extract_path_from_header(line: str) -> str:
-    """Extract the file path from a --- or +++ header line."""
     path = line[4:].strip()
     if "\t" in path:
         path = path.split("\t", 1)[0]
@@ -156,10 +198,8 @@ def _rewrite_patch_paths(text: str, prefix: str) -> str:
     has a proper 'diff --git a/... b/...' header line.
 
     CRITICAL: The seen_diff_git flag is ONLY reset when we reach a
-    '--- ' line. Intermediate lines like 'index ...', 'old mode ...',
-    'new mode ...' appear between 'diff --git' and '---' and must
-    NOT reset the flag — otherwise we inject duplicate headers which
-    corrupts the patch.
+    '--- ' line. Intermediate lines like 'index ...', 'old mode ...'
+    appear between 'diff --git' and '---' and must NOT reset the flag.
     """
     out = []
     seen_diff_git = False
@@ -187,10 +227,6 @@ def _rewrite_patch_paths(text: str, prefix: str) -> str:
 # ---------------------------------------------------------
 
 def _validate_patch(text: str) -> list:
-    """
-    Light structural validation of a unified diff.
-    Returns a list of warning strings (empty = looks OK).
-    """
     warnings = []
     lines = text.split("\n")
 
@@ -229,9 +265,8 @@ def _validate_patch(text: str) -> list:
 #     SELF-HEALING LAYER 1: FUZZY CONTEXT REPAIR
 # ---------------------------------------------------------
 
-# Unicode characters that LLMs commonly swap for ASCII equivalents
 _UNICODE_TO_ASCII = {
-    "\u2011": "-",   # non-breaking hyphen → ASCII hyphen
+    "\u2011": "-",   # non-breaking hyphen
     "\u2010": "-",   # hyphen
     "\u2012": "-",   # figure dash
     "\u2013": "-",   # en dash
@@ -252,14 +287,12 @@ _UNICODE_TO_ASCII = {
 
 
 def _normalize_unicode(text: str) -> str:
-    """Normalize Unicode to ASCII-compatible form."""
     for uc, asc in _UNICODE_TO_ASCII.items():
         text = text.replace(uc, asc)
     return text
 
 
 def _fuzzy_line_match(patch_line: str, file_line: str) -> bool:
-    """Check if two lines match after normalizing Unicode and whitespace."""
     a = _normalize_unicode(patch_line).rstrip()
     b = _normalize_unicode(file_line).rstrip()
     if a == b:
@@ -270,7 +303,6 @@ def _fuzzy_line_match(patch_line: str, file_line: str) -> bool:
 
 
 def _extract_target_path(segment: str) -> Optional[str]:
-    """Get the target file path from a +++ header (with a/b stripped)."""
     for line in segment.split("\n"):
         if line.startswith("+++ "):
             p = line[4:].strip()
@@ -281,47 +313,35 @@ def _extract_target_path(segment: str) -> Optional[str]:
 
 
 def _split_patch_segments(patch_text: str) -> List[str]:
-    """Split a multi-file patch into per-file segments."""
     lines = patch_text.split("\n")
     segments = []
     current_start = None
-
     for i, line in enumerate(lines):
         if line.startswith("diff --git "):
             if current_start is not None:
                 segments.append("\n".join(lines[current_start:i]))
             current_start = i
-
     if current_start is not None:
         segments.append("\n".join(lines[current_start:]))
-
     return [s for s in segments if s.strip()]
 
 
 def _rejoin_segments(segments: List[str]) -> str:
-    """Rejoin patch segments with proper spacing."""
     return "\n".join(s.rstrip("\n") for s in segments) + "\n"
 
 
 def _repair_context_lines(segment: str, file_content: str) -> str:
-    """
-    For a single-file diff segment, replace context and removal lines
-    with the actual content from the file if they fuzzy-match.
-    This fixes Unicode mismatches (e.g., U+2011 vs ASCII hyphen).
-    """
     file_lines = file_content.split("\n")
     patch_lines = segment.split("\n")
     result = []
-
     hunk_re = re.compile(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@")
-
     file_idx = 0
     in_hunk = False
 
     for pl in patch_lines:
         hm = hunk_re.match(pl)
         if hm:
-            file_idx = int(hm.group(1)) - 1  # convert to 0-based
+            file_idx = int(hm.group(1)) - 1
             in_hunk = True
             result.append(pl)
             continue
@@ -331,33 +351,26 @@ def _repair_context_lines(segment: str, file_content: str) -> str:
             continue
 
         if pl.startswith(" "):
-            # Context line — should match file content at file_idx
-            if 0 <= file_idx < len(file_lines):
-                actual = file_lines[file_idx]
-                patch_content = pl[1:]  # strip leading space
-
-                if patch_content.rstrip() != actual.rstrip():
-                    if _fuzzy_line_match(patch_content, actual):
-                        print(f"  [fuzzy-fix] line {file_idx+1}: replaced context "
-                              f"'{patch_content.strip()[:50]}' → '{actual.strip()[:50]}'")
-                        pl = " " + actual
-            file_idx += 1
-
-        elif pl.startswith("-"):
-            # Removed line — must also match file content
             if 0 <= file_idx < len(file_lines):
                 actual = file_lines[file_idx]
                 patch_content = pl[1:]
-
                 if patch_content.rstrip() != actual.rstrip():
                     if _fuzzy_line_match(patch_content, actual):
-                        print(f"  [fuzzy-fix] line {file_idx+1}: replaced removal "
+                        print(f"  [fuzzy-fix] line {file_idx+1}: "
+                              f"'{patch_content.strip()[:50]}' → '{actual.strip()[:50]}'")
+                        pl = " " + actual
+            file_idx += 1
+        elif pl.startswith("-"):
+            if 0 <= file_idx < len(file_lines):
+                actual = file_lines[file_idx]
+                patch_content = pl[1:]
+                if patch_content.rstrip() != actual.rstrip():
+                    if _fuzzy_line_match(patch_content, actual):
+                        print(f"  [fuzzy-fix] line {file_idx+1}: "
                               f"'{patch_content.strip()[:50]}' → '{actual.strip()[:50]}'")
                         pl = "-" + actual
             file_idx += 1
-
         elif pl.startswith("+"):
-            # Added line — does NOT consume a file line
             pass
 
         result.append(pl)
@@ -366,13 +379,8 @@ def _repair_context_lines(segment: str, file_content: str) -> str:
 
 
 def _fuzzy_repair_patch(patch_text: str) -> str:
-    """
-    Read actual files from the repo and repair context/removal lines
-    that differ only by Unicode or whitespace.
-    """
     segments = _split_patch_segments(patch_text)
     repaired = []
-
     for seg in segments:
         target = _extract_target_path(seg)
         if target and os.path.isfile(target):
@@ -385,7 +393,6 @@ def _fuzzy_repair_patch(patch_text: str) -> str:
         else:
             print(f"[self-heal] File not found for repair: {target}")
         repaired.append(seg)
-
     return _rejoin_segments(repaired)
 
 
@@ -408,7 +415,6 @@ Output ONLY the corrected diff, nothing else. No markdown fences."""
 
 
 def _call_openai(prompt: str, system: str = _REGEN_SYSTEM) -> Optional[str]:
-    """Call OpenAI API to regenerate a patch. Returns raw text or None."""
     api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key or not HAS_URLLIB:
         print("[self-heal] No OPENAI_API_KEY or urllib unavailable; skipping LLM regen.")
@@ -427,8 +433,7 @@ def _call_openai(prompt: str, system: str = _REGEN_SYSTEM) -> Optional[str]:
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        url,
-        data=payload,
+        url, data=payload,
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
@@ -445,7 +450,6 @@ def _call_openai(prompt: str, system: str = _REGEN_SYSTEM) -> Optional[str]:
 
 
 def _parse_failed_files(error_output: str) -> List[str]:
-    """Extract file paths from 'error: patch failed: <path>:<line>' messages."""
     failed = []
     for m in re.finditer(r"error: patch failed: ([^:]+):", error_output):
         path = m.group(1).strip()
@@ -455,7 +459,6 @@ def _parse_failed_files(error_output: str) -> List[str]:
 
 
 def _describe_diff_intent(segment: str) -> str:
-    """Summarize what a diff segment is trying to do."""
     added = []
     removed = []
     for line in segment.split("\n"):
@@ -472,21 +475,15 @@ def _describe_diff_intent(segment: str) -> str:
 def _llm_regenerate_failed_segments(
     patch_text: str, failed_files: List[str], prefix: str
 ) -> str:
-    """
-    For each failed file, call OpenAI to regenerate the diff segment
-    using the actual file content as ground truth.
-    """
     segments = _split_patch_segments(patch_text)
     result_segments = []
 
     for seg in segments:
         target = _extract_target_path(seg)
-
         if target not in failed_files:
             result_segments.append(seg)
             continue
 
-        # Read actual file
         if not os.path.isfile(target):
             print(f"[self-heal] File not found for LLM regen: {target}")
             result_segments.append(seg)
@@ -535,13 +532,15 @@ def ensure_branch_and_apply_diff(
     patch_path: pathlib.Path, module_prefix: Optional[str] = None
 ) -> str:
     """
-    Create branch, rewrite patch, apply with self-healing.
+    Create branch, rewrite patch, apply with self-healing, COMMIT and PUSH.
 
-    Apply strategy:
+    Apply strategy (tries each, stops on first success):
       1. Direct apply
       2. Fuzzy context repair (Unicode normalization) → retry
       3. LLM regeneration via OpenAI → retry
       4. Partial apply (--reject) as last resort
+
+    After successful apply: git add -A → git commit → verified.
     """
     ensure_git_identity()
 
@@ -549,9 +548,12 @@ def ensure_branch_and_apply_diff(
     run(f"git checkout -b {branch}")
 
     prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
+    print(f"[config] module prefix = '{prefix}'")
+    print(f"[config] CWD = {os.getcwd()}")
 
     # 1) Load raw patch
     raw = pathlib.Path(patch_path).read_text(encoding="utf-8", errors="ignore")
+    print(f"[patch] Raw patch: {len(raw)} chars, {raw.count(chr(10))} lines")
 
     # 2) Sanitize markdown + normalize EOLs
     patched = _sanitize(raw)
@@ -559,7 +561,7 @@ def ensure_branch_and_apply_diff(
     # 3) Rewrite ALL headers (plain unified → proper git-style a/b)
     patched = _rewrite_patch_paths(patched, prefix)
 
-    # 4) Fully unescape HTML so hunks match actual files
+    # 4) Fully unescape HTML
     before_lt = patched.count("&lt;")
     before_gt = patched.count("&gt;")
     patched = _html_unescape_recursive(patched)
@@ -571,11 +573,10 @@ def ensure_branch_and_apply_diff(
     if after_lt or after_gt:
         final_preview = (patched[:4000] + "...\n") if len(patched) > 4000 else patched
         raise RuntimeError(
-            "HTML entities remain in patch after unescape. "
-            "Please check generators. Preview:\n" + final_preview
+            "HTML entities remain in patch after unescape. Preview:\n" + final_preview
         )
 
-    # 5) Validate patch structure
+    # 5) Validate
     warnings = _validate_patch(patched)
     if warnings:
         print("[patch-validation] Warnings found:")
@@ -593,15 +594,23 @@ def ensure_branch_and_apply_diff(
     run(f"echo '--- FINAL PATCH END ---'")
 
     # ── ATTEMPT 1: Direct apply ──────────────────────────
-    print("\n[apply] ATTEMPT 1: Direct apply...")
+    print("\n" + "="*60)
+    print("[apply] ATTEMPT 1: Direct apply...")
+    print("="*60)
     rc, err = run_capture(f"git apply --whitespace=fix -v {out}")
     if rc == 0:
         print("[apply] ✓ SUCCESS on first attempt.")
-        return branch
-    print(f"[apply] ✗ Attempt 1 failed (rc={rc}):\n{err}")
+        committed = _commit_and_verify("AI autofix: automated security remediation")
+        if committed:
+            return branch
+        print("[apply] WARNING: Apply reported success but no changes committed!")
+
+    print(f"[apply] ✗ Attempt 1 failed (rc={rc})")
 
     # ── ATTEMPT 2: Fuzzy context repair ──────────────────
-    print("\n[apply] ATTEMPT 2: Fuzzy context repair...")
+    print("\n" + "="*60)
+    print("[apply] ATTEMPT 2: Fuzzy context repair...")
+    print("="*60)
     patched = _fuzzy_repair_patch(patched)
     out.write_text(patched, encoding="utf-8")
 
@@ -611,11 +620,17 @@ def ensure_branch_and_apply_diff(
     rc, err = run_capture(f"git apply --whitespace=fix -v {out}")
     if rc == 0:
         print("[apply] ✓ SUCCESS after fuzzy context repair.")
-        return branch
-    print(f"[apply] ✗ Attempt 2 failed (rc={rc}):\n{err}")
+        committed = _commit_and_verify("AI autofix: security remediation (fuzzy-repaired)")
+        if committed:
+            return branch
+        print("[apply] WARNING: Apply reported success but no changes committed!")
+
+    print(f"[apply] ✗ Attempt 2 failed (rc={rc})")
 
     # ── ATTEMPT 3: LLM regeneration ─────────────────────
-    print("\n[apply] ATTEMPT 3: LLM regeneration...")
+    print("\n" + "="*60)
+    print("[apply] ATTEMPT 3: LLM regeneration...")
+    print("="*60)
     failed_files = _parse_failed_files(err)
     if failed_files:
         print(f"[self-heal] Failed files: {failed_files}")
@@ -628,25 +643,29 @@ def ensure_branch_and_apply_diff(
         rc, err = run_capture(f"git apply --whitespace=fix -v {out}")
         if rc == 0:
             print("[apply] ✓ SUCCESS after LLM regeneration.")
-            return branch
-        print(f"[apply] ✗ Attempt 3 failed (rc={rc}):\n{err}")
+            committed = _commit_and_verify("AI autofix: security remediation (LLM-regenerated)")
+            if committed:
+                return branch
+            print("[apply] WARNING: Apply reported success but no changes committed!")
+
+        print(f"[apply] ✗ Attempt 3 failed (rc={rc})")
     else:
         print("[self-heal] Could not parse failed files from error output.")
 
     # ── ATTEMPT 4: Partial apply (--reject) ──────────────
-    print("\n[apply] ATTEMPT 4: Partial apply with --reject...")
+    print("\n" + "="*60)
+    print("[apply] ATTEMPT 4: Partial apply with --reject...")
+    print("="*60)
     rc_rej, rej_out = run_capture(f"git apply --whitespace=fix --reject {out}")
-    if rc_rej == 0:
-        print("[apply] ✓ All hunks applied via --reject.")
-        return branch
 
-    # Even with --reject, some hunks may have applied
-    rc_diff, diff_out = run_capture("git diff --stat")
+    # Check if any changes exist (even partial)
+    rc_diff, diff_out = run_capture("git diff --name-only")
     if diff_out.strip():
-        print(f"[apply] Partial success — some hunks applied:\n{diff_out}")
-        # Clean up .rej files
+        print(f"[apply] Partial success — modified files:\n{diff_out}")
         run_capture("find . -name '*.rej' -delete 2>/dev/null")
-        return branch
+        committed = _commit_and_verify("AI autofix: partial security remediation")
+        if committed:
+            return branch
 
     raise RuntimeError(
         f"All 4 apply attempts failed. Last error:\n{err}\n"
@@ -655,7 +674,14 @@ def ensure_branch_and_apply_diff(
 
 
 def open_pr(branch: str, title: str, body: str) -> str:
-    """Used by run_agent.py to open PR via gh."""
+    """Push branch and open PR via gh CLI."""
+    # Push the branch first
+    print(f"\n[pr] Pushing branch '{branch}' to origin...")
+    rc, push_out = run_capture(f"git push origin {branch}")
+    if rc != 0:
+        print(f"[pr] WARNING: git push failed: {push_out}")
+        print("[pr] Attempting gh pr create (it may auto-push)...")
+
     try:
         out = subprocess.check_output(
             f'gh pr create --title "{title}" --body "{body}" --head "{branch}"',
