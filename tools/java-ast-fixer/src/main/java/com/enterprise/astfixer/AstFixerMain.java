@@ -1,6 +1,14 @@
+package com.enterprise.astfixer;
+
 public class AstFixerMain {
 
     public static void main(String[] args) throws Exception {
+
+        if (args.length < 2) {
+            System.out.println("Usage: AstFixerMain <file> <rule>");
+            return;
+        }
+
         String filePath = args[0];
         String ruleName = args[1];
 
@@ -9,7 +17,7 @@ public class AstFixerMain {
         AstRecipe recipe = RecipeFactory.get(ruleName);
 
         if (recipe == null) {
-            System.out.println("Unknown rule");
+            System.out.println("Unknown rule: " + ruleName);
             return;
         }
 

@@ -1,3 +1,8 @@
+package com.enterprise.astfixer.recipes;
+
+import com.enterprise.astfixer.AstContext;
+import com.enterprise.astfixer.AstRecipe;
+
 public class WeakRandomFixer implements AstRecipe {
 
     @Override
@@ -8,7 +13,7 @@ public class WeakRandomFixer implements AstRecipe {
     @Override
     public void apply(AstContext ctx) {
         String updated = ctx.getSource()
-                .replace("new Random(", "new SecureRandom(")
+                .replace("new Random(", "new java.security.SecureRandom(")
                 .replace("import java.util.Random;",
                          "import java.security.SecureRandom;");
 

@@ -1,3 +1,6 @@
+package com.enterprise.astfixer.recipes;
+import com.enterprise.astfixer.AstContext;
+import com.enterprise.astfixer.AstRecipe;
 public class HardcodedSecretFixer implements AstRecipe {
 
     @Override
