@@ -704,6 +704,19 @@ jobs:
           echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
         env:
           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with: 
+          distribution: temurin
+          java-version: ${{env.JAVA_VERSION}}
+          cache: maven
+          
+      - name: Build AST Engine
+        run: |
+          cd tools/java-ast-fixer
+          mvn -B clean package
+          ls -la target/    
   
       # ✅ Run Agent
       - name: Run Agent
