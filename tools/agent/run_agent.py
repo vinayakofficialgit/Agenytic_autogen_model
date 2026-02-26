@@ -5,10 +5,10 @@ import pathlib
 import subprocess
 from typing import Dict, List
 
-from retriever import RepoRetriever
-from prompt_lib import build_patch_prompt, call_llm_for_diff
-from pick_findings import get_findings
-from git_ops import ensure_git_identity
+from tools.retriever import RepoRetriever
+from tools.prompt_lib import build_patch_prompt, call_llm_for_diff
+from tools.pick_findings import get_findings
+from tools..git_ops import ensure_git_identity
 
 APP_DIR = os.getenv("APP_DIR", "java-pilot-app")
 MIN_SEVERITY = os.getenv("MIN_SEVERITY", "high")
