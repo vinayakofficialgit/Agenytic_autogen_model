@@ -33,7 +33,7 @@ def ensure_git_identity():
 def _sanitize(text: str) -> str:
     """Normalize EOLs and remove markdown ``` lines."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Drop any fence lines like ``` or ```lang
+    # Drop any fence lines like ``` or ```lang entirely
     return re.sub(r"^\s*`{3,}.*$", "", text, flags=re.M)
 
 
@@ -44,11 +44,18 @@ def _html_unescape_recursive(text: str) -> str:
     """
     prev = None
     cur = text
-    for _ in range(10):  # enough to unwrap nested escapes (&amp;lt; → &lt; → <)
+    for _ in range(10):  # unwrap nested encodings (&amp;lt; -> &lt; -> <)
         prev = cur
         cur = html.unescape(cur)
         if cur == prev:
             break
+    # Final defensive pass for common leftovers (rare but safe)
+    cur = (cur
+           .replace("&lt;", "<")
+           .replace("&gt;", ">")
+           .replace("&quot;", '"')
+           .replace("&#39;", "'")
+           .replace("&amp;", "&"))
     return cur
 
 
@@ -144,17 +151,32 @@ def ensure_branch_and_apply_diff(
     # 2) Sanitize markdown + normalize EOLs
     patched = _sanitize(raw)
 
-    # 3) Rewrite ALL headers
+    # 3) Rewrite ALL headers (git-style and plain unified)
     patched = _rewrite_patch_paths(patched, prefix)
 
     # 4) Fully unescape HTML so hunks match actual files
+    before_lt = patched.count("&lt;")
+    before_gt = patched.count("&gt;")
     patched = _html_unescape_recursive(patched)
+    after_lt = patched.count("&lt;")
+    after_gt = patched.count("&gt;")
+
+    # Diagnostics to prove we unescaped
+    print(f"[patch-info] &lt; count: {before_lt} -> {after_lt} ; &gt; count: {before_gt} -> {after_gt}")
+
+    # If anything still escaped, abort early with a clear message
+    if after_lt or after_gt:
+        final_preview = (patched[:4000] + "...\n") if len(patched) > 4000 else patched
+        raise RuntimeError(
+            "HTML entities remain in patch after unescape. "
+            "Please check generators. Preview:\n" + final_preview
+        )
 
     # 5) Write final patch
     out = patch_path.with_suffix(".prefixed.diff")
     out.write_text(patched, encoding="utf-8")
 
-    # 6) Show full patch
+    # 6) Show full patch (so logs match exactly what git sees)
     run(f"echo '--- FINAL PATCH START ---'")
     run(f"wc -l {out}")
     run(f"cat {out}")
