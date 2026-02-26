@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""
+run_agent.py — Main orchestrator for agentic AI autofix pipeline.
+
+Flow:
+  1. Load security findings (Semgrep, Trivy, tfsec, etc.)
+  2. For each finding category, attempt fixes in order:
+       a) Deterministic (regex-based)
+       b) RAG (repo-context-aware)
+       c) LLM fallback (OpenAI prompt → diff)
+  3. Combine all diffs, apply as a single patch, open a PR.
+"""
 import os
 import sys
 import json
@@ -94,6 +105,7 @@ def _target_file_from_segment(segment: str) -> Optional[str]:
 
 
 def _append_candidate(container: List[str], candidate: str, seen_paths: Set[str]):
+    """Append unique diff segments, de-duplicating by target file."""
     segs = _extract_diff_segments(candidate)
     if not segs:
         return
@@ -109,6 +121,7 @@ def _append_candidate(container: List[str], candidate: str, seen_paths: Set[str]
 
 
 def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list, seen_paths: Set[str]):
+    """Process findings of a given kind through the 3-tier fix strategy."""
     if not items:
         return
 
@@ -121,14 +134,14 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
     fx = fx_map[kind]
 
     for it in items:
-        # 1) Deterministic
+        # 1) Deterministic (regex-based, fastest)
         d = fx.try_deterministic(it)
         if d:
             log_topk(kind, it, query="(deterministic)", topk=[], mode="deterministic")
             _append_candidate(diffs, d, seen_paths)
             continue
 
-        # 2) RAG (repo-aware)
+        # 2) RAG (repo-context-aware)
         q = fx.query_for(it)
         topk = retriever.search(q) if q else []
         d = fx.try_rag_style(it, topk)
@@ -137,11 +150,12 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
             _append_candidate(diffs, d, seen_paths)
             continue
 
-        # 3) Trained-knowledge fallback (LLM prompt → diff)
+        # 3) LLM fallback (OpenAI prompt → diff)
         log_topk(kind, it, query=q or "(no-query)", topk=topk, mode="trained")
         prompt = build_patch_prompt(kind, it, topk)
         d = call_llm_for_diff(prompt)
-        _append_candidate(diffs, d, seen_paths)
+        if d:
+            _append_candidate(diffs, d, seen_paths)
 
 
 def main():
@@ -164,7 +178,7 @@ def main():
     patch = OUTPUT / "agent_patch.diff"
     patch.write_text("\n\n".join(diffs), encoding="utf-8")
 
-    # Apply the rewritten patch once and open a PR
+    # Apply the rewritten patch and open a PR
     br = ensure_branch_and_apply_diff(patch)
     pr = open_pr(br, "Agentic AI autofix (deterministic→RAG→trained)", f"Threshold: {min_sev}\nAutomated minimal diffs.")
     print(f"Branch: {br}\nPR: {pr}")
