@@ -108,6 +108,19 @@ def try_deterministic(item: dict) -> Dict[str, str] | None:
         "content": modified
     }
 
+# ============================================================
+# Query Builder (Required by run_agent)
+# ============================================================
+
+def query_for(item: dict) -> str:
+    """
+    Required interface for RAG/LLM fallback.
+    Even if deterministic succeeds, run_agent expects this to exist.
+    """
+    rule = (item.get("rule") or "").lower()
+    detail = (item.get("detail") or "").lower()
+    return f"Secure Java remediation for {rule} {detail}"
+
 
 # ============================================================
 # Rule Mapper
