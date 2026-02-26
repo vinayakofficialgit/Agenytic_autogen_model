@@ -140,6 +140,76 @@ def parse_reports():
 
     return results
 
+# ------------------------------------------------------------
+# Aggregate Table Implementation
+#-------------------------------------------------------------
+def print_aggregate_summary(findings: List[Dict[str, Any]]):
+
+    if not findings:
+        print("No findings to summarize.")
+        return
+
+    from collections import defaultdict
+
+    tool_stats = {}
+    tool_cve_map = defaultdict(list)
+
+    for f in findings:
+        tool = f.get("tool", "unknown")
+        sev = f.get("severity", "LOW").upper()
+        rule = f.get("rule", "")
+        file = f.get("file", "")
+
+        if tool not in tool_stats:
+            tool_stats[tool] = {
+                "total": 0,
+                "CRITICAL": 0,
+                "HIGH": 0,
+                "MEDIUM": 0,
+                "LOW": 0,
+            }
+
+        tool_stats[tool]["total"] += 1
+        if sev in tool_stats[tool]:
+            tool_stats[tool][sev] += 1
+
+        if rule:
+            tool_cve_map[tool].append(f"{rule} : {file}")
+
+    print("\n" + "=" * 120)
+    print("AGGREGATED SCAN SUMMARY (MIN_SEVERITY = {})".format(MIN_SEVERITY))
+    print("=" * 120)
+
+    header = (
+        f"{'Tool':15} | "
+        f"{'Total':5} | "
+        f"{'Critical':8} | "
+        f"{'High':5} | "
+        f"{'Medium':7} | "
+        f"{'Low':4} | "
+        f"{'CVE IDs':30} | "
+        f"{'CVE -> File'}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for tool, stats in tool_stats.items():
+
+        cves = list(set([x.split(" : ")[0] for x in tool_cve_map[tool]]))
+        cve_files = tool_cve_map[tool]
+
+        print(
+            f"{tool:15} | "
+            f"{stats['total']:5} | "
+            f"{stats['CRITICAL']:8} | "
+            f"{stats['HIGH']:5} | "
+            f"{stats['MEDIUM']:7} | "
+            f"{stats['LOW']:4} | "
+            f"{', '.join(cves)[:30]:30} | "
+            f"{', '.join(cve_files)[:60]}"
+        )
+
+    print("=" * 120 + "\n")
 
 # ------------------------------------------------------------
 # Deterministic Fallback
@@ -273,6 +343,7 @@ th{{background:#1e293b}}
 def main():
     print("Collecting findings...")
     findings=parse_reports()
+    print_aggregate_summary(findings)
     print(f"{len(findings)} vulnerabilities above threshold.")
 
     findings=batch_enrich(findings)
