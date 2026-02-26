@@ -543,7 +543,14 @@ jobs:
             jq . final-reports/overall_summary.json || cat final-reports/overall_summary.json
           else
             cat final-reports/overall_summary.json
-          fi    
+          fi
+
+      - name: Run AI Security Intelligence Agent
+        run: python tools/agent/security_intelligence_agent.py
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_ENABLED: "true"
+
     
       # (Optional) upload the overall summary for humans and downstream steps
       - uses: actions/upload-artifact@v4
@@ -558,6 +565,64 @@ jobs:
         with:
           name: all-scan-reports
           path: final-reports/*.json
+
+# ============================================================
+# AI Analysis
+# ============================================================
+  AI-Security-Intelligence:
+    runs-on: ubuntu-latest
+    needs: Aggregate-Scanning-Reports
+    if: always()
+  
+    steps:
+      - uses: actions/checkout@v4
+  
+      - uses: actions/download-artifact@v4
+        with:
+          name: all-scan-reports
+          path: final-reports
+  
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+
+      # 🔐 Fetch OpenAI API Key from Vault
+      - name: Import Secrets from HashiCorp Vault
+        id: vault
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: approle
+          roleId: ${{ secrets.VAULT_ROLE_ID }}
+          secretId: ${{ secrets.VAULT_SECRET_ID }}
+          secrets: |
+            secret/data/openai api_key | OPENAI_API_KEY          
+
+      - name: Install dependencies
+        run: pip install openai
+
+      # ✅ Validate secret before running
+      - name: Validate OpenAI Key
+        run: |
+          if [ -z "${OPENAI_API_KEY}" ]; then
+            echo "❌ OPENAI_API_KEY missing"
+            exit 1
+          fi
+          echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
+        env:
+          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+                  
+      - name: Run AI Security Intelligence Agent
+        run: python tools/agent/security_intelligence_agent.py
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_ENABLED: "true"
+          MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
+  
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-security-intelligence
+          path: agent_output/*
 
 
 # ============================================================
