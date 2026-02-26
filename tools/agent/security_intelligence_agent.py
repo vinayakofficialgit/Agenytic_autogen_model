@@ -1,16 +1,29 @@
 #!/usr/bin/env python3
 """
-Enterprise AI Security Intelligence Agent (Batched Mode)
-Token optimized LLM enrichment.
+Enterprise AI Security Intelligence Agent - V3 Hardened
+
+Features:
+- Batched LLM enrichment
+- Robust JSON extraction
+- ID-based mapping
+- Deterministic fallback
+- Dockerfile mapping for Trivy
+- Line number support
+- Expandable HTML dashboard
 """
 
 import os
 import json
 import pathlib
 import hashlib
+import re
 from datetime import datetime, UTC
 from typing import List, Dict, Any
 from openai import OpenAI
+
+# ------------------------------------------------------------
+# Configuration
+# ------------------------------------------------------------
 
 REPORTS_DIR = pathlib.Path("final-reports")
 OUTPUT_DIR = pathlib.Path("agent_output")
@@ -22,16 +35,16 @@ LLM_ENABLED = os.getenv("LLM_ENABLED", "true").lower() == "true"
 SEV_ORDER = {"CRITICAL":4,"HIGH":3,"MEDIUM":2,"LOW":1}
 
 
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 # Utilities
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 
 def want(sev: str) -> bool:
     return SEV_ORDER.get(sev.upper(),0) >= SEV_ORDER.get(MIN_SEVERITY,3)
 
 def load_json(p: pathlib.Path):
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding="utf-8"))
     except:
         return {}
 
@@ -40,10 +53,22 @@ def fingerprint(v):
         f"{v['file']}|{v['rule']}|{v['severity']}".encode()
     ).hexdigest()
 
+def extract_json(text):
+    # Remove markdown fences
+    text = re.sub(r"^```.*?\n", "", text, flags=re.S)
+    text = text.replace("```", "").strip()
 
-# ----------------------------------------------------------
+    # Extract JSON array safely
+    match = re.search(r"\[.*\]", text, re.S)
+    if match:
+        return json.loads(match.group(0))
+
+    return json.loads(text)
+
+
+# ------------------------------------------------------------
 # Parse Reports
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 
 def parse_reports():
 
@@ -52,7 +77,7 @@ def parse_reports():
     for file in REPORTS_DIR.glob("*.json"):
         data = load_json(file)
 
-        # SEMGREP
+        # -------- SEMGREP --------
         if file.name == "semgrep.json":
             for r in data.get("results", []):
                 extra = r.get("extra", {})
@@ -65,23 +90,41 @@ def parse_reports():
                     "severity": sev,
                     "rule": extra.get("rule_id"),
                     "file": r.get("path"),
+                    "line": (r.get("start") or {}).get("line"),
                     "description": extra.get("message"),
                 })
 
-        # TRIVY
+        # -------- TRIVY IMAGE --------
         elif file.name == "trivy_image.json":
             for res in data.get("Results", []):
-                target = res.get("Target")
                 for v in res.get("Vulnerabilities",[]) or []:
                     sev = (v.get("Severity") or "LOW").upper()
                     if not want(sev): continue
+
                     findings.append({
                         "tool": "trivy_image",
                         "severity": sev,
                         "rule": v.get("VulnerabilityID"),
-                        "file": target,
+                        "file": "java-pilot-app/Dockerfile",
+                        "line": None,
                         "description": f"{v.get('PkgName')} {v.get('InstalledVersion')}",
                     })
+
+        # -------- CHECKOV --------
+        elif file.name in ["checkov_tf.json","checkov_k8s.json"]:
+            tool_name=file.name.replace(".json","")
+            for f in data.get("results",{}).get("failed_checks",[]) or []:
+                sev=(f.get("severity") or "LOW").upper()
+                if not want(sev): continue
+
+                findings.append({
+                    "tool": tool_name,
+                    "severity": sev,
+                    "rule": f.get("check_id"),
+                    "file": f.get("file_path"),
+                    "line": (f.get("file_line_range") or [None])[0],
+                    "description": f.get("check_name"),
+                })
 
     # Deduplicate
     unique={}
@@ -90,61 +133,82 @@ def parse_reports():
         if fp not in unique:
             unique[fp]=f
 
-    return list(unique.values())
+    # Assign IDs
+    results=list(unique.values())
+    for i,f in enumerate(results):
+        f["id"]=i
+
+    return results
 
 
-# ----------------------------------------------------------
+# ------------------------------------------------------------
+# Deterministic Fallback
+# ------------------------------------------------------------
+
+def deterministic_analysis(v):
+    return {
+        "technical_explanation": f"{v['rule']} detected by {v['tool']}.",
+        "business_impact": "Potential exploitation risk.",
+        "remediation_steps": "Upgrade affected component or apply secure coding practices.",
+        "risk_score": 7 if v["severity"] in ["CRITICAL","HIGH"] else 5
+    }
+
+
+# ------------------------------------------------------------
 # Batched LLM Enrichment
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 
-def batch_enrich(findings: List[Dict]):
+def batch_enrich(findings):
 
     if not LLM_ENABLED or not findings:
+        for f in findings:
+            f["ai_analysis"]=deterministic_analysis(f)
         return findings
 
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client=OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-    prompt = f"""
+    prompt=f"""
 You are a senior enterprise security architect.
 
-Below is a JSON array of vulnerabilities.
+For each vulnerability in the JSON array below,
+return enriched analysis in JSON array format with SAME IDs.
 
-For EACH vulnerability, return:
-
-- technical_explanation
-- business_impact
-- remediation_steps
-- risk_score (1-10)
-
-Respond ONLY in valid JSON array format.
+Required keys:
+id
+technical_explanation
+business_impact
+remediation_steps
+risk_score (1-10)
 
 Vulnerabilities:
-{json.dumps(findings, indent=2)}
+{json.dumps(findings,indent=2)}
 """
 
     try:
-        response = client.chat.completions.create(
+        response=client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
             temperature=0.2,
         )
 
-        content = response.choices[0].message.content.strip()
-        enriched = json.loads(content)
+        enriched=extract_json(response.choices[0].message.content.strip())
 
-        # Merge AI results back
-        for i in range(min(len(findings), len(enriched))):
-            findings[i]["ai_analysis"]=enriched[i]
+        enriched_map={e["id"]:e for e in enriched if "id" in e}
+
+        for f in findings:
+            f["ai_analysis"]=enriched_map.get(f["id"],deterministic_analysis(f))
 
     except Exception as e:
-        print("⚠ LLM batch enrichment failed:", e)
+        print("⚠ LLM enrichment failed:",e)
+        for f in findings:
+            f["ai_analysis"]=deterministic_analysis(f)
 
     return findings
 
 
-# ----------------------------------------------------------
-# HTML Dashboard
-# ----------------------------------------------------------
+# ------------------------------------------------------------
+# HTML Generator
+# ------------------------------------------------------------
 
 def generate_html(findings):
 
@@ -152,31 +216,48 @@ def generate_html(findings):
     for f in findings:
         ai=f.get("ai_analysis",{})
         rows+=f"""
-        <tr>
-            <td>{f['severity']}</td>
-            <td>{f['tool']}</td>
-            <td>{f['rule']}</td>
-            <td>{f['file']}</td>
-            <td>{ai.get('risk_score','')}</td>
-        </tr>
-        """
+<tr>
+<td>{f['severity']}</td>
+<td>{f['tool']}</td>
+<td>{f['rule']}</td>
+<td>{f['file']}</td>
+<td>{f.get('line','')}</td>
+<td>{ai.get('risk_score','')}</td>
+<td>
+<details>
+<summary>View Analysis</summary>
+<b>Technical:</b> {ai.get('technical_explanation','')}<br>
+<b>Business Impact:</b> {ai.get('business_impact','')}<br>
+<b>Remediation:</b> {ai.get('remediation_steps','')}
+</details>
+</td>
+</tr>
+"""
 
     return f"""
 <html>
 <head>
 <title>AI Security Intelligence</title>
 <style>
-body{{font-family:Arial;background:#111;color:#eee}}
+body{{font-family:Arial;background:#0f172a;color:#e2e8f0}}
 table{{width:100%;border-collapse:collapse}}
-td,th{{border:1px solid #333;padding:8px}}
+td,th{{border:1px solid #334155;padding:8px}}
+th{{background:#1e293b}}
 </style>
 </head>
 <body>
-<h1>AI Security Intelligence Dashboard</h1>
+<h1>AI Security Intelligence Dashboard (V3)</h1>
 <p>Generated: {datetime.now(UTC).isoformat()}</p>
+<p>Threshold: {MIN_SEVERITY}</p>
 <table>
 <tr>
-<th>Severity</th><th>Tool</th><th>CVE/Rule</th><th>File</th><th>Risk</th>
+<th>Severity</th>
+<th>Tool</th>
+<th>CVE/Rule</th>
+<th>File</th>
+<th>Line</th>
+<th>Risk</th>
+<th>Details</th>
 </tr>
 {rows}
 </table>
@@ -185,9 +266,9 @@ td,th{{border:1px solid #333;padding:8px}}
 """
 
 
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 # Main
-# ----------------------------------------------------------
+# ------------------------------------------------------------
 
 def main():
     print("Collecting findings...")
@@ -204,18 +285,11 @@ def main():
         generate_html(findings)
     )
 
-    print("AI Security Intelligence Generated.")
+    print("AI Security Intelligence V3 generated successfully.")
 
 
 if __name__=="__main__":
     main()
-
-
-
-
-
-
-
 
 #######WORKING CODE BUT TO AVOID API CALLS FOR EACH VULN AND SEND IN BATCH ALL VULN WITH 1 API CALL ABOVE CODE DONE########
 # #!/usr/bin/env python3
