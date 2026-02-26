@@ -2,7 +2,7 @@ name: DevSecOps Agentic AI Pipeline (BugBuster)
 
 on:
   push:
-    branches: [feature/devsecops-agent-bgbstr]
+    branches: [lts-feature-v]
   workflow_dispatch:
 
 concurrency:
