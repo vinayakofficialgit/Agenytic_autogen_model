@@ -102,6 +102,7 @@ def get_findings(min_severity: str) -> Dict[str, List[Dict[str,Any]]]:
     k8s_only = [f for f in k8s if f["file"].endswith((".yml",".yaml"))]
     tf_only  = [f for f in tf  if f["file"].endswith(".tf")]
     java_only= [f for f in java if f["file"].endswith(".java")]
-    dock     = img  # we’ll drive Docker best‑practice from image results
+    dock = [{"file": "java-pilot-app/Dockerfile", **f} for f in img]
+    # dock     = img  # we’ll drive Docker best‑practice from image results
 
     return {"k8s": k8s_only, "tf": tf_only, "java": java_only, "docker": dock}

@@ -1,149 +1,190 @@
 #!/usr/bin/env python3
 import os
-import json
-import pathlib
 import subprocess
+import pathlib
+import tempfile
 from typing import Dict, List
 
 from tools.embeddings.retriever import RepoRetriever
-from tools.agent.utils.prompt_lib import build_patch_prompt, call_llm_for_diff
 from tools.agent.pick_findings import get_findings
-from tools.agent.utils.git_ops import ensure_git_identity
-
-APP_DIR = os.getenv("APP_DIR", "java-pilot-app")
-MIN_SEVERITY = os.getenv("MIN_SEVERITY", "high")
-RAG_DEBUG = os.getenv("RAG_DEBUG", "false").lower() == "true"
+from tools.agent.fixers import fixer_k8s, fixer_tf, fixer_java, fixer_docker
 
 
-def run(cmd: str, check=True):
-    print(f"+ {cmd}")
-    return subprocess.run(cmd, shell=True, check=check)
+REPO_ROOT = pathlib.Path(".").resolve()
+OUTPUT = REPO_ROOT / "agent_output"
+OUTPUT.mkdir(parents=True, exist_ok=True)
 
 
-def validate_diff_structure(diff: str) -> bool:
-    if not diff.strip().startswith("--- "):
-        return False
-    if "@@" not in diff:
-        return False
-    return True
+# ============================================================
+# Git Helpers
+# ============================================================
+
+def ensure_git_identity():
+    subprocess.run(["git", "config", "user.email", "ci-bot@example.com"], check=False)
+    subprocess.run(["git", "config", "user.name", "CI Bot"], check=False)
 
 
-def apply_single_patch(branch: str, diff_text: str, index: int) -> bool:
-    tmp_patch = pathlib.Path(f"agent_output/temp_patch_{index}.diff")
-    tmp_patch.write_text(diff_text, encoding="utf-8")
+def create_branch() -> str:
+    branch = f"ai-autofix-{os.urandom(4).hex()}"
+    subprocess.run(["git", "checkout", "-b", branch], check=True)
+    return branch
 
-    # Dry run
+
+def commit_and_push(branch: str):
+    # subprocess.run(["git", "add", "."], check=True)
+    # subprocess.run(["git", "add"] + list(file_updates.keys()), check=True)
+    subprocess.run(["git", "add", "-u"], check=True)
+    subprocess.run(["git", "commit", "-m", "Agentic AI Autofix"], check=True)
+    subprocess.run(["git", "push", "--set-upstream", "origin", branch], check=True)
+
+
+# ============================================================
+# Patch Generator (Enterprise Safe)
+# ============================================================
+
+def generate_git_patch(file_path: str, new_content: str) -> str | None:
+    """
+    Use git itself to generate a clean unified diff.
+    This eliminates corrupt patch errors.
+    """
+    original = pathlib.Path(file_path)
+
+    if not original.exists():
+        print(f"⚠ File not found: {file_path}")
+        return None
+
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(new_content.encode("utf-8"))
+        tmp_path = tmp.name
+
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-index", file_path, tmp_path],
+            capture_output=True,
+            text=True,
+        )
+
+        patch = result.stdout
+        if not patch.strip():
+            return None
+
+        return patch
+    finally:
+        os.unlink(tmp_path)
+
+
+def apply_patch(patch: str) -> bool:
+    """
+    Apply patch using git apply safely.
+    """
+    patch_file = OUTPUT / "agent_patch.diff"
+    patch_file.write_text(patch, encoding="utf-8")
+
     result = subprocess.run(
-        f"git apply --check {tmp_patch}",
-        shell=True,
+        ["git", "apply", "--check", str(patch_file)],
         capture_output=True,
-        text=True
+        text=True,
     )
 
     if result.returncode != 0:
-        print(f"⚠ Patch {index} failed validation:")
+        print("⚠ Patch validation failed:")
         print(result.stderr)
         return False
 
-    # Apply
-    subprocess.check_call(
-        f"git apply --whitespace=fix {tmp_patch}",
-        shell=True
-    )
-
+    subprocess.run(["git", "apply", str(patch_file)], check=True)
     return True
 
 
-def has_git_changes() -> bool:
-    result = subprocess.run(
-        "git status --porcelain",
-        shell=True,
-        capture_output=True,
-        text=True
-    )
-    return bool(result.stdout.strip())
+# ============================================================
+# Agent Core
+# ============================================================
+
+def collect_file_updates(findings: Dict[str, list], retriever: RepoRetriever):
+    """
+    Aggregate all fixes per file BEFORE generating patches.
+    Prevents context mismatch issues.
+    """
+    file_updates: Dict[str, str] = {}
+
+    fx_map = {
+        "k8s": fixer_k8s,
+        "tf": fixer_tf,
+        "java": fixer_java,
+        "docker": fixer_docker,
+    }
+
+    for kind, items in findings.items():
+        if kind not in fx_map:
+            continue
+
+        fx = fx_map[kind]
+
+        for idx, item in enumerate(items, 1):
+            print(f"--- Processing {kind} finding #{idx} ---")
+
+            result = fx.try_deterministic(item)
+
+            if not result:
+                # Optional: RAG fallback if deterministic not available
+                q = fx.query_for(item)
+                topk = retriever.search(q) if q else []
+                result = fx.try_rag_style(item, topk)
+
+            if not result:
+                print("⚠ No fix generated")
+                continue
+
+            path = result["file"]
+            content = result["content"]
+
+            file_updates[path] = content
+
+    return file_updates
 
 
 def main():
-    pathlib.Path("agent_output").mkdir(exist_ok=True)
-
-    findings = get_findings(MIN_SEVERITY)
-
-    if not any(findings.values()):
-        print("No findings to fix.")
-        return
-
-    retriever = RepoRetriever(top_k=6)
-
     ensure_git_identity()
 
-    branch = f"ai-autofix-{os.urandom(4).hex()}"
-    run(f"git checkout -b {branch}")
+    min_sev = os.getenv("MIN_SEVERITY", "HIGH").upper()
+    findings = get_findings(min_sev)
 
-    patch_counter = 0
-    applied_count = 0
+    retriever = RepoRetriever(top_k=6)
+    print("RAG ready.")
 
-    def handle(kind: str, items: List[Dict]):
-        nonlocal patch_counter, applied_count
+    file_updates = collect_file_updates(findings, retriever)
 
-        for finding in items:
-            patch_counter += 1
-            print(f"\n--- Processing {kind} finding #{patch_counter} ---")
+    if not file_updates:
+        print("⚠ No patches generated.")
+        return
 
-            context = retriever.search(
-                f"{finding.get('file')} {finding.get('rule')} {finding.get('detail')}"
-            )
+    branch = create_branch()
 
-            if RAG_DEBUG:
-                print(f"Context chunks: {len(context)}")
+    applied_any = False
 
-            prompt = build_patch_prompt(kind, finding, context)
-            diff = call_llm_for_diff(prompt)
+    for path, new_content in file_updates.items():
+        print(f"\n📦 Generating patch for {path}")
 
-            if not validate_diff_structure(diff):
-                print("⚠ Invalid diff structure. Skipping.")
-                continue
+        patch = generate_git_patch(path, new_content)
 
-            success = apply_single_patch(branch, diff, patch_counter)
+        if not patch:
+            print("⚠ No diff generated (content identical)")
+            continue
 
-            if success:
-                applied_count += 1
-                print("✓ Patch applied")
-            else:
-                print("⚠ Patch skipped due to git apply failure")
+        if apply_patch(patch):
+            print("✓ Patch applied")
+            applied_any = True
+        else:
+            print("⚠ Patch skipped")
 
-    handle("k8s", findings.get("k8s", []))
-    handle("tf", findings.get("tf", []))
-    handle("java", findings.get("java", []))
-    handle("docker", findings.get("docker", []))
-
-    if applied_count == 0:
+    if not applied_any:
         print("⚠ No patches successfully applied.")
-        run("git checkout -", check=False)
-        run(f"git branch -D {branch}", check=False)
+        subprocess.run(["git", "checkout", "-"], check=False)
+        subprocess.run(["git", "branch", "-D", branch], check=False)
         return
 
-    if not has_git_changes():
-        print("⚠ No actual file changes detected.")
-        run("git checkout -", check=False)
-        run(f"git branch -D {branch}", check=False)
-        return
+    commit_and_push(branch)
 
-    run("git add .")
-    run('git commit -m "Agentic AI security autofix"')
-    run(f"git push origin {branch}")
-
-    meta = {
-        "branch": branch,
-        "applied_patches": applied_count
-    }
-
-    pathlib.Path("agent_output/agent_meta.json").write_text(
-        json.dumps(meta, indent=2),
-        encoding="utf-8"
-    )
-
-    print(f"\n✓ Branch {branch} pushed with {applied_count} fixes.")
+    print(f"\n🚀 Branch pushed: {branch}")
 
 
 if __name__ == "__main__":
