@@ -65,10 +65,26 @@ def _html_unescape_recursive(text: str) -> str:
 
 _HEADER_RE = re.compile(r"^(---|\+\+\+)\s+([^\t\r\n]+)(\t[^\r\n]+)?$")
 
+
+def _strip_ab(path: str) -> str:
+    """Strip leading a/ or b/ from a path."""
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
+
+
+def _ensure_prefix(path: str, prefix: str) -> str:
+    """Prepend module prefix if not already present."""
+    if path.startswith(prefix) or path.startswith("/") or path.startswith("./"):
+        return path
+    return prefix + path
+
+
 def _normalize_header(line: str, prefix: str) -> str:
     """
     Normalize ANY '--- path[<meta>]' or '+++ path[<meta>]' header.
-    Preserves trailing metadata (tabs/timestamps).
+    Always emits git-style a/ or b/ prefixed paths so that
+    `git apply -p1` strips the a/b prefix and keeps the module prefix.
     """
     m = _HEADER_RE.match(line)
     if not m:
@@ -77,24 +93,20 @@ def _normalize_header(line: str, prefix: str) -> str:
     mark, path, meta = m.groups()
     meta = meta or ""
 
-    # Git-style a/ and b/
-    if path.startswith("a/") or path.startswith("b/"):
-        lead = path[:2]  # 'a/' or 'b/'
-        core = path[2:]
-        if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
-            core = prefix + core
-        return f"{mark} {lead}{core}{meta}"
+    # Determine the correct git-style lead: --- → a/, +++ → b/
+    lead = "a/" if mark == "---" else "b/"
 
-    # Plain unified header
-    if not (
-        path.startswith(prefix) or path.startswith("/") or path.startswith("./")
-    ):
-        path = prefix + path
+    # Strip any existing a/ or b/ to get the core path
+    core = _strip_ab(path)
 
-    return f"{mark} {path}{meta}"
+    # Ensure module prefix is present
+    core = _ensure_prefix(core, prefix)
+
+    return f"{mark} {lead}{core}{meta}"
 
 
 _DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+
 
 def _normalize_diff_git(line: str, prefix: str) -> str:
     """
@@ -105,28 +117,51 @@ def _normalize_diff_git(line: str, prefix: str) -> str:
         return line
 
     a_path, b_path = m.groups()
-    if not (a_path.startswith(prefix) or a_path.startswith("/") or a_path.startswith("./")):
-        a_path = prefix + a_path
-    if not (b_path.startswith(prefix) or b_path.startswith("/") or b_path.startswith("./")):
-        b_path = prefix + b_path
+    a_path = _ensure_prefix(a_path, prefix)
+    b_path = _ensure_prefix(b_path, prefix)
     return f"diff --git a/{a_path} b/{b_path}"
+
+
+def _extract_path_from_header(line: str) -> str:
+    """Extract the file path from a --- or +++ header line."""
+    path = line[4:].strip()
+    if "\t" in path:
+        path = path.split("\t", 1)[0]
+    return _strip_ab(path)
 
 
 def _rewrite_patch_paths(text: str, prefix: str) -> str:
     """
     PUBLIC helper:
-    Normalize ALL headers across the patch:
-      - 'diff --git a/... b/...'
-      - '--- a/<path>[meta]' / '+++ b/<path>[meta]'
-      - '--- <path>[meta]'  / '+++ <path>[meta]'
+    Normalize ALL headers across the patch and ensure every segment
+    has a proper 'diff --git a/... b/...' header line.
+
+    This guarantees `git apply -p1` will:
+      1. Strip the a/b prefix
+      2. Find the file at <prefix>/<relative-path> in the repo
     """
     out = []
+    prev_was_diff_git = False
+
     for line in text.split("\n"):
         if line.startswith("diff --git "):
             line = _normalize_diff_git(line, prefix)
-        elif line.startswith("--- ") or line.startswith("+++ "):
+            prev_was_diff_git = True
+        elif line.startswith("--- "):
+            if not prev_was_diff_git:
+                # Plain unified segment with no diff --git header.
+                # Inject one so git treats it as a proper git diff.
+                target = _extract_path_from_header(line)
+                target = _ensure_prefix(target, prefix)
+                out.append(f"diff --git a/{target} b/{target}")
             line = _normalize_header(line, prefix)
+            prev_was_diff_git = False
+        elif line.startswith("+++ "):
+            line = _normalize_header(line, prefix)
+        else:
+            prev_was_diff_git = False
         out.append(line)
+
     return "\n".join(out)
 
 
@@ -151,7 +186,7 @@ def ensure_branch_and_apply_diff(
     # 2) Sanitize markdown + normalize EOLs
     patched = _sanitize(raw)
 
-    # 3) Rewrite ALL headers (git-style and plain unified)
+    # 3) Rewrite ALL headers (git-style and plain unified → proper git-style)
     patched = _rewrite_patch_paths(patched, prefix)
 
     # 4) Fully unescape HTML so hunks match actual files
@@ -185,7 +220,7 @@ def ensure_branch_and_apply_diff(
     # 7) Dry run (non-fatal)
     run(f"git apply --check {out} || true")
 
-    # 8) Apply
+    # 8) Apply with -p1 (strips a/ and b/, preserves module prefix)
     run(f"git apply --whitespace=fix {out}")
 
     return branch
