@@ -545,13 +545,6 @@ jobs:
             cat final-reports/overall_summary.json
           fi
 
-      - name: Run AI Security Intelligence Agent
-        run: python tools/agent/security_intelligence_agent.py
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          LLM_ENABLED: "true"
-
-    
       # (Optional) upload the overall summary for humans and downstream steps
       - uses: actions/upload-artifact@v4
         with:
@@ -611,7 +604,7 @@ jobs:
           echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
         env:
           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
-                  
+
       - name: Run AI Security Intelligence Agent
         run: python tools/agent/security_intelligence_agent.py
         env:
