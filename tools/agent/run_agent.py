@@ -181,7 +181,14 @@ def collect_file_updates(findings: Dict[str, list], retriever: RepoRetriever):
             path = result["file"]
             content = result["content"]
 
-            print(f"✓ Resolved by: {resolution_stage}")
+            # print(f"✓ Resolved by: {resolution_stage}")
+            print(f"""
+            -----------------------------------------
+            ✔ RESOLVED
+            File : {path}
+            Stage: {resolution_stage}
+            -----------------------------------------
+            """)
             file_updates[path] = content
 
     return file_updates

@@ -1,37 +1,30 @@
 #!/usr/bin/env python3
 import pathlib
-import re
-from typing import List, Dict, Any
+import subprocess
+from typing import Dict, Any, List
 
 
 # ============================================================
-# Query Builder
+# AST Rule Mapping
 # ============================================================
+
+RULE_MAP = {
+    "sql-injection": "SqlInjectionFixer",
+    "weak-random": "WeakRandomFixer",
+    "md5-usage": "MD5Fixer",
+    "command-injection": "CommandInjectionFixer",
+}
+
 
 def query_for(item: dict) -> str:
-    return "java spring jdbc JdbcTemplate prepared statement parameterized query"
+    return "secure java coding example remediation"
 
 
 # ============================================================
-# Helpers
+# Path Helpers
 # ============================================================
-
-def _read(path: str) -> str:
-    p = pathlib.Path(path)
-    if not p.exists():
-        return ""
-    data = p.read_text(encoding="utf-8", errors="ignore")
-    return data.replace("\r\n", "\n").replace("\r", "\n")
-
 
 def _resolve_full_path(path: str) -> str:
-    """
-    Fix path mismatch from scanner output.
-    Scanners may return:
-        src/main/java/...
-    But actual file is:
-        java-pilot-app/src/main/java/...
-    """
     p = pathlib.Path(path)
 
     if p.exists():
@@ -44,8 +37,15 @@ def _resolve_full_path(path: str) -> str:
     return ""
 
 
+def _read(path: str) -> str:
+    p = pathlib.Path(path)
+    if not p.exists():
+        return ""
+    return p.read_text(encoding="utf-8", errors="ignore")
+
+
 # ============================================================
-# Deterministic SQL Injection Fix
+# AST Deterministic Fix
 # ============================================================
 
 def try_deterministic(item: dict) -> Dict[str, str] | None:
@@ -59,28 +59,43 @@ def try_deterministic(item: dict) -> Dict[str, str] | None:
         return None
 
     original = _read(path)
-    if not original:
+    if not original.strip():
         return None
 
-    modified = original
-
-    # Match vulnerable SQL concatenation pattern
-    pattern = re.compile(
-        r'(?ms)^([ \t]*)String\s+sql\s*=\s*"SELECT\s+\*\s+FROM\s+USERS\s+WHERE\s+NAME\s*=\s*\'"\s*\+\s*name\s*\+\s*"\'";\s*\n'
-        r'([ \t]*)return\s+jdbc\.queryForList\s*\(\s*sql\s*\)\s*;\s*'
-    )
-
-    replacement = (
-        r'\1String sql = "SELECT * FROM USERS WHERE NAME = ?";\n'
-        r'\2return jdbc.queryForList(sql, name);\n'
-    )
-
-    modified, count = pattern.subn(replacement, modified)
-
-    if count == 0:
+    rule_id = _map_rule(item)
+    if not rule_id:
         return None
+
+    print(f"→ AST Rule Triggered: {rule_id}")
+
+    try:
+        subprocess.run(
+            [
+                "java",
+                "-cp",
+                "tools/java-ast-fixer/target/classes",
+                "com.enterprise.astfixer.AstFixerMain",
+                path,
+                rule_id
+            ],
+            check=True
+        )
+    except Exception as e:
+        print(f"⚠ AST engine failed: {e}")
+        return None
+
+    modified = _read(path)
 
     if modified == original:
+        print("⚠ AST rule applied no changes")
+        return None
+
+    if len(modified.strip()) == 0:
+        print("⚠ AST produced empty file — skipping")
+        return None
+
+    if len(modified) < len(original) * 0.5:
+        print("⚠ AST rewrite suspiciously small — skipping")
         return None
 
     return {
@@ -90,7 +105,30 @@ def try_deterministic(item: dict) -> Dict[str, str] | None:
 
 
 # ============================================================
-# RAG fallback (currently disabled)
+# Rule Mapper
+# ============================================================
+
+def _map_rule(item: dict) -> str | None:
+    rule = (item.get("rule") or "").lower()
+    detail = (item.get("detail") or "").lower()
+
+    if "sql" in rule or "sql" in detail:
+        return "SqlInjectionFixer"
+
+    if "random" in rule:
+        return "WeakRandomFixer"
+
+    if "md5" in rule:
+        return "MD5Fixer"
+
+    if "command" in rule:
+        return "CommandInjectionFixer"
+
+    return None
+
+
+# ============================================================
+# RAG Fallback (Optional)
 # ============================================================
 
 def try_rag_style(item: dict, topk: List[Dict[str, Any]]) -> Dict[str, str] | None:
