@@ -140,14 +140,115 @@ def parse_reports():
 
     return results
 
+
+#-------------------------------------------------------------
+# Executive Summary
+#-------------------------------------------------------------
+
+def print_executive_summary(all_findings: List[Dict[str, Any]]):
+
+    from collections import Counter
+
+    total = len(all_findings)
+    sev_counter = Counter([f["severity"].upper() for f in all_findings])
+
+    critical = sev_counter.get("CRITICAL", 0)
+    high = sev_counter.get("HIGH", 0)
+    medium = sev_counter.get("MEDIUM", 0)
+    low = sev_counter.get("LOW", 0)
+
+    risk_level = "LOW"
+    if critical > 0:
+        risk_level = "CRITICAL"
+    elif high > 5:
+        risk_level = "HIGH"
+    elif high > 0:
+        risk_level = "ELEVATED"
+
+    print("\n" + "=" * 120)
+    print("EXECUTIVE SECURITY SUMMARY")
+    print("=" * 120)
+    print(f"Total Vulnerabilities Detected : {total}")
+    print(f"Critical : {critical}")
+    print(f"High     : {high}")
+    print(f"Medium   : {medium}")
+    print(f"Low      : {low}")
+    print("-" * 120)
+    print(f"Overall Risk Posture : {risk_level}")
+    print("=" * 120 + "\n")
+
 # ------------------------------------------------------------
 # Aggregate Table Implementation
 #-------------------------------------------------------------
-def print_aggregate_summary(findings: List[Dict[str, Any]]):
+# def print_aggregate_summary(findings: List[Dict[str, Any]]):
 
-    if not findings:
-        print("No findings to summarize.")
-        return
+#     if not findings:
+#         print("No findings to summarize.")
+#         return
+
+#     from collections import defaultdict
+
+#     tool_stats = {}
+#     tool_cve_map = defaultdict(list)
+
+#     for f in findings:
+#         tool = f.get("tool", "unknown")
+#         sev = f.get("severity", "LOW").upper()
+#         rule = f.get("rule", "")
+#         file = f.get("file", "")
+
+#         if tool not in tool_stats:
+#             tool_stats[tool] = {
+#                 "total": 0,
+#                 "CRITICAL": 0,
+#                 "HIGH": 0,
+#                 "MEDIUM": 0,
+#                 "LOW": 0,
+#             }
+
+#         tool_stats[tool]["total"] += 1
+#         if sev in tool_stats[tool]:
+#             tool_stats[tool][sev] += 1
+
+#         if rule:
+#             tool_cve_map[tool].append(f"{rule} : {file}")
+
+#     print("\n" + "=" * 120)
+#     print("AGGREGATED SCAN SUMMARY (MIN_SEVERITY = {})".format(MIN_SEVERITY))
+#     print("=" * 120)
+
+#     header = (
+#         f"{'Tool':15} | "
+#         f"{'Total':5} | "
+#         f"{'Critical':8} | "
+#         f"{'High':5} | "
+#         f"{'Medium':7} | "
+#         f"{'Low':4} | "
+#         f"{'CVE IDs':30} | "
+#         f"{'CVE -> File'}"
+#     )
+#     print(header)
+#     print("-" * len(header))
+
+#     for tool, stats in tool_stats.items():
+
+#         cves = list(set([x.split(" : ")[0] for x in tool_cve_map[tool]]))
+#         cve_files = tool_cve_map[tool]
+
+#         print(
+#             f"{tool:15} | "
+#             f"{stats['total']:5} | "
+#             f"{stats['CRITICAL']:8} | "
+#             f"{stats['HIGH']:5} | "
+#             f"{stats['MEDIUM']:7} | "
+#             f"{stats['LOW']:4} | "
+#             f"{', '.join(cves)[:30]:30} | "
+#             f"{', '.join(cve_files)[:60]}"
+#         )
+
+#     print("=" * 120 + "\n")
+
+def print_threshold_summary(findings: List[Dict[str, Any]]):
 
     from collections import defaultdict
 
@@ -155,8 +256,8 @@ def print_aggregate_summary(findings: List[Dict[str, Any]]):
     tool_cve_map = defaultdict(list)
 
     for f in findings:
-        tool = f.get("tool", "unknown")
-        sev = f.get("severity", "LOW").upper()
+        tool = f["tool"]
+        sev = f["severity"].upper()
         rule = f.get("rule", "")
         file = f.get("file", "")
 
@@ -170,14 +271,13 @@ def print_aggregate_summary(findings: List[Dict[str, Any]]):
             }
 
         tool_stats[tool]["total"] += 1
-        if sev in tool_stats[tool]:
-            tool_stats[tool][sev] += 1
+        tool_stats[tool][sev] += 1
 
         if rule:
             tool_cve_map[tool].append(f"{rule} : {file}")
 
     print("\n" + "=" * 120)
-    print("AGGREGATED SCAN SUMMARY (MIN_SEVERITY = {})".format(MIN_SEVERITY))
+    print(f"AGGREGATED SCAN SUMMARY (MIN_SEVERITY = {MIN_SEVERITY})")
     print("=" * 120)
 
     header = (
@@ -194,7 +294,6 @@ def print_aggregate_summary(findings: List[Dict[str, Any]]):
     print("-" * len(header))
 
     for tool, stats in tool_stats.items():
-
         cves = list(set([x.split(" : ")[0] for x in tool_cve_map[tool]]))
         cve_files = tool_cve_map[tool]
 
@@ -207,6 +306,38 @@ def print_aggregate_summary(findings: List[Dict[str, Any]]):
             f"{stats['LOW']:4} | "
             f"{', '.join(cves)[:30]:30} | "
             f"{', '.join(cve_files)[:60]}"
+        )
+
+    print("=" * 120 + "\n")
+
+
+#------------------------------------------------------------
+# Full Inventory
+#------------------------------------------------------------
+
+def print_full_inventory(all_findings: List[Dict[str, Any]]):
+
+    print("\n" + "=" * 120)
+    print("FULL VULNERABILITY INVENTORY (ALL SEVERITIES)")
+    print("=" * 120)
+
+    header = (
+        f"{'Severity':10} | "
+        f"{'Tool':15} | "
+        f"{'Rule/CVE':20} | "
+        f"{'File':40} | "
+        f"{'Line'}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for f in all_findings:
+        print(
+            f"{f['severity']:10} | "
+            f"{f['tool']:15} | "
+            f"{(f.get('rule') or '')[:20]:20} | "
+            f"{(f.get('file') or '')[:40]:40} | "
+            f"{f.get('line')}"
         )
 
     print("=" * 120 + "\n")
@@ -342,8 +473,19 @@ th{{background:#1e293b}}
 
 def main():
     print("Collecting findings...")
-    findings=parse_reports()
-    print_aggregate_summary(findings)
+    # findings=parse_reports()
+
+    all_findings = parse_reports()
+
+    print_executive_summary(all_findings)
+    print_full_inventory(all_findings)
+    
+    # Filter by MIN_SEVERITY for intelligence enrichment
+    filtered_findings = [f for f in all_findings if want(f["severity"])]
+    
+    print_threshold_summary(filtered_findings)
+
+    # print_aggregate_summary(findings)
     print(f"{len(findings)} vulnerabilities above threshold.")
 
     findings=batch_enrich(findings)
