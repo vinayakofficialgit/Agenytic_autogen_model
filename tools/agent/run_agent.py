@@ -8,7 +8,7 @@ Flow:
        a) Deterministic (regex-based)
        b) RAG (repo-context-aware)
        c) LLM fallback (OpenAI prompt → diff)
-  3. Combine all diffs, apply as a single patch, open a PR.
+  3. Combine all diffs, apply as a single patch, commit, and open a PR.
 """
 import os
 import sys
@@ -108,22 +108,28 @@ def _append_candidate(container: List[str], candidate: str, seen_paths: Set[str]
     """Append unique diff segments, de-duplicating by target file."""
     segs = _extract_diff_segments(candidate)
     if not segs:
+        print(f"  [pipeline] WARNING: No valid diff segments extracted from candidate ({len(candidate)} chars)")
         return
     for s in segs:
         target = _target_file_from_segment(s)
-        # De-duplicate per target file to avoid conflicting hunks
         if target and target in seen_paths:
+            print(f"  [pipeline] Skipping duplicate target: {target}")
             continue
         if s not in container:
             container.append(s if s.endswith("\n") else s + "\n")
             if target:
                 seen_paths.add(target)
+                print(f"  [pipeline] Added diff segment for: {target}")
 
 
 def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: list, seen_paths: Set[str]):
     """Process findings of a given kind through the 3-tier fix strategy."""
     if not items:
         return
+
+    print(f"\n{'='*60}")
+    print(f"[{kind}] Processing {len(items)} finding(s)...")
+    print(f"{'='*60}")
 
     fx_map = {
         "k8s": fixer_k8s,
@@ -133,11 +139,14 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
     }
     fx = fx_map[kind]
 
-    for it in items:
+    for idx, it in enumerate(items):
+        print(f"\n[{kind}] Finding {idx+1}/{len(items)}: {it.get('file', 'unknown')}")
+
         # 1) Deterministic (regex-based, fastest)
         d = fx.try_deterministic(it)
         if d:
             log_topk(kind, it, query="(deterministic)", topk=[], mode="deterministic")
+            print(f"  [pipeline] ✓ Deterministic fix generated ({len(d)} chars)")
             _append_candidate(diffs, d, seen_paths)
             continue
 
@@ -147,6 +156,7 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
         d = fx.try_rag_style(it, topk)
         if d:
             log_topk(kind, it, query=q, topk=topk, mode="rag")
+            print(f"  [pipeline] ✓ RAG fix generated ({len(d)} chars)")
             _append_candidate(diffs, d, seen_paths)
             continue
 
@@ -155,12 +165,30 @@ def handle_findings(kind: str, items: list, retriever: RepoRetriever, diffs: lis
         prompt = build_patch_prompt(kind, it, topk)
         d = call_llm_for_diff(prompt)
         if d:
+            print(f"  [pipeline] ✓ LLM fix generated ({len(d)} chars)")
             _append_candidate(diffs, d, seen_paths)
+        else:
+            print(f"  [pipeline] ✗ All 3 fix strategies failed for this finding")
 
 
 def main():
     min_sev = os.getenv("MIN_SEVERITY", "HIGH").upper()
+    print(f"\n{'#'*60}")
+    print(f"# Agentic AI Autofix Pipeline")
+    print(f"# MIN_SEVERITY = {min_sev}")
+    print(f"# CWD = {os.getcwd()}")
+    print(f"# REPO_ROOT = {REPO_ROOT}")
+    print(f"{'#'*60}\n")
+
     findings = get_findings(min_sev)
+
+    # Log what findings we got
+    for kind, items in findings.items():
+        if items:
+            print(f"[findings] {kind}: {len(items)} finding(s)")
+            for it in items:
+                print(f"  - {it.get('file', 'unknown')}: {it.get('check_id', it.get('rule', 'unknown'))}")
+
     retriever = RepoRetriever(top_k=6)
     diffs: List[str] = []
     seen_paths: Set[str] = set()
@@ -170,18 +198,28 @@ def main():
     handle_findings("java", findings.get("java", []), retriever, diffs, seen_paths)
     handle_findings("docker", findings.get("docker", []), retriever, diffs, seen_paths)
 
+    print(f"\n{'='*60}")
+    print(f"[pipeline] Total diff segments generated: {len(diffs)}")
+    print(f"[pipeline] Target files: {sorted(seen_paths)}")
+    print(f"{'='*60}")
+
     if not diffs:
         print("Agent generated no diffs; exiting.")
         return
 
     # Join with a blank line between segments
     patch = OUTPUT / "agent_patch.diff"
-    patch.write_text("\n\n".join(diffs), encoding="utf-8")
+    combined = "\n\n".join(diffs)
+    patch.write_text(combined, encoding="utf-8")
+    print(f"[pipeline] Wrote combined patch: {patch} ({len(combined)} chars)")
 
-    # Apply the rewritten patch and open a PR
+    # Apply the rewritten patch, commit, and open a PR
     br = ensure_branch_and_apply_diff(patch)
     pr = open_pr(br, "Agentic AI autofix (deterministic→RAG→trained)", f"Threshold: {min_sev}\nAutomated minimal diffs.")
-    print(f"Branch: {br}\nPR: {pr}")
+    print(f"\n{'='*60}")
+    print(f"[DONE] Branch: {br}")
+    print(f"[DONE] PR: {pr}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
