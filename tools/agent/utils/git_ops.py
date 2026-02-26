@@ -3,6 +3,7 @@ import subprocess
 import time
 import os
 import pathlib
+import uuid
 import re
 import html
 from typing import Optional
@@ -26,179 +27,241 @@ def ensure_git_identity():
         run('git config user.name "CI Bot"')
 
 
-# ---------------------------------------------------------
-#               SAFE, GLOBAL TRANSFORMS
-# ---------------------------------------------------------
-
-def _sanitize(text: str) -> str:
-    """Normalize EOLs and remove markdown ``` lines."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Drop any fence lines like ``` or ```lang entirely
-    return re.sub(r"^\s*`{3,}.*$", "", text, flags=re.M)
-
-
-def _html_unescape_recursive(text: str) -> str:
-    """
-    Fully unescape HTML entities so diff hunks match repo files.
-    Use stdlib html.unescape repeatedly until no changes remain.
-    """
-    prev = None
-    cur = text
-    for _ in range(10):  # unwrap nested encodings (&amp;lt; -> &lt; -> <)
-        prev = cur
-        cur = html.unescape(cur)
-        if cur == prev:
-            break
-    # Final defensive pass for common leftovers (rare but safe)
-    cur = (cur
-           .replace("&lt;", "<")
-           .replace("&gt;", ">")
-           .replace("&quot;", '"')
-           .replace("&#39;", "'")
-           .replace("&amp;", "&"))
-    return cur
-
-
-# ---------------------------------------------------------
-#           PATH REWRITING (BULLETPROOF)
-# ---------------------------------------------------------
-
-_HEADER_RE = re.compile(r"^(---|\+\+\+)\s+([^\t\r\n]+)(\t[^\r\n]+)?$")
-
-def _normalize_header(line: str, prefix: str) -> str:
-    """
-    Normalize ANY '--- path[<meta>]' or '+++ path[<meta>]' header.
-    Preserves trailing metadata (tabs/timestamps).
-    """
-    m = _HEADER_RE.match(line)
-    if not m:
-        return line
-
-    mark, path, meta = m.groups()
-    meta = meta or ""
-
-    # Git-style a/ and b/
-    if path.startswith("a/") or path.startswith("b/"):
-        lead = path[:2]  # 'a/' or 'b/'
-        core = path[2:]
-        if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
-            core = prefix + core
-        return f"{mark} {lead}{core}{meta}"
-
-    # Plain unified header
-    if not (
-        path.startswith(prefix) or path.startswith("/") or path.startswith("./")
-    ):
-        path = prefix + path
-
-    return f"{mark} {path}{meta}"
-
-
-_DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
-
-def _normalize_diff_git(line: str, prefix: str) -> str:
-    """
-    Normalize: diff --git a/<path> b/<path>
-    """
-    m = _DIFF_GIT_RE.match(line)
-    if not m:
-        return line
-
-    a_path, b_path = m.groups()
-    if not (a_path.startswith(prefix) or a_path.startswith("/") or a_path.startswith("./")):
-        a_path = prefix + a_path
-    if not (b_path.startswith(prefix) or b_path.startswith("/") or b_path.startswith("./")):
-        b_path = prefix + b_path
-    return f"diff --git a/{a_path} b/{b_path}"
-
-
-def _rewrite_patch_paths(text: str, prefix: str) -> str:
-    """
-    PUBLIC helper:
-    Normalize ALL headers across the patch:
-      - 'diff --git a/... b/...'
-      - '--- a/<path>[meta]' / '+++ b/<path>[meta]'
-      - '--- <path>[meta]'  / '+++ <path>[meta]'
-    """
-    out = []
-    for line in text.split("\n"):
-        if line.startswith("diff --git "):
-            line = _normalize_diff_git(line, prefix)
-        elif line.startswith("--- ") or line.startswith("+++ "):
-            line = _normalize_header(line, prefix)
-        out.append(line)
-    return "\n".join(out)
-
-
-# ---------------------------------------------------------
-#                    MAIN APPLY FLOW
-# ---------------------------------------------------------
-
 def ensure_branch_and_apply_diff(
     patch_path: pathlib.Path, module_prefix: Optional[str] = None
 ) -> str:
-    """Create branch, rewrite patch, unescape HTML, apply once."""
+
     ensure_git_identity()
 
-    branch = f"ai-autofix-{int(time.time())}"
+    branch = f"ai-autofix-{uuid.uuid4().hex[:8]}"
     run(f"git checkout -b {branch}")
 
     prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
 
-    # 1) Load raw patch
-    raw = pathlib.Path(patch_path).read_text(encoding="utf-8", errors="ignore")
+    raw = patch_path.read_text(encoding="utf-8", errors="ignore")
 
-    # 2) Sanitize markdown + normalize EOLs
-    patched = _sanitize(raw)
+    patched = raw.replace("\r\n", "\n").replace("\r", "\n")
 
-    # 3) Rewrite ALL headers (git-style and plain unified)
-    patched = _rewrite_patch_paths(patched, prefix)
-
-    # 4) Fully unescape HTML so hunks match actual files
-    before_lt = patched.count("&lt;")
-    before_gt = patched.count("&gt;")
-    patched = _html_unescape_recursive(patched)
-    after_lt = patched.count("&lt;")
-    after_gt = patched.count("&gt;")
-
-    # Diagnostics to prove we unescaped
-    print(f"[patch-info] &lt; count: {before_lt} -> {after_lt} ; &gt; count: {before_gt} -> {after_gt}")
-
-    # If anything still escaped, abort early with a clear message
-    if after_lt or after_gt:
-        final_preview = (patched[:4000] + "...\n") if len(patched) > 4000 else patched
-        raise RuntimeError(
-            "HTML entities remain in patch after unescape. "
-            "Please check generators. Preview:\n" + final_preview
-        )
-
-    # 5) Write final patch
     out = patch_path.with_suffix(".prefixed.diff")
     out.write_text(patched, encoding="utf-8")
 
-    # 6) Show full patch (so logs match exactly what git sees)
-    run(f"echo '--- FINAL PATCH START ---'")
-    run(f"wc -l {out}")
-    run(f"cat {out}")
-    run(f"echo '--- FINAL PATCH END ---'")
+    try:
+        run(f"git apply --check {out}")
+        run(f"git apply --whitespace=fix {out}")
+    except subprocess.CalledProcessError:
+        print("Patch apply failed — rolling back branch.")
+        run("git checkout -")
+        run(f"git branch -D {branch}")
+        raise
 
-    # 7) Dry run (non-fatal)
-    run(f"git apply --check {out} || true")
-
-    # 8) Apply
-    run(f"git apply --whitespace=fix {out}")
+    run("git add -A")
+    run('git commit -m "AI Autofix: automated security patch"')
+    run(f"git push origin {branch}")
 
     return branch
 
 
-def open_pr(branch: str, title: str, body: str) -> str:
-    """Used by run_agent.py to open PR via gh."""
-    try:
-        out = subprocess.check_output(
-            f'gh pr create --title "{title}" --body "{body}" --head "{branch}"',
-            shell=True, stderr=subprocess.STDOUT
-        ).decode()
-        return out.strip()
-    except Exception as e:
-        print(f"gh failed: {e}")
-        return "(install gh to auto-open PR)"
+# #!/usr/bin/env python3
+# import subprocess
+# import time
+# import os
+# import pathlib
+# import re
+# import html
+# from typing import Optional
+
+
+# def run(cmd: str):
+#     print(f"+ {cmd}")
+#     subprocess.check_call(cmd, shell=True)
+
+
+# def ensure_git_identity():
+#     try:
+#         subprocess.check_call(
+#             "git config user.email",
+#             shell=True,
+#             stdout=subprocess.DEVNULL,
+#             stderr=subprocess.DEVNULL,
+#         )
+#     except subprocess.CalledProcessError:
+#         run('git config user.email "ci-bot@example.com"')
+#         run('git config user.name "CI Bot"')
+
+
+# # ---------------------------------------------------------
+# #               SAFE, GLOBAL TRANSFORMS
+# # ---------------------------------------------------------
+
+# def _sanitize(text: str) -> str:
+#     """Normalize EOLs and remove markdown ``` lines."""
+#     text = text.replace("\r\n", "\n").replace("\r", "\n")
+#     # Drop any fence lines like ``` or ```lang entirely
+#     return re.sub(r"^\s*`{3,}.*$", "", text, flags=re.M)
+
+
+# def _html_unescape_recursive(text: str) -> str:
+#     """
+#     Fully unescape HTML entities so diff hunks match repo files.
+#     Use stdlib html.unescape repeatedly until no changes remain.
+#     """
+#     prev = None
+#     cur = text
+#     for _ in range(10):  # unwrap nested encodings (&amp;lt; -> &lt; -> <)
+#         prev = cur
+#         cur = html.unescape(cur)
+#         if cur == prev:
+#             break
+#     # Final defensive pass for common leftovers (rare but safe)
+#     cur = (cur
+#            .replace("&lt;", "<")
+#            .replace("&gt;", ">")
+#            .replace("&quot;", '"')
+#            .replace("&#39;", "'")
+#            .replace("&amp;", "&"))
+#     return cur
+
+
+# # ---------------------------------------------------------
+# #           PATH REWRITING (BULLETPROOF)
+# # ---------------------------------------------------------
+
+# _HEADER_RE = re.compile(r"^(---|\+\+\+)\s+([^\t\r\n]+)(\t[^\r\n]+)?$")
+
+# def _normalize_header(line: str, prefix: str) -> str:
+#     """
+#     Normalize ANY '--- path[<meta>]' or '+++ path[<meta>]' header.
+#     Preserves trailing metadata (tabs/timestamps).
+#     """
+#     m = _HEADER_RE.match(line)
+#     if not m:
+#         return line
+
+#     mark, path, meta = m.groups()
+#     meta = meta or ""
+
+#     # Git-style a/ and b/
+#     if path.startswith("a/") or path.startswith("b/"):
+#         lead = path[:2]  # 'a/' or 'b/'
+#         core = path[2:]
+#         if not (core.startswith(prefix) or core.startswith("/") or core.startswith("./")):
+#             core = prefix + core
+#         return f"{mark} {lead}{core}{meta}"
+
+#     # Plain unified header
+#     if not (
+#         path.startswith(prefix) or path.startswith("/") or path.startswith("./")
+#     ):
+#         path = prefix + path
+
+#     return f"{mark} {path}{meta}"
+
+
+# _DIFF_GIT_RE = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+
+# def _normalize_diff_git(line: str, prefix: str) -> str:
+#     """
+#     Normalize: diff --git a/<path> b/<path>
+#     """
+#     m = _DIFF_GIT_RE.match(line)
+#     if not m:
+#         return line
+
+#     a_path, b_path = m.groups()
+#     if not (a_path.startswith(prefix) or a_path.startswith("/") or a_path.startswith("./")):
+#         a_path = prefix + a_path
+#     if not (b_path.startswith(prefix) or b_path.startswith("/") or b_path.startswith("./")):
+#         b_path = prefix + b_path
+#     return f"diff --git a/{a_path} b/{b_path}"
+
+
+# def _rewrite_patch_paths(text: str, prefix: str) -> str:
+#     """
+#     PUBLIC helper:
+#     Normalize ALL headers across the patch:
+#       - 'diff --git a/... b/...'
+#       - '--- a/<path>[meta]' / '+++ b/<path>[meta]'
+#       - '--- <path>[meta]'  / '+++ <path>[meta]'
+#     """
+#     out = []
+#     for line in text.split("\n"):
+#         if line.startswith("diff --git "):
+#             line = _normalize_diff_git(line, prefix)
+#         elif line.startswith("--- ") or line.startswith("+++ "):
+#             line = _normalize_header(line, prefix)
+#         out.append(line)
+#     return "\n".join(out)
+
+
+# # ---------------------------------------------------------
+# #                    MAIN APPLY FLOW
+# # ---------------------------------------------------------
+
+# def ensure_branch_and_apply_diff(
+#     patch_path: pathlib.Path, module_prefix: Optional[str] = None
+# ) -> str:
+#     """Create branch, rewrite patch, unescape HTML, apply once."""
+#     ensure_git_identity()
+
+#     branch = f"ai-autofix-{int(time.time())}"
+#     run(f"git checkout -b {branch}")
+
+#     prefix = (module_prefix or os.getenv("APP_DIR") or "java-pilot-app").rstrip("/") + "/"
+
+#     # 1) Load raw patch
+#     raw = pathlib.Path(patch_path).read_text(encoding="utf-8", errors="ignore")
+
+#     # 2) Sanitize markdown + normalize EOLs
+#     patched = _sanitize(raw)
+
+#     # 3) Rewrite ALL headers (git-style and plain unified)
+#     patched = _rewrite_patch_paths(patched, prefix)
+
+#     # 4) Fully unescape HTML so hunks match actual files
+#     before_lt = patched.count("&lt;")
+#     before_gt = patched.count("&gt;")
+#     patched = _html_unescape_recursive(patched)
+#     after_lt = patched.count("&lt;")
+#     after_gt = patched.count("&gt;")
+
+#     # Diagnostics to prove we unescaped
+#     print(f"[patch-info] &lt; count: {before_lt} -> {after_lt} ; &gt; count: {before_gt} -> {after_gt}")
+
+#     # If anything still escaped, abort early with a clear message
+#     if after_lt or after_gt:
+#         final_preview = (patched[:4000] + "...\n") if len(patched) > 4000 else patched
+#         raise RuntimeError(
+#             "HTML entities remain in patch after unescape. "
+#             "Please check generators. Preview:\n" + final_preview
+#         )
+
+#     # 5) Write final patch
+#     out = patch_path.with_suffix(".prefixed.diff")
+#     out.write_text(patched, encoding="utf-8")
+
+#     # 6) Show full patch (so logs match exactly what git sees)
+#     run(f"echo '--- FINAL PATCH START ---'")
+#     run(f"wc -l {out}")
+#     run(f"cat {out}")
+#     run(f"echo '--- FINAL PATCH END ---'")
+
+#     # 7) Dry run (non-fatal)
+#     run(f"git apply --check {out} || true")
+
+#     # 8) Apply
+#     run(f"git apply --whitespace=fix {out}")
+
+#     return branch
+
+
+# def open_pr(branch: str, title: str, body: str) -> str:
+#     """Used by run_agent.py to open PR via gh."""
+#     try:
+#         out = subprocess.check_output(
+#             f'gh pr create --title "{title}" --body "{body}" --head "{branch}"',
+#             shell=True, stderr=subprocess.STDOUT
+#         ).decode()
+#         return out.strip()
+#     except Exception as e:
+#         print(f"gh failed: {e}")
+#         return "(install gh to auto-open PR)"
