@@ -1,0 +1,201 @@
+2. DATA FLOW DIAGRAM(DFD)
+--------------------------------------------------------------------------------------------------
+Level 0 - Context Diagram
+--------------------------------------------------------------------------------------------------
+[Developer]
+     │
+     ▼
+[GitHub Repository]
+     │
+     ▼
+[Agentic DevSecOps Pipeline]
+     │
+     ├── Security Reports
+     ├── Pull Requests
+     └── Security Dashboard
+
+--------------------------------------------------------------------------------------------------
+ LEVEL 1 - SYSTEM DFD
+--------------------------------------------------------------------------------------------------
+ (1) Code Commit
+        │
+        ▼
+(2) GitHub Actions Trigger
+        │
+        ▼
+(3) Security Scanner Layer
+        │  produces
+        ▼
+(4) Raw JSON Reports (final-reports/)
+        │
+        ▼
+(5) Aggregate & Dedup Engine
+        │
+        ├──► Policy Gate (Fail / Pass)
+        │
+        ▼
+(6) Autofix Agent
+        │
+        ├── AST Engine
+        ├── RAG Retriever
+        ├── LLM Rewrite
+        │
+        ▼
+(7) Git PR Creation
+        │
+        ▼
+(8) Security Intelligence Agent
+        │
+        ├── Executive Summary
+        ├── Risk Model
+        ├── AI Enrichment
+        └── HTML Dashboard
+
+--------------------------------------------------------------------------------------------------
+HIGH LEVEL DESIGN (HLD)
+--------------------------------------------------------------------------------------------------
+3.1 Architectural Layers
+
+| Layer              | Responsibility            |
+| ------------------ | ------------------------- |
+| CI/CD Layer        | Orchestrates execution    |
+| Scan Layer         | Executes security tools   |
+| Aggregation Layer  | Normalize + deduplicate   |
+| Policy Layer       | Enforce severity logic    |
+| Remediation Layer  | Apply fixes               |
+| Intelligence Layer | AI enrichment + reporting |
+| Output Layer       | PR, Artifacts, Dashboard  |
+
+--------------------------------------------------------------------------------------------------
+3.2 Key Design Principles
+--------------------------------------------------------------------------------------------------
+Deterministic before AI
+Fail-safe LLM fallback
+Centralized severity policy
+Batch LLM calls to reduce cost
+Idempotent pipeline
+Tool-agnostic parsing
+Zero vendor lock-in
+
+--------------------------------------------------------------------------------------------------
+3.3 Deployment Architecture
+--------------------------------------------------------------------------------------------------
+GitHub Cloud Runner
+    │
+    ├── Docker-in-Docker
+    ├── Python Runtime 3.12
+    ├── Java 17
+    ├── OpenAI API
+    └── GitHub REST API
+
+--------------------------------------------------------------------------------------------------
+4. Low Level Design (LLD)
+--------------------------------------------------------------------------------------------------
+4.1 Module Breakdown
+
+tools/
+ └── agent/
+      ├── run_agent.py
+      ├── security_intelligence_agent.py
+      ├── fixer_java.py
+      ├── fixer_k8s.py
+      ├── fixer_tf.py
+      ├── fixer_docker.py
+      ├── utils/
+      │     ├── severity_policy.py
+      │     ├── prompt_lib.py
+      │     └── git_ops.py
+      └── embeddings/
+            └── retriever.py
+
+--------------------------------------------------------------------------------------------------
+4.2 Severity Policy Engine
+--------------------------------------------------------------------------------------------------
+Inputs:
+  MIN_SEVERITY
+  SEVERITY_MODE
+
+Modes:
+  threshold → >= severity
+  exact     → == severity
+
+--------------------------------------------------------------------------------------------------
+4.3 Deduplication Logic
+--------------------------------------------------------------------------------------------------
+hash(tool|severity|rule|file|line|package)
+
+Produces:
+
+PRE-DEDUP COUNTS
+POST-DEDUP COUNTS
+
+--------------------------------------------------------------------------------------------------
+4.4 Autofix Execution Flow
+--------------------------------------------------------------------------------------------------
+Finding
+   │
+   ├── try_deterministic()
+   │       └── AST patch
+   │
+   ├── try_rag_style()
+   │       └── Retrieve similar secure pattern
+   │
+   └── call_llm_rewrite()
+           └── Full file rewrite (safe rules)
+
+--------------------------------------------------------------------------------------------------
+4.5 Intelligence Agent Flow
+--------------------------------------------------------------------------------------------------
+All Findings
+     │
+     ├── Dedup
+     ├── Apply Severity Policy
+     ├── Chunk into Batches
+     ├── LLM Enrichment
+     ├── Risk Score Calculation
+     └── Generate Dashboard
+
+--------------------------------------------------------------------------------------------------
+5. Security Model
+--------------------------------------------------------------------------------------------------
+| Area             | Protection                |
+| ---------------- | ------------------------- |
+| API Keys         | GitHub Secrets            |
+| LLM Safety       | Full file rewrite only    |
+| Prompt Injection | No dynamic code execution |
+| Supply Chain     | Trivy + SCA               |
+| Secrets          | Gitleaks                  |
+| IaC              | Checkov                   |
+| Runtime          | ZAP                       |
+
+--------------------------------------------------------------------------------------------------
+6. AI Design Decisions
+--------------------------------------------------------------------------------------------------
+### Why Batched LLM?
+
+* Reduce token cost
+* Avoid API throttling
+* Reduce CI time
+
+### Why Deterministic First?
+
+* Avoid hallucination
+* Ensure safe autofix
+* Maintain auditability
+
+### Why Separate Intelligence Agent?
+
+* Separation of concerns
+* No coupling with remediation
+* Can be run standalone
+
+--------------------------------------------------------------------------------------------------
+7. Enterprise Maturity Model
+--------------------------------------------------------------------------------------------------
+| Stage   | Capability                    |
+| ------- | ----------------------------- |
+| Level 1 | Static scanning               |
+| Level 2 | Policy gate                   |
+| Level 3 | Automated fix                 |
+| Level 4 | AI risk scoring               |
+| Level 5 | Continuous learning + metrics |
