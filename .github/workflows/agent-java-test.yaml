@@ -19,12 +19,12 @@ env:
   PYTHON_VERSION: "3.12"
   APP_DIR: "java-pilot-app"
   REPORTS_DIR: "reports"
-  MIN_SEVERITY: "medium"
+  MIN_SEVERITY: "low"
   LLM_ENABLED: "true"
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"
   BASE_BRANCH: "feature/devsecops-agent-bgbstr"
-  SEVERITY_MODE:  "exact"
+  SEVERITY_MODE:  "threshold"
 
 
 jobs:

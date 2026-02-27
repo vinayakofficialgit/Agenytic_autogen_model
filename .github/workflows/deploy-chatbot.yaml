@@ -3,7 +3,7 @@ name:  Deploy DevSecOps Chatbot
 
 on:
   push:
-    branches: [main, test-home-sachin]
+    branches: [main, feature/devsecops-agent-bgbstr]
     paths:
       - 'devsecops-chatbot/**'
       - '.github/workflows/deploy-chatbot.yaml'
@@ -12,7 +12,7 @@ on:
 env:
   IMAGE_NAME: devsecops-chatbot
   CONTAINER_NAME: devsecops-chatbot
-  EC2_HOST: "54.81.41.4"
+  EC2_HOST: "54.90.151.166"
   
 
 jobs:
