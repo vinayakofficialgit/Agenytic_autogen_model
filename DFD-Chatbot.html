@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DevSecOps AI Chatbot — Data Flow Diagram</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: #06080f;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 20% 30%, rgba(59,130,246,0.04) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 70%, rgba(168,85,247,0.03) 0%, transparent 50%);
+    pointer-events: none;
+  }
+
+  .page {
+    position: relative;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 48px 32px 64px;
+  }
+
+  /* Header */
+  .header {
+    text-align: center;
+    margin-bottom: 40px;
+  }
+  .header .tag {
+    display: inline-block;
+    background: rgba(59,130,246,0.1);
+    border: 1px solid rgba(59,130,246,0.2);
+    color: #60a5fa;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 5px 16px;
+    border-radius: 20px;
+    margin-bottom: 16px;
+  }
+  .header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 8px;
+  }
+  .header h1 span { color: #60a5fa; }
+  .header p {
+    color: #64748b;
+    font-size: 0.95rem;
+    font-weight: 300;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    margin-bottom: 40px;
+    flex-wrap: wrap;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: #94a3b8;
+  }
+  .legend-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+  }
+  .legend-dot.ext     { background: rgba(251,146,60,0.3); border: 1.5px solid #fb923c; }
+  .legend-dot.process { background: rgba(96,165,250,0.2); border: 1.5px solid #60a5fa; }
+  .legend-dot.store   { background: rgba(52,211,153,0.2); border: 1.5px solid #34d399; }
+  .legend-dot.ui      { background: rgba(192,132,252,0.2); border: 1.5px solid #c084fc; }
+
+  /* DFD Canvas */
+  .canvas {
+    background: linear-gradient(180deg, #0b0f1a 0%, #0f1424 100%);
+    border: 1px solid #1a2035;
+    border-radius: 20px;
+    padding: 24px;
+    overflow-x: auto;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  }
+  .canvas svg { display: block; margin: 0 auto; }
+
+  /* Flow Table */
+  .flow-section {
+    margin-top: 48px;
+  }
+  .flow-section h2 {
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: #f1f5f9;
+    margin-bottom: 20px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #1a2035;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 14px;
+    background: #0f1424;
+    color: #64748b;
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid #1a2035;
+  }
+  tbody td {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(26,32,53,0.6);
+    color: #cbd5e1;
+    font-weight: 300;
+  }
+  tbody tr:hover td { background: rgba(96,165,250,0.03); }
+  .step-num {
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+    color: #60a5fa;
+    font-size: 0.82rem;
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 1px solid #1a2035;
+    color: #334155;
+    font-size: 0.75rem;
+    font-weight: 300;
+  }
+
+  @media (max-width: 800px) {
+    .page { padding: 24px 12px; }
+    .header h1 { font-size: 1.4rem; }
+    .legend { gap: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="tag">Data Flow Diagram</div>
+    <h1>🛡️ DevSecOps AI <span>Chatbot</span></h1>
+    <p>Complete system data flow — from CI/CD scanners to AI-powered developer responses</p>
+  </div>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot ext"></div> External Entity</div>
+    <div class="legend-item"><div class="legend-dot process"></div> Process</div>
+    <div class="legend-item"><div class="legend-dot store"></div> Data Store</div>
+    <div class="legend-item"><div class="legend-dot ui"></div> User Interface</div>
+  </div>
+
+  <div class="canvas">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 980" width="1040" height="980">
+      <defs>
+        <!-- Arrow markers -->
+        <marker id="a1" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#475569"/>
+        </marker>
+        <!-- Glows -->
+        <filter id="gExt"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#fb923c" flood-opacity="0.15"/></filter>
+        <filter id="gProc"><feDropShadow dx="0" dy="0" stdDeviation="5" flood-color="#60a5fa" flood-opacity="0.2"/></filter>
+        <filter id="gStore"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#34d399" flood-opacity="0.15"/></filter>
+        <filter id="gUI"><feDropShadow dx="0" dy="0" stdDeviation="5" flood-color="#c084fc" flood-opacity="0.2"/></filter>
+      </defs>
+
+      <!-- ============================================== -->
+      <!-- ROW 1: EXTERNAL ENTITIES (top)                 -->
+      <!-- ============================================== -->
+
+      <!-- Security Scanners -->
+      <rect x="60" y="30" width="240" height="72" rx="10" fill="rgba(251,146,60,0.06)" stroke="#fb923c" stroke-width="1.2" filter="url(#gExt)"/>
+      <text x="180" y="56" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="600" font-family="IBM Plex Sans">Security Scanners</text>
+      <text x="180" y="74" text-anchor="middle" fill="#64748b" font-size="9" font-family="IBM Plex Sans">Semgrep · Trivy · tfsec · Gitleaks · Conftest</text>
+      <text x="180" y="90" text-anchor="middle" fill="#475569" font-size="8" font-family="IBM Plex Mono">JSON scan reports</text>
+
+      <!-- GitHub Actions -->
+      <rect x="400" y="30" width="240" height="72" rx="10" fill="rgba(251,146,60,0.06)" stroke="#fb923c" stroke-width="1.2" filter="url(#gExt)"/>
+      <text x="520" y="56" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="600" font-family="IBM Plex Sans">GitHub Actions</text>
+      <text x="520" y="74" text-anchor="middle" fill="#64748b" font-size="9" font-family="IBM Plex Sans">CI/CD Pipeline · Artifact Storage</text>
+      <text x="520" y="90" text-anchor="middle" fill="#475569" font-size="8" font-family="IBM Plex Mono">REST API · ZIP artifacts</text>
+
+      <!-- Groq LLM -->
+      <rect x="740" y="30" width="240" height="72" rx="10" fill="rgba(251,146,60,0.06)" stroke="#fb923c" stroke-width="1.2" filter="url(#gExt)"/>
+      <text x="860" y="56" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="600" font-family="IBM Plex Sans">Groq Cloud API</text>
+      <text x="860" y="74" text-anchor="middle" fill="#64748b" font-size="9" font-family="IBM Plex Sans">Llama 3.3 70B Versatile</text>
+      <text x="860" y="90" text-anchor="middle" fill="#475569" font-size="8" font-family="IBM Plex Mono">LLM completions</text>
+
+      <!-- Flow: Scanners → GitHub -->
+      <line x1="300" y1="66" x2="395" y2="66" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="348" y="60" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">reports</text>
+
+      <!-- ============================================== -->
+      <!-- ROW 2: FETCH PROCESS                           -->
+      <!-- ============================================== -->
+
+      <!-- P1: Fetch Pipeline Data -->
+      <rect x="340" y="160" width="360" height="80" rx="12" fill="rgba(96,165,250,0.06)" stroke="#60a5fa" stroke-width="1.5" filter="url(#gProc)"/>
+      <text x="520" y="185" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="600" font-family="IBM Plex Mono">P1</text>
+      <text x="520" y="205" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="600" font-family="IBM Plex Sans">Fetch Pipeline Data</text>
+      <text x="520" y="225" text-anchor="middle" fill="#475569" font-size="9" font-family="IBM Plex Sans">auto_fetch_pipeline_data() · get_workflow_runs() · download_artifact()</text>
+
+      <!-- Flow: GitHub ↔ P1 -->
+      <line x1="520" y1="102" x2="520" y2="155" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="550" y="132" text-anchor="start" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">runs + ZIPs ↓</text>
+      <text x="490" y="132" text-anchor="end" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">↑ API calls</text>
+
+      <!-- ============================================== -->
+      <!-- ROW 3: PARSE + BUILD CONTEXT                   -->
+      <!-- ============================================== -->
+
+      <!-- P2: Parse Scan Reports -->
+      <rect x="100" y="310" width="340" height="80" rx="12" fill="rgba(96,165,250,0.06)" stroke="#60a5fa" stroke-width="1.5" filter="url(#gProc)"/>
+      <text x="270" y="335" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="600" font-family="IBM Plex Mono">P2</text>
+      <text x="270" y="355" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="600" font-family="IBM Plex Sans">Parse Scan Reports</text>
+      <text x="270" y="375" text-anchor="middle" fill="#475569" font-size="9" font-family="IBM Plex Sans">parse_scan_findings() · 5 scanner formats → unified findings dict</text>
+
+      <!-- P3: Build Pipeline Context -->
+      <rect x="560" y="310" width="340" height="80" rx="12" fill="rgba(96,165,250,0.06)" stroke="#60a5fa" stroke-width="1.5" filter="url(#gProc)"/>
+      <text x="730" y="335" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="600" font-family="IBM Plex Mono">P3</text>
+      <text x="730" y="355" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="600" font-family="IBM Plex Sans">Build Pipeline Context</text>
+      <text x="730" y="375" text-anchor="middle" fill="#475569" font-size="9" font-family="IBM Plex Sans">build_pipeline_context() · Aggregates all data → Markdown string</text>
+
+      <!-- Flow: P1 → P2 -->
+      <line x1="430" y1="240" x2="320" y2="305" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="355" y="270" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">raw scan JSONs</text>
+
+      <!-- Flow: P1 → P3 -->
+      <line x1="610" y1="240" x2="700" y2="305" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="680" y="270" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">remed + AI files</text>
+
+      <!-- Flow: P2 → P3 -->
+      <line x1="440" y1="350" x2="555" y2="350" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="498" y="342" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">parsed findings</text>
+
+      <!-- ============================================== -->
+      <!-- ROW 4: DATA STORES                             -->
+      <!-- ============================================== -->
+
+      <!-- D1: Session State -->
+      <rect x="100" y="460" width="340" height="60" rx="0" fill="rgba(52,211,153,0.04)" stroke="none" filter="url(#gStore)"/>
+      <line x1="100" y1="460" x2="440" y2="460" stroke="#34d399" stroke-width="1.5"/>
+      <line x1="100" y1="520" x2="440" y2="520" stroke="#34d399" stroke-width="1.5"/>
+      <text x="270" y="483" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600" font-family="IBM Plex Mono">D1  Session State</text>
+      <text x="270" y="503" text-anchor="middle" fill="#475569" font-size="8.5" font-family="IBM Plex Sans">findings · workflow_runs · scan_files · remediation_files · chat_messages</text>
+
+      <!-- D2: Pipeline Context -->
+      <rect x="560" y="460" width="340" height="60" rx="0" fill="rgba(52,211,153,0.04)" stroke="none" filter="url(#gStore)"/>
+      <line x1="560" y1="460" x2="900" y2="460" stroke="#34d399" stroke-width="1.5"/>
+      <line x1="560" y1="520" x2="900" y2="520" stroke="#34d399" stroke-width="1.5"/>
+      <text x="730" y="483" text-anchor="middle" fill="#34d399" font-size="10" font-weight="600" font-family="IBM Plex Mono">D2  Pipeline Context</text>
+      <text x="730" y="503" text-anchor="middle" fill="#475569" font-size="8.5" font-family="IBM Plex Sans">Aggregated Markdown string injected into LLM system prompt</text>
+
+      <!-- Flow: P2 → D1 -->
+      <line x1="270" y1="390" x2="270" y2="455" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="285" y="425" text-anchor="start" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">structured findings</text>
+
+      <!-- Flow: P3 → D2 -->
+      <line x1="730" y1="390" x2="730" y2="455" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="745" y="425" text-anchor="start" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">context string</text>
+
+      <!-- Flow: P3 → D1 (run metadata) -->
+      <line x1="600" y1="390" x2="420" y2="465" stroke="#475569" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#a1)"/>
+      <text x="490" y="435" text-anchor="middle" fill="#3b4963" font-size="7" font-family="IBM Plex Mono">run metadata</text>
+
+      <!-- ============================================== -->
+      <!-- ROW 5: AI CHAT ENGINE                          -->
+      <!-- ============================================== -->
+
+      <!-- P4: AI Chat Engine -->
+      <rect x="310" y="590" width="420" height="80" rx="12" fill="rgba(96,165,250,0.06)" stroke="#60a5fa" stroke-width="1.5" filter="url(#gProc)"/>
+      <text x="520" y="615" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="600" font-family="IBM Plex Mono">P4</text>
+      <text x="520" y="635" text-anchor="middle" fill="#60a5fa" font-size="12" font-weight="600" font-family="IBM Plex Sans">AI Chat Engine</text>
+      <text x="520" y="655" text-anchor="middle" fill="#475569" font-size="9" font-family="IBM Plex Sans">groq_chat() · System prompt + context + history → Groq API → AI response</text>
+
+      <!-- Flow: D1 → P4 (chat history) -->
+      <line x1="330" y1="520" x2="430" y2="585" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="355" y="558" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">chat history</text>
+
+      <!-- Flow: D2 → P4 (context) -->
+      <line x1="680" y1="520" x2="600" y2="585" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="660" y="558" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">system prompt</text>
+
+      <!-- Flow: P4 ↔ Groq -->
+      <line x1="730" y1="620" x2="860" y2="107" stroke="#475569" stroke-width="1" stroke-dasharray="6,3" marker-end="url(#a1)"/>
+      <text x="820" y="370" text-anchor="middle" fill="#475569" font-size="7.5" font-family="IBM Plex Mono" transform="rotate(-70, 820, 370)">prompt ↑  response ↓</text>
+
+      <!-- Flow: P4 → D1 (save chat) -->
+      <line x1="395" y1="590" x2="340" y2="525" stroke="#475569" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#a1)"/>
+      <text x="345" y="560" text-anchor="end" fill="#3b4963" font-size="7" font-family="IBM Plex Mono">save msgs</text>
+
+      <!-- ============================================== -->
+      <!-- ROW 6: UI / PRESENTATION                       -->
+      <!-- ============================================== -->
+
+      <!-- P5: Streamlit UI -->
+      <rect x="160" y="740" width="720" height="100" rx="14" fill="rgba(192,132,252,0.05)" stroke="#c084fc" stroke-width="1.5" filter="url(#gUI)"/>
+      <text x="520" y="765" text-anchor="middle" fill="#c4b5fd" font-size="9" font-weight="600" font-family="IBM Plex Mono">P5</text>
+      <text x="520" y="785" text-anchor="middle" fill="#c084fc" font-size="12" font-weight="600" font-family="IBM Plex Sans">Streamlit Web Interface</text>
+
+      <!-- Tab boxes inside P5 -->
+      <rect x="195" y="798" width="130" height="30" rx="6" fill="rgba(96,165,250,0.1)" stroke="rgba(96,165,250,0.3)" stroke-width="1"/>
+      <text x="260" y="818" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="500" font-family="IBM Plex Sans">🤖 AI Chat</text>
+
+      <rect x="340" y="798" width="130" height="30" rx="6" fill="rgba(96,165,250,0.1)" stroke="rgba(96,165,250,0.3)" stroke-width="1"/>
+      <text x="405" y="818" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="500" font-family="IBM Plex Sans">📊 Dashboard</text>
+
+      <rect x="485" y="798" width="130" height="30" rx="6" fill="rgba(96,165,250,0.1)" stroke="rgba(96,165,250,0.3)" stroke-width="1"/>
+      <text x="550" y="818" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="500" font-family="IBM Plex Sans">🔍 Scan Results</text>
+
+      <rect x="630" y="798" width="130" height="30" rx="6" fill="rgba(96,165,250,0.1)" stroke="rgba(96,165,250,0.3)" stroke-width="1"/>
+      <text x="695" y="818" text-anchor="middle" fill="#93c5fd" font-size="9" font-weight="500" font-family="IBM Plex Sans">💡 Remediation</text>
+
+      <!-- Flow: P4 → P5 -->
+      <line x1="520" y1="670" x2="520" y2="735" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="535" y="705" text-anchor="start" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">AI response</text>
+
+      <!-- Flow: D1 → P5 -->
+      <line x1="230" y1="520" x2="280" y2="735" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="225" y="635" text-anchor="end" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">all findings + runs</text>
+
+      <!-- ============================================== -->
+      <!-- ROW 7: DEVELOPER                               -->
+      <!-- ============================================== -->
+
+      <!-- Developer -->
+      <rect x="380" y="900" width="280" height="60" rx="10" fill="rgba(251,146,60,0.06)" stroke="#fb923c" stroke-width="1.2" filter="url(#gExt)"/>
+      <text x="520" y="925" text-anchor="middle" fill="#fb923c" font-size="11" font-weight="600" font-family="IBM Plex Sans">👤  Developer</text>
+      <text x="520" y="945" text-anchor="middle" fill="#64748b" font-size="9" font-family="IBM Plex Sans">Queries · Clicks · File Uploads · Views Dashboards</text>
+
+      <!-- Flow: P5 ↔ Developer -->
+      <line x1="480" y1="840" x2="480" y2="895" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="465" y="870" text-anchor="end" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">rendered pages</text>
+      <line x1="560" y1="900" x2="560" y2="845" stroke="#475569" stroke-width="1.2" marker-end="url(#a1)"/>
+      <text x="575" y="870" text-anchor="start" fill="#475569" font-size="7.5" font-family="IBM Plex Mono">user actions</text>
+
+      <!-- Flow: P5 → P4 (user message for AI) -->
+      <line x1="600" y1="740" x2="600" y2="675" stroke="#475569" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#a1)"/>
+      <text x="615" y="710" text-anchor="start" fill="#3b4963" font-size="7" font-family="IBM Plex Mono">user query</text>
+
+    </svg>
+  </div>
+
+  <!-- FLOW SUMMARY TABLE -->
+  <div class="flow-section">
+    <h2>🔀 Data Flow Summary</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Step</th>
+          <th>From</th>
+          <th>To</th>
+          <th>What Flows</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="step-num">1</span></td>
+          <td>Security Scanners</td>
+          <td>GitHub Actions</td>
+          <td>JSON scan reports (semgrep.json, trivy_fs.json, tfsec.json, gitleaks.json, conftest.json) uploaded as ZIP artifacts</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">2</span></td>
+          <td>GitHub Actions API</td>
+          <td>P1: Fetch Pipeline Data</td>
+          <td>Workflow run metadata (last 15 runs) + downloaded artifact ZIP archives extracted to file dictionaries</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">3</span></td>
+          <td>P1: Fetch Pipeline Data</td>
+          <td>P2: Parse Scan Reports</td>
+          <td>Raw JSON file contents from the scan-reports artifact</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">4</span></td>
+          <td>P1: Fetch Pipeline Data</td>
+          <td>P3: Build Pipeline Context</td>
+          <td>Remediation markdown files, AI analysis files (decision.json, llm_recommendations.md), and run metadata</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">5</span></td>
+          <td>P2: Parse Scan Reports</td>
+          <td>D1: Session State</td>
+          <td>Structured findings dictionary — normalized per tool with severity, file, line, and description fields</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">6</span></td>
+          <td>P2: Parse Scan Reports</td>
+          <td>P3: Build Pipeline Context</td>
+          <td>Parsed findings data for inclusion in the aggregated context string</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">7</span></td>
+          <td>P3: Build Pipeline Context</td>
+          <td>D2: Pipeline Context</td>
+          <td>Aggregated Markdown string (~2K–8K chars) containing run info, findings summary, severity breakdown, remediation content, and security gate decision</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">8</span></td>
+          <td>D2: Pipeline Context</td>
+          <td>P4: AI Chat Engine</td>
+          <td>Full context string injected into the Groq system prompt so the AI knows the pipeline state</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">9</span></td>
+          <td>D1: Session State</td>
+          <td>P4: AI Chat Engine</td>
+          <td>Conversation history (all previous user + assistant messages) for multi-turn awareness</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">10</span></td>
+          <td>P4: AI Chat Engine</td>
+          <td>Groq Cloud API</td>
+          <td>Complete message payload: system prompt + conversation history + latest user message</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">11</span></td>
+          <td>Groq Cloud API</td>
+          <td>P4: AI Chat Engine</td>
+          <td>LLM completion response containing analysis, CVE references, code fixes, and recommendations</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">12</span></td>
+          <td>D1: Session State</td>
+          <td>P5: Streamlit UI</td>
+          <td>All stored data — findings, runs, remediation files — used to render dashboards, scan cards, and metrics</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">13</span></td>
+          <td>P4: AI Chat Engine</td>
+          <td>P5: Streamlit UI</td>
+          <td>AI response text rendered as chat bubbles in the AI Chat tab</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">14</span></td>
+          <td>P5: Streamlit UI</td>
+          <td>Developer</td>
+          <td>Fully rendered HTML pages with chat, metrics, severity cards, finding details, and remediation views</td>
+        </tr>
+        <tr>
+          <td><span class="step-num">15</span></td>
+          <td>Developer</td>
+          <td>P5: Streamlit UI</td>
+          <td>User interactions — chat messages, quick prompt clicks, artifact load buttons, JSON file uploads</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    DevSecOps AI Chatbot — Data Flow Diagram &nbsp;·&nbsp; Yourdon–DeMarco Notation &nbsp;·&nbsp; February 2026
+  </div>
+
+</div>
+</body>
+</html>
