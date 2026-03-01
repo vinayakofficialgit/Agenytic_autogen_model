@@ -263,23 +263,46 @@ jobs:
           set -euxo pipefail
           mkdir -p "$REPORTS_DIR"
 
-      - name: Install Trivy (system-wide, robust)
+      # - name: Install Trivy (system-wide, robust)
+      #   run: |
+      #     set -euxo pipefail
+      #     RAW="${TRIVY_VERSION}"
+      #     NOVER="${RAW#v}"
+      #     VVER="v${NOVER}"
+      #     echo "Installing Trivy: requested='${TRIVY_VERSION}', normalized='${VVER}'"
+      #     curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh -o /tmp/trivy-install.sh
+      #     chmod +x /tmp/trivy-install.sh
+      #     if sudo /tmp/trivy-install.sh -b /usr/local/bin "${VVER}"; then
+      #       echo "Installed ${VVER}"
+      #     else
+      #       echo "Retry without 'v' → ${NOVER}"
+      #       sudo /tmp/trivy-install.sh -b /usr/local/bin "${NOVER}"
+      #     fi
+      #     which trivy
+      #     trivy --version
+
+      - name: Install Trivy (direct release, pinned)
         run: |
           set -euxo pipefail
-          RAW="${TRIVY_VERSION}"
-          NOVER="${RAW#v}"
-          VVER="v${NOVER}"
-          echo "Installing Trivy: requested='${TRIVY_VERSION}', normalized='${VVER}'"
-          curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh -o /tmp/trivy-install.sh
-          chmod +x /tmp/trivy-install.sh
-          if sudo /tmp/trivy-install.sh -b /usr/local/bin "${VVER}"; then
-            echo "Installed ${VVER}"
-          else
-            echo "Retry without 'v' → ${NOVER}"
-            sudo /tmp/trivy-install.sh -b /usr/local/bin "${NOVER}"
-          fi
-          which trivy
-          trivy --version
+          TRIVY_VERSION="${TRIVY_VERSION:-0.51.2}"
+
+          # Determine archive by architecture
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64)  PKG="Linux-64bit" ;;
+            aarch64) PKG="Linux-ARM64" ;;
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+          esac
+
+          BASE="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          TARBALL="trivy_${TRIVY_VERSION}_${PKG}.tar.gz"
+
+          # Download & install
+          curl -sSfL "${BASE}/${TARBALL}" -o /tmp/trivy.tgz
+          tar -xzf /tmp/trivy.tgz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          sudo chmod +x /usr/local/bin/trivy
+          trivy --version      
 
       - name: Trivy FS (SCA) scan
         run: |
