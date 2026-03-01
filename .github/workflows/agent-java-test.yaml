@@ -232,27 +232,75 @@ jobs:
 # =========================================================
 # SCA (Trivy FS)
 # =========================================================
+  # SCA-Scanning:
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   env:
+  #     TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Prepare reports folder
+  #       run: mkdir -p "$REPORTS_DIR"
+
+  #     - name: Install Trivy (pinned)
+  #       run: |
+  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+  #         ./bin/trivy --version
+
+  #     - name: Trivy FS (SCA) scan
+  #       run: |
+  #         set -e
+  #         : > "$REPORTS_DIR/trivy_fs.json"
+  #         ./bin/trivy fs \
+  #           --format json \
+  #           --output "$REPORTS_DIR/trivy_fs.json" \
+  #           --timeout 10m \
+  #           "$APP_DIR" || true
+  #         if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+  #           echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+  #         fi
+
+  #     - name: SCA Stage Summary
+  #       uses: ./.github/actions/stage-summary
+  #       with:
+  #         stage: SCA
+  #         reports_dir: reports
+  #         files: trivy_fs.json
+
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: sca-reports
+  #         path: reports/*.json
+  #         if-no-files-found: ignore
+
   SCA-Scanning:
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
-      TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
+      TRIVY_VERSION: "0.51.2"
+      REPORTS_DIR: reports
+      APP_DIR: .
     steps:
       - uses: actions/checkout@v4
-
+  
       - name: Prepare reports folder
-        run: mkdir -p "$REPORTS_DIR"
-
-      - name: Install Trivy (pinned)
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-          ./bin/trivy --version
-
+          set -euxo pipefail
+          mkdir -p "$REPORTS_DIR"
+  
+      - name: Install Trivy (system-wide)
+        run: |
+          set -euxo pipefail
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
+  
       - name: Trivy FS (SCA) scan
         run: |
-          set -e
+          set -euxo pipefail
           : > "$REPORTS_DIR/trivy_fs.json"
-          ./bin/trivy fs \
+          trivy fs \
             --format json \
             --output "$REPORTS_DIR/trivy_fs.json" \
             --timeout 10m \
@@ -260,15 +308,16 @@ jobs:
           if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
             echo '{}' > "$REPORTS_DIR/trivy_fs.json"
           fi
-
+  
       - name: SCA Stage Summary
         uses: ./.github/actions/stage-summary
         with:
           stage: SCA
           reports_dir: reports
           files: trivy_fs.json
-
-      - uses: actions/upload-artifact@v4
+  
+      - name: Upload SCA reports
+        uses: actions/upload-artifact@v4
         with:
           name: sca-reports
           path: reports/*.json
@@ -325,16 +374,90 @@ jobs:
 # ============================================================
 # CONTAINER (Trivy Image)
 # ============================================================
+  # Container-Scanning:
+  #   runs-on: ubuntu-latest
+  #   needs: Build-Java-App
+  #   continue-on-error: true
+  #   env:
+  #     TRIVY_VERSION: "0.51.2"
+  #   steps:
+  #     - uses: actions/checkout@v4
+  
+  #     # Download the jar produced by Build-Java-App
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: app-target
+  #         path: ${{ env.APP_DIR }}/target/
+  
+  #     - name: Verify jar
+  #       run: |
+  #         echo "Listing target folder:"
+  #         ls -la "$APP_DIR/target"
+  #         if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
+  #           echo "❌ JAR missing"
+  #           exit 1
+  #         fi
+  
+  #     - name: Prepare reports folder
+  #       run: mkdir -p "$REPORTS_DIR"
+  
+  #     - name: Build Docker image (build from app folder)
+  #       id: buildimg
+  #       run: |
+  #         if docker build -t java-pilot-app:1.0.0 -f "$APP_DIR/Dockerfile" . ; then
+  #           echo "built=true" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "built=false" >> $GITHUB_OUTPUT
+  #         fi
+  
+  #     - name: Install Trivy (pinned)
+  #       run: |
+  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+  #         ./bin/trivy --version
+  
+  #     - name: Trivy Image Scan (only if image built)
+  #       if: steps.buildimg.outputs.built == 'true'
+  #       run: |
+  #         : > "$REPORTS_DIR/trivy_image.json"
+  #         ./bin/trivy image \
+  #           --format json \
+  #           --timeout 10m \
+  #           --output "$REPORTS_DIR/trivy_image.json" \
+  #           java-pilot-app:1.0.0 || true
+  #         if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
+  #           echo '{}' > "$REPORTS_DIR/trivy_image.json"
+  #         fi
+  
+  #     - name: Trivy Image Scan (fallback when build failed)
+  #       if: steps.buildimg.outputs.built != 'true'
+  #       run: |
+  #         echo '{}' > "$REPORTS_DIR/trivy_image.json"
+  
+  #     - name: Container Stage Summary
+  #       uses: ./.github/actions/stage-summary
+  #       with:
+  #         stage: Container
+  #         reports_dir: reports
+  #         files: trivy_image.json
+
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: container-reports
+  #         path: reports/*.json
+  #         if-no-files-found: ignore
+
   Container-Scanning:
     runs-on: ubuntu-latest
     needs: Build-Java-App
     continue-on-error: true
     env:
       TRIVY_VERSION: "0.51.2"
+      REPORTS_DIR: reports
+      APP_DIR: .
+      IMAGE_NAME: java-pilot-app:1.0.0
     steps:
       - uses: actions/checkout@v4
   
-      # Download the jar produced by Build-Java-App
       - uses: actions/download-artifact@v4
         with:
           name: app-target
@@ -342,39 +465,47 @@ jobs:
   
       - name: Verify jar
         run: |
+          set -euxo pipefail
           echo "Listing target folder:"
           ls -la "$APP_DIR/target"
           if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
-            echo "❌ JAR missing"
+            echo "❌ JAR missing at $APP_DIR/target/java-pilot-app-1.0.0.jar"
             exit 1
           fi
   
       - name: Prepare reports folder
-        run: mkdir -p "$REPORTS_DIR"
+        run: |
+          set -euxo pipefail
+          mkdir -p "$REPORTS_DIR"
   
       - name: Build Docker image (build from app folder)
         id: buildimg
+        working-directory: ${{ env.APP_DIR }}
         run: |
-          if docker build -t java-pilot-app:1.0.0 -f "$APP_DIR/Dockerfile" . ; then
-            echo "built=true" >> $GITHUB_OUTPUT
+          set -euxo pipefail
+          if docker build -t "$IMAGE_NAME" -f "$APP_DIR/Dockerfile" . ; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
           else
-            echo "built=false" >> $GITHUB_OUTPUT
+            echo "built=false" >> "$GITHUB_OUTPUT"
           fi
   
-      - name: Install Trivy (pinned)
+      - name: Install Trivy (system-wide)
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-          ./bin/trivy --version
+          set -euxo pipefail
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          trivy --version
   
       - name: Trivy Image Scan (only if image built)
         if: steps.buildimg.outputs.built == 'true'
         run: |
+          set -euxo pipefail
           : > "$REPORTS_DIR/trivy_image.json"
-          ./bin/trivy image \
+          trivy image \
             --format json \
             --timeout 10m \
             --output "$REPORTS_DIR/trivy_image.json" \
-            java-pilot-app:1.0.0 || true
+            "$IMAGE_NAME" || true
           if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
             echo '{}' > "$REPORTS_DIR/trivy_image.json"
           fi
@@ -382,6 +513,7 @@ jobs:
       - name: Trivy Image Scan (fallback when build failed)
         if: steps.buildimg.outputs.built != 'true'
         run: |
+          set -euxo pipefail
           echo '{}' > "$REPORTS_DIR/trivy_image.json"
   
       - name: Container Stage Summary
@@ -390,12 +522,13 @@ jobs:
           stage: Container
           reports_dir: reports
           files: trivy_image.json
-
-      - uses: actions/upload-artifact@v4
+  
+      - name: Upload container reports
+        uses: actions/upload-artifact@v4
         with:
           name: container-reports
           path: reports/*.json
-          if-no-files-found: ignore
+          if-no-files-found: ignore  
 
 # ============================================================
 # DAST
