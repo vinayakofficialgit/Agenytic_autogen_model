@@ -24,8 +24,7 @@ env:
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"
   BASE_BRANCH: "feature/devsecops-agent-bgbstr"
-  SEVERITY_MODE:  "threshold"
-
+  SEVERITY_MODE: "threshold"
 
 jobs:
 
@@ -34,11 +33,10 @@ jobs:
 # ============================================================
   Vault-Connection-Check:
     runs-on: ubuntu-latest
-    # outputs:
-    #   OPENAI_API_KEY: ${{ steps.vault_check.outputs.OPENAI_API_KEY }}
     steps:
       - name: Validate Vault Connectivity
         run: |
+          set -euxo pipefail
           echo "🔐 Testing connectivity to HashiCorp Vault..."
           VAULT_URL="${{ secrets.VAULT_ADDR }}/v1/sys/health"
           echo "Vault Health Endpoint: $VAULT_URL"
@@ -82,6 +80,7 @@ jobs:
 
       - name: Confirm Secret Retrieved
         run: |
+          set -euxo pipefail
           if [ -z "${{ steps.vault_check.outputs.OPENAI_API_KEY }}" ]; then
             echo "❌ FAILED: OPENAI_API_KEY was NOT fetched from Vault."
             exit 1
@@ -89,7 +88,7 @@ jobs:
             MASKED_KEY=$(echo "${{ steps.vault_check.outputs.OPENAI_API_KEY }}" | cut -c1-7)
             echo "✅ SUCCESS: OPENAI_API_KEY fetched from Vault (starts with: ${MASKED_KEY}...)"
             echo "🔐 Secret is available for downstream jobs."
-          fi   
+          fi
 
 # ============================================================
 # BUILD APP
@@ -98,18 +97,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-  
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
-  
+
       - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
-  
+
       - name: Show target
         run: ls -la "$APP_DIR/target"
-  
+
       # Upload the entire target/ so we can reuse compiled classes & the JAR
       - uses: actions/upload-artifact@v4
         with:
@@ -125,27 +124,28 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-  
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-  
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-  
+
       - run: mkdir -p $REPORTS_DIR
-  
+
       # Reuse compiled classes (no rebuild) from the same run
       - uses: actions/download-artifact@v4
         with:
           name: app-target
           path: ${{ env.APP_DIR }}/target/
-  
+
       # Semgrep on source (no rebuild)
       - name: Semgrep (Java + OWASP Top 10)
         run: |
+          set -euxo pipefail
           pip install semgrep
           semgrep scan \
             --config=p/java \
@@ -153,20 +153,21 @@ jobs:
             --json \
             --output "$REPORTS_DIR/semgrep.json" \
             "$APP_DIR/src/main/java" || echo '{}' > "$REPORTS_DIR/semgrep.json"
-  
+
       # SpotBugs on compiled classes already present in target/
-      # Note: this still triggers Maven's spotbugs goal, but does not clean/recompile sources.
       - name: SpotBugs XML
         run: |
+          set -euxo pipefail
           mvn -q -DskipTests -f $APP_DIR/pom.xml spotbugs:spotbugs || true
           if [ -f "$APP_DIR/target/spotbugsXml.xml" ]; then
             cp "$APP_DIR/target/spotbugsXml.xml" reports/spotbugs.xml
           else
             echo "<BugCollection/>" > reports/spotbugs.xml
           fi
-  
+
       - name: Convert SpotBugs XML → JSON
         run: |
+          set -euxo pipefail
           pip install xmltodict
           python - << 'PY'
           import xmltodict, json, pathlib
@@ -181,7 +182,7 @@ jobs:
           else:
               out.write_text("{}")
           PY
-  
+
       # Per-stage summary (uses your local composite action)
       - name: SAST Stage Summary
         uses: ./.github/actions/stage-summary
@@ -189,7 +190,7 @@ jobs:
           stage: SAST
           reports_dir: reports
           files: semgrep.json,spotbugs.json
-  
+
       - uses: actions/upload-artifact@v4
         with:
           name: sast-reports
@@ -204,76 +205,49 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+
       - run: mkdir -p $REPORTS_DIR
-      - run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install jq
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y jq
+
       - name: Install gitleaks
         run: |
-          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          set -euxo pipefail
+          VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name || true)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            VERSION="v8.18.4"   # fallback pin
+          fi
           curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
-          tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+          tar -xzf gitleaks.tar.gz
+          sudo mv gitleaks /usr/local/bin/
+
       - name: Run gitleaks
         run: |
+          set -euxo pipefail
           gitleaks detect --no-git --source "." --report-format json \
             --exit-code 0 --redact --log-level=info \
             --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
-      
+
       - name: Secrets Stage Summary
         uses: ./.github/actions/stage-summary
         with:
           stage: Secrets
           reports_dir: reports
           files: gitleaks.json
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: secrets-reports
           path: reports/*.json
-          if-no-files-found: ignore  
+          if-no-files-found: ignore
+
 # =========================================================
 # SCA (Trivy FS)
 # =========================================================
-  # SCA-Scanning:
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   env:
-  #     TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
-  #   steps:
-  #     - uses: actions/checkout@v4
-
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
-
-  #     - name: Install Trivy (pinned)
-  #       run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-  #         ./bin/trivy --version
-
-  #     - name: Trivy FS (SCA) scan
-  #       run: |
-  #         set -e
-  #         : > "$REPORTS_DIR/trivy_fs.json"
-  #         ./bin/trivy fs \
-  #           --format json \
-  #           --output "$REPORTS_DIR/trivy_fs.json" \
-  #           --timeout 10m \
-  #           "$APP_DIR" || true
-  #         if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
-  #           echo '{}' > "$REPORTS_DIR/trivy_fs.json"
-  #         fi
-
-  #     - name: SCA Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: SCA
-  #         reports_dir: reports
-  #         files: trivy_fs.json
-
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: sca-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
-
   SCA-Scanning:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -283,19 +257,30 @@ jobs:
       APP_DIR: .
     steps:
       - uses: actions/checkout@v4
-  
+
       - name: Prepare reports folder
         run: |
           set -euxo pipefail
           mkdir -p "$REPORTS_DIR"
-  
-      - name: Install Trivy (system-wide)
+
+      - name: Install Trivy (system-wide, robust)
         run: |
           set -euxo pipefail
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          RAW="${TRIVY_VERSION}"
+          NOVER="${RAW#v}"
+          VVER="v${NOVER}"
+          echo "Installing Trivy: requested='${TRIVY_VERSION}', normalized='${VVER}'"
+          curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh -o /tmp/trivy-install.sh
+          chmod +x /tmp/trivy-install.sh
+          if sudo /tmp/trivy-install.sh -b /usr/local/bin "${VVER}"; then
+            echo "Installed ${VVER}"
+          else
+            echo "Retry without 'v' → ${NOVER}"
+            sudo /tmp/trivy-install.sh -b /usr/local/bin "${NOVER}"
+          fi
+          which trivy
           trivy --version
-  
+
       - name: Trivy FS (SCA) scan
         run: |
           set -euxo pipefail
@@ -308,14 +293,14 @@ jobs:
           if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
             echo '{}' > "$REPORTS_DIR/trivy_fs.json"
           fi
-  
+
       - name: SCA Stage Summary
         uses: ./.github/actions/stage-summary
         with:
           stage: SCA
           reports_dir: reports
           files: trivy_fs.json
-  
+
       - name: Upload SCA reports
         uses: actions/upload-artifact@v4
         with:
@@ -323,23 +308,24 @@ jobs:
           path: reports/*.json
           if-no-files-found: ignore
 
-# =========================================================
-# IAC (tfsec and k8s)
-# =========================================================
+# ============================================================
+# IAC (Checkov: Terraform & Kubernetes)
+# ============================================================
   IAC-Scanning:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-  
+
       - name: Prepare reports folder
         run: mkdir -p "$REPORTS_DIR"
-  
+
       - name: Install Checkov
         run: pip install checkov
-  
+
       - name: Checkov (Terraform JSON)
         run: |
+          set -euxo pipefail
           : > "$REPORTS_DIR/checkov_tf.json"
           if [ -d "$APP_DIR/terraform" ]; then
             checkov -d "$APP_DIR/terraform" --framework terraform -o json > "$REPORTS_DIR/checkov_tf.json" || true
@@ -347,9 +333,10 @@ jobs:
             echo '{}' > "$REPORTS_DIR/checkov_tf.json"
           fi
           if [ ! -s "$REPORTS_DIR/checkov_tf.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_tf.json"; fi
-  
+
       - name: Checkov (Kubernetes JSON)
         run: |
+          set -euxo pipefail
           : > "$REPORTS_DIR/checkov_k8s.json"
           if [ -d "$APP_DIR/k8s" ]; then
             checkov -d "$APP_DIR/k8s" --framework kubernetes -o json > "$REPORTS_DIR/checkov_k8s.json" || true
@@ -357,7 +344,7 @@ jobs:
             echo '{}' > "$REPORTS_DIR/checkov_k8s.json"
           fi
           if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
-  
+
       - name: IaC Stage Summary
         uses: ./.github/actions/stage-summary
         with:
@@ -374,78 +361,6 @@ jobs:
 # ============================================================
 # CONTAINER (Trivy Image)
 # ============================================================
-  # Container-Scanning:
-  #   runs-on: ubuntu-latest
-  #   needs: Build-Java-App
-  #   continue-on-error: true
-  #   env:
-  #     TRIVY_VERSION: "0.51.2"
-  #   steps:
-  #     - uses: actions/checkout@v4
-  
-  #     # Download the jar produced by Build-Java-App
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: app-target
-  #         path: ${{ env.APP_DIR }}/target/
-  
-  #     - name: Verify jar
-  #       run: |
-  #         echo "Listing target folder:"
-  #         ls -la "$APP_DIR/target"
-  #         if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
-  #           echo "❌ JAR missing"
-  #           exit 1
-  #         fi
-  
-  #     - name: Prepare reports folder
-  #       run: mkdir -p "$REPORTS_DIR"
-  
-  #     - name: Build Docker image (build from app folder)
-  #       id: buildimg
-  #       run: |
-  #         if docker build -t java-pilot-app:1.0.0 -f "$APP_DIR/Dockerfile" . ; then
-  #           echo "built=true" >> $GITHUB_OUTPUT
-  #         else
-  #           echo "built=false" >> $GITHUB_OUTPUT
-  #         fi
-  
-  #     - name: Install Trivy (pinned)
-  #       run: |
-  #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
-  #         ./bin/trivy --version
-  
-  #     - name: Trivy Image Scan (only if image built)
-  #       if: steps.buildimg.outputs.built == 'true'
-  #       run: |
-  #         : > "$REPORTS_DIR/trivy_image.json"
-  #         ./bin/trivy image \
-  #           --format json \
-  #           --timeout 10m \
-  #           --output "$REPORTS_DIR/trivy_image.json" \
-  #           java-pilot-app:1.0.0 || true
-  #         if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
-  #           echo '{}' > "$REPORTS_DIR/trivy_image.json"
-  #         fi
-  
-  #     - name: Trivy Image Scan (fallback when build failed)
-  #       if: steps.buildimg.outputs.built != 'true'
-  #       run: |
-  #         echo '{}' > "$REPORTS_DIR/trivy_image.json"
-  
-  #     - name: Container Stage Summary
-  #       uses: ./.github/actions/stage-summary
-  #       with:
-  #         stage: Container
-  #         reports_dir: reports
-  #         files: trivy_image.json
-
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: container-reports
-  #         path: reports/*.json
-  #         if-no-files-found: ignore
-
   Container-Scanning:
     runs-on: ubuntu-latest
     needs: Build-Java-App
@@ -457,12 +372,13 @@ jobs:
       IMAGE_NAME: java-pilot-app:1.0.0
     steps:
       - uses: actions/checkout@v4
-  
+
+      # Download the jar produced by Build-Java-App
       - uses: actions/download-artifact@v4
         with:
           name: app-target
           path: ${{ env.APP_DIR }}/target/
-  
+
       - name: Verify jar
         run: |
           set -euxo pipefail
@@ -472,12 +388,12 @@ jobs:
             echo "❌ JAR missing at $APP_DIR/target/java-pilot-app-1.0.0.jar"
             exit 1
           fi
-  
+
       - name: Prepare reports folder
         run: |
           set -euxo pipefail
           mkdir -p "$REPORTS_DIR"
-  
+
       - name: Build Docker image (build from app folder)
         id: buildimg
         working-directory: ${{ env.APP_DIR }}
@@ -488,14 +404,25 @@ jobs:
           else
             echo "built=false" >> "$GITHUB_OUTPUT"
           fi
-  
-      - name: Install Trivy (system-wide)
+
+      - name: Install Trivy (system-wide, robust)
         run: |
           set -euxo pipefail
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-            | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          RAW="${TRIVY_VERSION}"
+          NOVER="${RAW#v}"
+          VVER="v${NOVER}"
+          echo "Installing Trivy: requested='${TRIVY_VERSION}', normalized='${VVER}'"
+          curl -sSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh -o /tmp/trivy-install.sh
+          chmod +x /tmp/trivy-install.sh
+          if sudo /tmp/trivy-install.sh -b /usr/local/bin "${VVER}"; then
+            echo "Installed ${VVER}"
+          else
+            echo "Retry without 'v' → ${NOVER}"
+            sudo /tmp/trivy-install.sh -b /usr/local/bin "${NOVER}"
+          fi
+          which trivy
           trivy --version
-  
+
       - name: Trivy Image Scan (only if image built)
         if: steps.buildimg.outputs.built == 'true'
         run: |
@@ -509,26 +436,26 @@ jobs:
           if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
             echo '{}' > "$REPORTS_DIR/trivy_image.json"
           fi
-  
+
       - name: Trivy Image Scan (fallback when build failed)
         if: steps.buildimg.outputs.built != 'true'
         run: |
           set -euxo pipefail
           echo '{}' > "$REPORTS_DIR/trivy_image.json"
-  
+
       - name: Container Stage Summary
         uses: ./.github/actions/stage-summary
         with:
           stage: Container
           reports_dir: reports
           files: trivy_image.json
-  
+
       - name: Upload container reports
         uses: actions/upload-artifact@v4
         with:
           name: container-reports
           path: reports/*.json
-          if-no-files-found: ignore  
+          if-no-files-found: ignore
 
 # ============================================================
 # DAST
@@ -539,46 +466,25 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: app-target
           path: ${{ env.APP_DIR }}/target/
-  
+
       - run: mkdir -p $REPORTS_DIR
-  
+
       - name: Start Application
         run: |
+          set -euxo pipefail
           mkdir -p config/dummy
           java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
             --spring.config.import=optional:file:./config/*/ &
           sleep 40
 
-      # - name: Start Application (background) & wait for readiness
-      #   shell: bash
-      #   run: |
-      #     set -euxo pipefail
-      #     # Show what's in target/
-      #     ls -la "$APP_DIR/target"
-  
-      #     # Start app in background
-      #     nohup java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
-      #       --spring.config.import=optional:file:./config/*/ \
-      #       > app.log 2>&1 &
-  
-      #     # Poll for readiness using a simple app endpoint (/token)
-      #     for i in {1..60}; do
-      #       if curl -fsS http://localhost:8080/token >/dev/null; then
-      #         echo "App is up"; break
-      #       fi
-      #       sleep 2
-      #     done
-  
-      #     # If still not up, print logs and fail this step (but job is continue-on-error anyway)
-      #     curl -fsS http://localhost:8080/token >/dev/null || { echo "App did not start"; tail -n 200 app.log || true; exit 1; }
-  
       - name: OWASP ZAP Baseline
         run: |
+          set -euxo pipefail
           mkdir -p zap-output
           docker run --rm \
             -u root \
@@ -593,7 +499,7 @@ jobs:
           else
             echo '{}' > "$REPORTS_DIR/zap.json"
           fi
-  
+
       - name: DAST Stage Summary
         uses: ./.github/actions/stage-summary
         with:
@@ -614,30 +520,27 @@ jobs:
     runs-on: ubuntu-latest
     needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
     if: always()
-  
-    # ➜ Expose outputs so later jobs (e.g., Severity-Gate / Agentic AI) can read them
     outputs:
       decision: ${{ steps.aggr.outputs.decision }}
       critical: ${{ steps.aggr.outputs.critical }}
       high:     ${{ steps.aggr.outputs.high }}
       medium:   ${{ steps.aggr.outputs.medium }}
       low:      ${{ steps.aggr.outputs.low }}
-  
     steps:
-      # ➜ REQUIRED: make local actions (and your script) available
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
           path: collected-reports
-  
+
       - name: Collate JSON
         run: |
+          set -euxo pipefail
           mkdir -p final-reports
           find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
           echo "DEBUG: Aggregated files"
           ls -la final-reports || true
-  
+
       - name: Aggregate & Decide
         id: aggr
         uses: ./.github/actions/severity-aggregate
@@ -645,16 +548,15 @@ jobs:
           reports_dir: final-reports
           output_dir: final-reports
           min_severity: ${{ env.MIN_SEVERITY }}
-      
-      # Display Decision and Total before upload
+
       - name: Print decision and totals (debug)
         run: |
-          echo "Decision: ${{steps.aggr.outputs.decision}}"     
-          echo "Crtical: ${{steps.aggr.outputs.critical}}"
+          echo "Decision: ${{steps.aggr.outputs.decision}}"
+          echo "Critical: ${{steps.aggr.outputs.critical}}"
           echo "High: ${{steps.aggr.outputs.high}}"
           echo "Medium: ${{steps.aggr.outputs.medium}}"
-          echo "low: ${{steps.aggr.outputs.low}}"
-      
+          echo "Low: ${{steps.aggr.outputs.low}}"
+
       - name: Append decision to Job Summary
         run: |
           {
@@ -679,15 +581,13 @@ jobs:
             cat final-reports/overall_summary.json
           fi
 
-      # (Optional) upload the overall summary for humans and downstream steps
       - uses: actions/upload-artifact@v4
         with:
           name: overall-summary
           path: |
             final-reports/overall_summary.json
             final-reports/overall_summary.md
-  
-      # (Optional) also publish the normalized set of all JSONs in one artifact
+
       - uses: actions/upload-artifact@v4
         with:
           name: all-scan-reports
@@ -700,15 +600,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: Aggregate-Scanning-Reports
     if: always()
-  
     steps:
       - uses: actions/checkout@v4
-  
+
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: final-reports
-  
+
       - uses: actions/setup-python@v5
         with:
           python-version: 3.12
@@ -723,7 +622,7 @@ jobs:
           roleId: ${{ secrets.VAULT_ROLE_ID }}
           secretId: ${{ secrets.VAULT_SECRET_ID }}
           secrets: |
-            secret/data/openai api_key | OPENAI_API_KEY          
+            secret/data/openai api_key | OPENAI_API_KEY
 
       - name: Install dependencies
         run: pip install openai
@@ -742,15 +641,14 @@ jobs:
       - name: Run AI Security Intelligence Agent
         run: python tools/agent/security_intelligence_agent.py
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
           LLM_ENABLED: "true"
           MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
-  
+
       - uses: actions/upload-artifact@v4
         with:
           name: ai-security-intelligence
           path: agent_output/*
-
 
 # ============================================================
 # AI GATE
@@ -769,14 +667,14 @@ jobs:
       - name: Decide from Aggregate
         id: set
         run: |
-          ls -la final-report/*
+          ls -la final-report/* || true
           cat final-report/overall_summary.json || true
           echo "Decision: ${{ needs.Aggregate-Scanning-Reports.outputs.decision }}"
           if [ "${{ needs.Aggregate-Scanning-Reports.outputs.decision }}" = "FAIL" ]; then
             echo "gate_failed=true" >> $GITHUB_OUTPUT
           else
             echo "gate_failed=false" >> $GITHUB_OUTPUT
-          fi        
+          fi
 
 # ============================================================
 #  Build the FAISS index (RAG)
@@ -785,15 +683,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [Aggregate-Scanning-Reports, Vault-Connection-Check]
     if: needs.Aggregate-Scanning-Reports.outputs.decision == 'FAIL'
-  
     steps:
       - uses: actions/checkout@v4
-  
-      # ✅ Ensure correct Python version
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-  
+
       # 🔐 Fetch OpenAI API Key from Vault
       - name: Import Secrets from HashiCorp Vault
         id: vault
@@ -805,14 +701,13 @@ jobs:
           secretId: ${{ secrets.VAULT_SECRET_ID }}
           secrets: |
             secret/data/openai api_key | OPENAI_API_KEY
-  
-      # ✅ Install dependencies (deterministic)
+
       - name: Install dependencies
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai faiss-cpu pyyaml
-  
-      # ✅ Validate secret before running
+
       - name: Validate OpenAI Key
         run: |
           if [ -z "${OPENAI_API_KEY}" ]; then
@@ -822,22 +717,18 @@ jobs:
           echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
         env:
           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
-  
-      # ✅ Build index
+
       - name: Build FAISS index
         run: python tools/embeddings/build_index.py
         env:
           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
           PYTHONPATH: tools
-  
+
       - uses: actions/upload-artifact@v4
         with:
           name: rag-index
           path: agent_output/index
 
-# ============================================================
-#  Agentic AI (LangChain/RAG) Autofix
-# ============================================================
 # ============================================================
 #  Agentic AI (LangChain/RAG) Autofix
 # ============================================================
@@ -847,27 +738,25 @@ jobs:
     if: needs.Aggregate-Scanning-Reports.outputs.decision == 'FAIL'
     env:
       RAG_DEBUG: "true"
-  
     steps:
       - uses: actions/checkout@v4
-  
-      # ✅ Ensure correct Python
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-  
-      # ✅ Download FAISS index
+
+      # Download FAISS index
       - uses: actions/download-artifact@v4
         with:
           name: rag-index
           path: agent_output/index
-  
-      # ✅ Download aggregated scan reports
+
+      # Download aggregated scan reports
       - uses: actions/download-artifact@v4
         with:
           name: all-scan-reports
           path: final-reports
-  
+
       # 🔐 Fetch OpenAI API Key from Vault
       - name: Import Secrets from HashiCorp Vault
         id: vault
@@ -879,14 +768,15 @@ jobs:
           secretId: ${{ secrets.VAULT_SECRET_ID }}
           secrets: |
             secret/data/openai api_key | OPENAI_API_KEY
-  
-      # ✅ Install dependencies
+
+      # Install dependencies
       - name: Install dependencies
         run: |
+          set -euxo pipefail
           python -m pip install --upgrade pip
           pip install --no-cache-dir openai faiss-cpu pyyaml
-  
-      # ✅ Validate secret
+
+      # Validate secret
       - name: Validate OpenAI Key
         run: |
           if [ -z "${OPENAI_API_KEY}" ]; then
@@ -899,31 +789,32 @@ jobs:
 
       - name: Setup Java
         uses: actions/setup-java@v4
-        with: 
+        with:
           distribution: temurin
-          java-version: ${{env.JAVA_VERSION}}
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
-          
+
       - name: Build AST Engine
         run: |
+          set -euxo pipefail
           cd tools/java-ast-fixer
           mvn -B clean package
-          ls -la target/    
-  
-      # ✅ Run Agent
+          ls -la target/
+
+      # Run Agent
       - name: Run Agent
         run: python -m tools.agent.run_agent
         env:
           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
           PYTHONPATH: .
           RAG_DEBUG: "true"
-  
+
       - uses: actions/upload-artifact@v4
         with:
           name: ai-results
           path: agent_output/*
           if-no-files-found: ignore
-  
+
       # =====================================================
       # CREATE PR (only if branch metadata exists)
       # =====================================================
@@ -937,9 +828,9 @@ jobs:
             const fs = require('fs');
             const meta = JSON.parse(fs.readFileSync('agent_output/agent_meta.json', 'utf8'));
             const branch = meta.branch;
-  
+
             const { owner, repo } = context.repo;
-  
+
             // Check if PR already exists
             const existing = await github.rest.pulls.list({
               owner,
@@ -947,12 +838,12 @@ jobs:
               state: 'open',
               head: `${owner}:${branch}`
             });
-  
+
             if (existing.data.length > 0) {
               console.log("PR already exists:", existing.data[0].html_url);
               return;
             }
-  
+
             const pr = await github.rest.pulls.create({
               owner,
               repo,
@@ -961,9 +852,9 @@ jobs:
               base: process.env.BASE_BRANCH,
               body: "Automated security patch generated by Agentic AI."
             });
-  
+
             console.log("PR created:", pr.data.html_url);
-  
+
       # =====================================================
       # BUILD PR COMMENT BODY
       # =====================================================
@@ -985,7 +876,7 @@ jobs:
               echo "_No patch file found._"
             fi
           } > agent_output/pr_comment.md
-  
+
       # =====================================================
       # POST PR COMMENT
       # =====================================================
@@ -998,26 +889,1052 @@ jobs:
             const meta = JSON.parse(fs.readFileSync('agent_output/agent_meta.json', 'utf8'));
             const branch = meta.branch;
             const body = fs.readFileSync('agent_output/pr_comment.md', 'utf8');
-  
+
             const { owner, repo } = context.repo;
-  
+
             const { data: prs } = await github.rest.pulls.list({
               owner,
               repo,
               state: 'open',
               head: `${owner}:${branch}`
             });
-  
+
             if (!prs.length) {
               console.log("No open PR found for branch:", branch);
               return;
             }
-  
+
             await github.rest.issues.createComment({
               owner,
               repo,
               issue_number: prs[0].number,
               body
             });
-  
+
             console.log("Comment posted to PR:", prs[0].html_url);
+
+
+
+# name: DevSecOps Agentic AI Pipeline (BugBuster)
+
+# on:
+#   push:
+#     branches: [feature/devsecops-agent-bgbstr]
+#   workflow_dispatch:
+
+# concurrency:
+#   group: devsecops-${{ github.ref }}
+#   cancel-in-progress: true
+
+# # 🔧 Recommended for AutoFix + PR job
+# permissions:
+#   contents: write
+#   pull-requests: write
+
+# env:
+#   JAVA_VERSION: "17"
+#   PYTHON_VERSION: "3.12"
+#   APP_DIR: "java-pilot-app"
+#   REPORTS_DIR: "reports"
+#   MIN_SEVERITY: "low"
+#   LLM_ENABLED: "true"
+#   LLM_EXPLAIN: "0"
+#   LLM_MODE: "openai"
+#   BASE_BRANCH: "feature/devsecops-agent-bgbstr"
+#   SEVERITY_MODE:  "threshold"
+
+
+# jobs:
+
+# # ============================================================
+# # 🔐 VAULT CONNECTION VALIDATION
+# # ============================================================
+#   Vault-Connection-Check:
+#     runs-on: ubuntu-latest
+#     # outputs:
+#     #   OPENAI_API_KEY: ${{ steps.vault_check.outputs.OPENAI_API_KEY }}
+#     steps:
+#       - name: Validate Vault Connectivity
+#         run: |
+#           echo "🔐 Testing connectivity to HashiCorp Vault..."
+#           VAULT_URL="${{ secrets.VAULT_ADDR }}/v1/sys/health"
+#           echo "Vault Health Endpoint: $VAULT_URL"
+
+#           HTTP_CODE=$(curl -s -o /tmp/vault_health.json -w "%{http_code}" \
+#             --connect-timeout 10 --max-time 15 "$VAULT_URL" || echo "000")
+
+#           echo "HTTP Status Code: $HTTP_CODE"
+#           cat /tmp/vault_health.json || true
+
+#           if [ "$HTTP_CODE" = "000" ]; then
+#             echo "❌ FAILED: Cannot reach Vault server. Check EC2 Security Group (port 8200) and VAULT_ADDR secret."
+#             exit 1
+#           elif [ "$HTTP_CODE" = "200" ]; then
+#             echo "✅ Vault is reachable, initialized, and unsealed."
+#           elif [ "$HTTP_CODE" = "429" ]; then
+#             echo "⚠️ Vault is reachable but in standby mode."
+#           elif [ "$HTTP_CODE" = "472" ]; then
+#             echo "⚠️ Vault is reachable but in recovery mode."
+#           elif [ "$HTTP_CODE" = "501" ]; then
+#             echo "❌ FAILED: Vault is reachable but NOT initialized."
+#             exit 1
+#           elif [ "$HTTP_CODE" = "503" ]; then
+#             echo "❌ FAILED: Vault is reachable but SEALED. Run 'vault operator unseal' on EC2."
+#             exit 1
+#           else
+#             echo "⚠️ Unexpected status code: $HTTP_CODE"
+#             exit 1
+#           fi
+
+#       - name: Validate Vault Secret Fetch (AppRole Auth)
+#         id: vault_check
+#         uses: hashicorp/vault-action@v3
+#         with:
+#           url: ${{ secrets.VAULT_ADDR }}
+#           method: approle
+#           roleId: ${{ secrets.VAULT_ROLE_ID }}
+#           secretId: ${{ secrets.VAULT_SECRET_ID }}
+#           secrets: |
+#             secret/data/openai api_key | OPENAI_API_KEY
+
+#       - name: Confirm Secret Retrieved
+#         run: |
+#           if [ -z "${{ steps.vault_check.outputs.OPENAI_API_KEY }}" ]; then
+#             echo "❌ FAILED: OPENAI_API_KEY was NOT fetched from Vault."
+#             exit 1
+#           else
+#             MASKED_KEY=$(echo "${{ steps.vault_check.outputs.OPENAI_API_KEY }}" | cut -c1-7)
+#             echo "✅ SUCCESS: OPENAI_API_KEY fetched from Vault (starts with: ${MASKED_KEY}...)"
+#             echo "🔐 Secret is available for downstream jobs."
+#           fi   
+
+# # ============================================================
+# # BUILD APP
+# # ============================================================
+#   Build-Java-App:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - uses: actions/setup-java@v4
+#         with:
+#           distribution: temurin
+#           java-version: ${{ env.JAVA_VERSION }}
+#           cache: maven
+  
+#       - run: mvn -B clean package -DskipTests -f $APP_DIR/pom.xml
+  
+#       - name: Show target
+#         run: ls -la "$APP_DIR/target"
+  
+#       # Upload the entire target/ so we can reuse compiled classes & the JAR
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: app-target
+#           path: ${{ env.APP_DIR }}/target/
+
+# # ============================================================
+# # SAST
+# # ============================================================
+#   SAST-Scanning:
+#     runs-on: ubuntu-latest
+#     needs: Build-Java-App
+#     continue-on-error: true
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - uses: actions/setup-java@v4
+#         with:
+#           distribution: temurin
+#           java-version: ${{ env.JAVA_VERSION }}
+  
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+  
+#       - run: mkdir -p $REPORTS_DIR
+  
+#       # Reuse compiled classes (no rebuild) from the same run
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: app-target
+#           path: ${{ env.APP_DIR }}/target/
+  
+#       # Semgrep on source (no rebuild)
+#       - name: Semgrep (Java + OWASP Top 10)
+#         run: |
+#           pip install semgrep
+#           semgrep scan \
+#             --config=p/java \
+#             --config=p/owasp-top-ten \
+#             --json \
+#             --output "$REPORTS_DIR/semgrep.json" \
+#             "$APP_DIR/src/main/java" || echo '{}' > "$REPORTS_DIR/semgrep.json"
+  
+#       # SpotBugs on compiled classes already present in target/
+#       # Note: this still triggers Maven's spotbugs goal, but does not clean/recompile sources.
+#       - name: SpotBugs XML
+#         run: |
+#           mvn -q -DskipTests -f $APP_DIR/pom.xml spotbugs:spotbugs || true
+#           if [ -f "$APP_DIR/target/spotbugsXml.xml" ]; then
+#             cp "$APP_DIR/target/spotbugsXml.xml" reports/spotbugs.xml
+#           else
+#             echo "<BugCollection/>" > reports/spotbugs.xml
+#           fi
+  
+#       - name: Convert SpotBugs XML → JSON
+#         run: |
+#           pip install xmltodict
+#           python - << 'PY'
+#           import xmltodict, json, pathlib
+#           p = pathlib.Path("reports/spotbugs.xml")
+#           out = pathlib.Path("reports/spotbugs.json")
+#           if p.exists() and p.stat().st_size > 0:
+#               try:
+#                   data = xmltodict.parse(p.read_text())
+#               except Exception:
+#                   data = {}
+#               out.write_text(json.dumps(data, indent=2))
+#           else:
+#               out.write_text("{}")
+#           PY
+  
+#       # Per-stage summary (uses your local composite action)
+#       - name: SAST Stage Summary
+#         uses: ./.github/actions/stage-summary
+#         with:
+#           stage: SAST
+#           reports_dir: reports
+#           files: semgrep.json,spotbugs.json
+  
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: sast-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore
+
+# # ============================================================
+# # SECRETS
+# # ============================================================
+#   Secrets-Scanning:
+#     runs-on: ubuntu-latest
+#     continue-on-error: true
+#     steps:
+#       - uses: actions/checkout@v4
+#       - run: mkdir -p $REPORTS_DIR
+#       - run: sudo apt-get update && sudo apt-get install -y jq
+#       - name: Install gitleaks
+#         run: |
+#           VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+#           curl -L -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/gitleaks_${VERSION#v}_linux_x64.tar.gz"
+#           tar -xzf gitleaks.tar.gz && sudo mv gitleaks /usr/local/bin/
+#       - name: Run gitleaks
+#         run: |
+#           gitleaks detect --no-git --source "." --report-format json \
+#             --exit-code 0 --redact --log-level=info \
+#             --report-path "$REPORTS_DIR/gitleaks.json" || echo '{}' > "$REPORTS_DIR/gitleaks.json"
+      
+#       - name: Secrets Stage Summary
+#         uses: ./.github/actions/stage-summary
+#         with:
+#           stage: Secrets
+#           reports_dir: reports
+#           files: gitleaks.json
+      
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: secrets-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore  
+# # =========================================================
+# # SCA (Trivy FS)
+# # =========================================================
+#   # SCA-Scanning:
+#   #   runs-on: ubuntu-latest
+#   #   continue-on-error: true
+#   #   env:
+#   #     TRIVY_VERSION: "0.51.2"   # pin to avoid CI drift
+#   #   steps:
+#   #     - uses: actions/checkout@v4
+
+#   #     - name: Prepare reports folder
+#   #       run: mkdir -p "$REPORTS_DIR"
+
+#   #     - name: Install Trivy (pinned)
+#   #       run: |
+#   #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+#   #         ./bin/trivy --version
+
+#   #     - name: Trivy FS (SCA) scan
+#   #       run: |
+#   #         set -e
+#   #         : > "$REPORTS_DIR/trivy_fs.json"
+#   #         ./bin/trivy fs \
+#   #           --format json \
+#   #           --output "$REPORTS_DIR/trivy_fs.json" \
+#   #           --timeout 10m \
+#   #           "$APP_DIR" || true
+#   #         if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+#   #           echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+#   #         fi
+
+#   #     - name: SCA Stage Summary
+#   #       uses: ./.github/actions/stage-summary
+#   #       with:
+#   #         stage: SCA
+#   #         reports_dir: reports
+#   #         files: trivy_fs.json
+
+#   #     - uses: actions/upload-artifact@v4
+#   #       with:
+#   #         name: sca-reports
+#   #         path: reports/*.json
+#   #         if-no-files-found: ignore
+
+#   SCA-Scanning:
+#     runs-on: ubuntu-latest
+#     continue-on-error: true
+#     env:
+#       TRIVY_VERSION: "0.51.2"
+#       REPORTS_DIR: reports
+#       APP_DIR: .
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - name: Prepare reports folder
+#         run: |
+#           set -euxo pipefail
+#           mkdir -p "$REPORTS_DIR"
+  
+#       - name: Install Trivy (system-wide)
+#         run: |
+#           set -euxo pipefail
+#           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+#             | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+#           trivy --version
+  
+#       - name: Trivy FS (SCA) scan
+#         run: |
+#           set -euxo pipefail
+#           : > "$REPORTS_DIR/trivy_fs.json"
+#           trivy fs \
+#             --format json \
+#             --output "$REPORTS_DIR/trivy_fs.json" \
+#             --timeout 10m \
+#             "$APP_DIR" || true
+#           if [ ! -s "$REPORTS_DIR/trivy_fs.json" ]; then
+#             echo '{}' > "$REPORTS_DIR/trivy_fs.json"
+#           fi
+  
+#       - name: SCA Stage Summary
+#         uses: ./.github/actions/stage-summary
+#         with:
+#           stage: SCA
+#           reports_dir: reports
+#           files: trivy_fs.json
+  
+#       - name: Upload SCA reports
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: sca-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore
+
+# # =========================================================
+# # IAC (tfsec and k8s)
+# # =========================================================
+#   IAC-Scanning:
+#     runs-on: ubuntu-latest
+#     continue-on-error: true
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - name: Prepare reports folder
+#         run: mkdir -p "$REPORTS_DIR"
+  
+#       - name: Install Checkov
+#         run: pip install checkov
+  
+#       - name: Checkov (Terraform JSON)
+#         run: |
+#           : > "$REPORTS_DIR/checkov_tf.json"
+#           if [ -d "$APP_DIR/terraform" ]; then
+#             checkov -d "$APP_DIR/terraform" --framework terraform -o json > "$REPORTS_DIR/checkov_tf.json" || true
+#           else
+#             echo '{}' > "$REPORTS_DIR/checkov_tf.json"
+#           fi
+#           if [ ! -s "$REPORTS_DIR/checkov_tf.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_tf.json"; fi
+  
+#       - name: Checkov (Kubernetes JSON)
+#         run: |
+#           : > "$REPORTS_DIR/checkov_k8s.json"
+#           if [ -d "$APP_DIR/k8s" ]; then
+#             checkov -d "$APP_DIR/k8s" --framework kubernetes -o json > "$REPORTS_DIR/checkov_k8s.json" || true
+#           else
+#             echo '{}' > "$REPORTS_DIR/checkov_k8s.json"
+#           fi
+#           if [ ! -s "$REPORTS_DIR/checkov_k8s.json" ]; then echo '{}' > "$REPORTS_DIR/checkov_k8s.json"; fi
+  
+#       - name: IaC Stage Summary
+#         uses: ./.github/actions/stage-summary
+#         with:
+#           stage: IaC
+#           reports_dir: reports
+#           files: checkov_tf.json,checkov_k8s.json
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: iac-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore
+
+# # ============================================================
+# # CONTAINER (Trivy Image)
+# # ============================================================
+#   # Container-Scanning:
+#   #   runs-on: ubuntu-latest
+#   #   needs: Build-Java-App
+#   #   continue-on-error: true
+#   #   env:
+#   #     TRIVY_VERSION: "0.51.2"
+#   #   steps:
+#   #     - uses: actions/checkout@v4
+  
+#   #     # Download the jar produced by Build-Java-App
+#   #     - uses: actions/download-artifact@v4
+#   #       with:
+#   #         name: app-target
+#   #         path: ${{ env.APP_DIR }}/target/
+  
+#   #     - name: Verify jar
+#   #       run: |
+#   #         echo "Listing target folder:"
+#   #         ls -la "$APP_DIR/target"
+#   #         if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
+#   #           echo "❌ JAR missing"
+#   #           exit 1
+#   #         fi
+  
+#   #     - name: Prepare reports folder
+#   #       run: mkdir -p "$REPORTS_DIR"
+  
+#   #     - name: Build Docker image (build from app folder)
+#   #       id: buildimg
+#   #       run: |
+#   #         if docker build -t java-pilot-app:1.0.0 -f "$APP_DIR/Dockerfile" . ; then
+#   #           echo "built=true" >> $GITHUB_OUTPUT
+#   #         else
+#   #           echo "built=false" >> $GITHUB_OUTPUT
+#   #         fi
+  
+#   #     - name: Install Trivy (pinned)
+#   #       run: |
+#   #         curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b ./bin "v${TRIVY_VERSION}"
+#   #         ./bin/trivy --version
+  
+#   #     - name: Trivy Image Scan (only if image built)
+#   #       if: steps.buildimg.outputs.built == 'true'
+#   #       run: |
+#   #         : > "$REPORTS_DIR/trivy_image.json"
+#   #         ./bin/trivy image \
+#   #           --format json \
+#   #           --timeout 10m \
+#   #           --output "$REPORTS_DIR/trivy_image.json" \
+#   #           java-pilot-app:1.0.0 || true
+#   #         if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
+#   #           echo '{}' > "$REPORTS_DIR/trivy_image.json"
+#   #         fi
+  
+#   #     - name: Trivy Image Scan (fallback when build failed)
+#   #       if: steps.buildimg.outputs.built != 'true'
+#   #       run: |
+#   #         echo '{}' > "$REPORTS_DIR/trivy_image.json"
+  
+#   #     - name: Container Stage Summary
+#   #       uses: ./.github/actions/stage-summary
+#   #       with:
+#   #         stage: Container
+#   #         reports_dir: reports
+#   #         files: trivy_image.json
+
+#   #     - uses: actions/upload-artifact@v4
+#   #       with:
+#   #         name: container-reports
+#   #         path: reports/*.json
+#   #         if-no-files-found: ignore
+
+#   Container-Scanning:
+#     runs-on: ubuntu-latest
+#     needs: Build-Java-App
+#     continue-on-error: true
+#     env:
+#       TRIVY_VERSION: "0.51.2"
+#       REPORTS_DIR: reports
+#       APP_DIR: .
+#       IMAGE_NAME: java-pilot-app:1.0.0
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: app-target
+#           path: ${{ env.APP_DIR }}/target/
+  
+#       - name: Verify jar
+#         run: |
+#           set -euxo pipefail
+#           echo "Listing target folder:"
+#           ls -la "$APP_DIR/target"
+#           if [ ! -f "$APP_DIR/target/java-pilot-app-1.0.0.jar" ]; then
+#             echo "❌ JAR missing at $APP_DIR/target/java-pilot-app-1.0.0.jar"
+#             exit 1
+#           fi
+  
+#       - name: Prepare reports folder
+#         run: |
+#           set -euxo pipefail
+#           mkdir -p "$REPORTS_DIR"
+  
+#       - name: Build Docker image (build from app folder)
+#         id: buildimg
+#         working-directory: ${{ env.APP_DIR }}
+#         run: |
+#           set -euxo pipefail
+#           if docker build -t "$IMAGE_NAME" -f "$APP_DIR/Dockerfile" . ; then
+#             echo "built=true" >> "$GITHUB_OUTPUT"
+#           else
+#             echo "built=false" >> "$GITHUB_OUTPUT"
+#           fi
+  
+#       - name: Install Trivy (system-wide)
+#         run: |
+#           set -euxo pipefail
+#           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+#             | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+#           trivy --version
+  
+#       - name: Trivy Image Scan (only if image built)
+#         if: steps.buildimg.outputs.built == 'true'
+#         run: |
+#           set -euxo pipefail
+#           : > "$REPORTS_DIR/trivy_image.json"
+#           trivy image \
+#             --format json \
+#             --timeout 10m \
+#             --output "$REPORTS_DIR/trivy_image.json" \
+#             "$IMAGE_NAME" || true
+#           if [ ! -s "$REPORTS_DIR/trivy_image.json" ]; then
+#             echo '{}' > "$REPORTS_DIR/trivy_image.json"
+#           fi
+  
+#       - name: Trivy Image Scan (fallback when build failed)
+#         if: steps.buildimg.outputs.built != 'true'
+#         run: |
+#           set -euxo pipefail
+#           echo '{}' > "$REPORTS_DIR/trivy_image.json"
+  
+#       - name: Container Stage Summary
+#         uses: ./.github/actions/stage-summary
+#         with:
+#           stage: Container
+#           reports_dir: reports
+#           files: trivy_image.json
+  
+#       - name: Upload container reports
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: container-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore  
+
+# # ============================================================
+# # DAST
+# # ============================================================
+#   DAST-Scanning:
+#     runs-on: ubuntu-latest
+#     needs: Build-Java-App
+#     continue-on-error: true
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: app-target
+#           path: ${{ env.APP_DIR }}/target/
+  
+#       - run: mkdir -p $REPORTS_DIR
+  
+#       - name: Start Application
+#         run: |
+#           mkdir -p config/dummy
+#           java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
+#             --spring.config.import=optional:file:./config/*/ &
+#           sleep 40
+
+#       # - name: Start Application (background) & wait for readiness
+#       #   shell: bash
+#       #   run: |
+#       #     set -euxo pipefail
+#       #     # Show what's in target/
+#       #     ls -la "$APP_DIR/target"
+  
+#       #     # Start app in background
+#       #     nohup java -jar "$APP_DIR/target/java-pilot-app-1.0.0.jar" \
+#       #       --spring.config.import=optional:file:./config/*/ \
+#       #       > app.log 2>&1 &
+  
+#       #     # Poll for readiness using a simple app endpoint (/token)
+#       #     for i in {1..60}; do
+#       #       if curl -fsS http://localhost:8080/token >/dev/null; then
+#       #         echo "App is up"; break
+#       #       fi
+#       #       sleep 2
+#       #     done
+  
+#       #     # If still not up, print logs and fail this step (but job is continue-on-error anyway)
+#       #     curl -fsS http://localhost:8080/token >/dev/null || { echo "App did not start"; tail -n 200 app.log || true; exit 1; }
+  
+#       - name: OWASP ZAP Baseline
+#         run: |
+#           mkdir -p zap-output
+#           docker run --rm \
+#             -u root \
+#             --network=host \
+#             -v "$(pwd)/zap-output":/zap/wrk:rw \
+#             ghcr.io/zaproxy/zaproxy:stable \
+#             zap-baseline.py \
+#             -t http://localhost:8080 \
+#             -J zap.json || true
+#           if [ -f zap-output/zap.json ]; then
+#             mv zap-output/zap.json "$REPORTS_DIR/zap.json"
+#           else
+#             echo '{}' > "$REPORTS_DIR/zap.json"
+#           fi
+  
+#       - name: DAST Stage Summary
+#         uses: ./.github/actions/stage-summary
+#         with:
+#           stage: DAST
+#           reports_dir: reports
+#           files: zap.json
+
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: dast-reports
+#           path: reports/*.json
+#           if-no-files-found: ignore
+
+# # ============================================================
+# # AGGREGATE
+# # ============================================================
+#   Aggregate-Scanning-Reports:
+#     runs-on: ubuntu-latest
+#     needs: [SAST-Scanning, Secrets-Scanning, SCA-Scanning, IAC-Scanning, Container-Scanning, DAST-Scanning]
+#     if: always()
+  
+#     # ➜ Expose outputs so later jobs (e.g., Severity-Gate / Agentic AI) can read them
+#     outputs:
+#       decision: ${{ steps.aggr.outputs.decision }}
+#       critical: ${{ steps.aggr.outputs.critical }}
+#       high:     ${{ steps.aggr.outputs.high }}
+#       medium:   ${{ steps.aggr.outputs.medium }}
+#       low:      ${{ steps.aggr.outputs.low }}
+  
+#     steps:
+#       # ➜ REQUIRED: make local actions (and your script) available
+#       - uses: actions/checkout@v4
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           path: collected-reports
+  
+#       - name: Collate JSON
+#         run: |
+#           mkdir -p final-reports
+#           find collected-reports -name "*.json" -exec cp {} final-reports/ \; || true
+#           echo "DEBUG: Aggregated files"
+#           ls -la final-reports || true
+  
+#       - name: Aggregate & Decide
+#         id: aggr
+#         uses: ./.github/actions/severity-aggregate
+#         with:
+#           reports_dir: final-reports
+#           output_dir: final-reports
+#           min_severity: ${{ env.MIN_SEVERITY }}
+      
+#       # Display Decision and Total before upload
+#       - name: Print decision and totals (debug)
+#         run: |
+#           echo "Decision: ${{steps.aggr.outputs.decision}}"     
+#           echo "Crtical: ${{steps.aggr.outputs.critical}}"
+#           echo "High: ${{steps.aggr.outputs.high}}"
+#           echo "Medium: ${{steps.aggr.outputs.medium}}"
+#           echo "low: ${{steps.aggr.outputs.low}}"
+      
+#       - name: Append decision to Job Summary
+#         run: |
+#           {
+#             echo "### Aggregate Decision"
+#             echo ""
+#             echo "- **Threshold (MIN_SEVERITY)**: \`${{ env.MIN_SEVERITY }}\`"
+#             echo "- **Decision**: \`${{ steps.aggr.outputs.decision }}\`"
+#             echo ""
+#             echo "| Severity | Count |"
+#             echo "|----------|------:|"
+#             echo "| CRITICAL | ${{ steps.aggr.outputs.critical }} |"
+#             echo "| HIGH     | ${{ steps.aggr.outputs.high }} |"
+#             echo "| MEDIUM   | ${{ steps.aggr.outputs.medium }} |"
+#             echo "| LOW      | ${{ steps.aggr.outputs.low }} |"
+#           } >> "$GITHUB_STEP_SUMMARY"
+
+#       - name: Show overall_summary.json
+#         run: |
+#           if command -v jq >/dev/null 2>&1; then
+#             jq . final-reports/overall_summary.json || cat final-reports/overall_summary.json
+#           else
+#             cat final-reports/overall_summary.json
+#           fi
+
+#       # (Optional) upload the overall summary for humans and downstream steps
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: overall-summary
+#           path: |
+#             final-reports/overall_summary.json
+#             final-reports/overall_summary.md
+  
+#       # (Optional) also publish the normalized set of all JSONs in one artifact
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: all-scan-reports
+#           path: final-reports/*.json
+
+# # ============================================================
+# # AI Analysis
+# # ============================================================
+#   AI-Security-Intelligence:
+#     runs-on: ubuntu-latest
+#     needs: Aggregate-Scanning-Reports
+#     if: always()
+  
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: all-scan-reports
+#           path: final-reports
+  
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: 3.12
+
+#       # 🔐 Fetch OpenAI API Key from Vault
+#       - name: Import Secrets from HashiCorp Vault
+#         id: vault
+#         uses: hashicorp/vault-action@v3
+#         with:
+#           url: ${{ secrets.VAULT_ADDR }}
+#           method: approle
+#           roleId: ${{ secrets.VAULT_ROLE_ID }}
+#           secretId: ${{ secrets.VAULT_SECRET_ID }}
+#           secrets: |
+#             secret/data/openai api_key | OPENAI_API_KEY          
+
+#       - name: Install dependencies
+#         run: pip install openai
+
+#       # ✅ Validate secret before running
+#       - name: Validate OpenAI Key
+#         run: |
+#           if [ -z "${OPENAI_API_KEY}" ]; then
+#             echo "❌ OPENAI_API_KEY missing"
+#             exit 1
+#           fi
+#           echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
+#         env:
+#           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+
+#       - name: Run AI Security Intelligence Agent
+#         run: python tools/agent/security_intelligence_agent.py
+#         env:
+#           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#           LLM_ENABLED: "true"
+#           MIN_SEVERITY: ${{ env.MIN_SEVERITY }}
+  
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: ai-security-intelligence
+#           path: agent_output/*
+
+
+# # ============================================================
+# # AI GATE
+# # ============================================================
+#   Severity-Gate:
+#     runs-on: ubuntu-latest
+#     needs: Aggregate-Scanning-Reports
+#     outputs:
+#       gate_failed: ${{ steps.set.outputs.gate_failed }}
+#     steps:
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: overall-summary
+#           path: final-report
+
+#       - name: Decide from Aggregate
+#         id: set
+#         run: |
+#           ls -la final-report/*
+#           cat final-report/overall_summary.json || true
+#           echo "Decision: ${{ needs.Aggregate-Scanning-Reports.outputs.decision }}"
+#           if [ "${{ needs.Aggregate-Scanning-Reports.outputs.decision }}" = "FAIL" ]; then
+#             echo "gate_failed=true" >> $GITHUB_OUTPUT
+#           else
+#             echo "gate_failed=false" >> $GITHUB_OUTPUT
+#           fi        
+
+# # ============================================================
+# #  Build the FAISS index (RAG)
+# # ============================================================
+#   Build-Repo-Index:
+#     runs-on: ubuntu-latest
+#     needs: [Aggregate-Scanning-Reports, Vault-Connection-Check]
+#     if: needs.Aggregate-Scanning-Reports.outputs.decision == 'FAIL'
+  
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       # ✅ Ensure correct Python version
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+  
+#       # 🔐 Fetch OpenAI API Key from Vault
+#       - name: Import Secrets from HashiCorp Vault
+#         id: vault
+#         uses: hashicorp/vault-action@v3
+#         with:
+#           url: ${{ secrets.VAULT_ADDR }}
+#           method: approle
+#           roleId: ${{ secrets.VAULT_ROLE_ID }}
+#           secretId: ${{ secrets.VAULT_SECRET_ID }}
+#           secrets: |
+#             secret/data/openai api_key | OPENAI_API_KEY
+  
+#       # ✅ Install dependencies (deterministic)
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install --no-cache-dir openai faiss-cpu pyyaml
+  
+#       # ✅ Validate secret before running
+#       - name: Validate OpenAI Key
+#         run: |
+#           if [ -z "${OPENAI_API_KEY}" ]; then
+#             echo "❌ OPENAI_API_KEY missing"
+#             exit 1
+#           fi
+#           echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
+#         env:
+#           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+  
+#       # ✅ Build index
+#       - name: Build FAISS index
+#         run: python tools/embeddings/build_index.py
+#         env:
+#           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+#           PYTHONPATH: tools
+  
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: rag-index
+#           path: agent_output/index
+
+# # ============================================================
+# #  Agentic AI (LangChain/RAG) Autofix
+# # ============================================================
+# # ============================================================
+# #  Agentic AI (LangChain/RAG) Autofix
+# # ============================================================
+#   Agentic-AI-Autofix:
+#     runs-on: ubuntu-latest
+#     needs: [Aggregate-Scanning-Reports, Build-Repo-Index, Vault-Connection-Check]
+#     if: needs.Aggregate-Scanning-Reports.outputs.decision == 'FAIL'
+#     env:
+#       RAG_DEBUG: "true"
+  
+#     steps:
+#       - uses: actions/checkout@v4
+  
+#       # ✅ Ensure correct Python
+#       - uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+  
+#       # ✅ Download FAISS index
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: rag-index
+#           path: agent_output/index
+  
+#       # ✅ Download aggregated scan reports
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: all-scan-reports
+#           path: final-reports
+  
+#       # 🔐 Fetch OpenAI API Key from Vault
+#       - name: Import Secrets from HashiCorp Vault
+#         id: vault
+#         uses: hashicorp/vault-action@v3
+#         with:
+#           url: ${{ secrets.VAULT_ADDR }}
+#           method: approle
+#           roleId: ${{ secrets.VAULT_ROLE_ID }}
+#           secretId: ${{ secrets.VAULT_SECRET_ID }}
+#           secrets: |
+#             secret/data/openai api_key | OPENAI_API_KEY
+  
+#       # ✅ Install dependencies
+#       - name: Install dependencies
+#         run: |
+#           python -m pip install --upgrade pip
+#           pip install --no-cache-dir openai faiss-cpu pyyaml
+  
+#       # ✅ Validate secret
+#       - name: Validate OpenAI Key
+#         run: |
+#           if [ -z "${OPENAI_API_KEY}" ]; then
+#             echo "❌ OPENAI_API_KEY missing"
+#             exit 1
+#           fi
+#           echo "OPENAI_API_KEY prefix: ${OPENAI_API_KEY:0:7}******"
+#         env:
+#           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+
+#       - name: Setup Java
+#         uses: actions/setup-java@v4
+#         with: 
+#           distribution: temurin
+#           java-version: ${{env.JAVA_VERSION}}
+#           cache: maven
+          
+#       - name: Build AST Engine
+#         run: |
+#           cd tools/java-ast-fixer
+#           mvn -B clean package
+#           ls -la target/    
+  
+#       # ✅ Run Agent
+#       - name: Run Agent
+#         run: python -m tools.agent.run_agent
+#         env:
+#           OPENAI_API_KEY: ${{ steps.vault.outputs.OPENAI_API_KEY }}
+#           PYTHONPATH: .
+#           RAG_DEBUG: "true"
+  
+#       - uses: actions/upload-artifact@v4
+#         with:
+#           name: ai-results
+#           path: agent_output/*
+#           if-no-files-found: ignore
+  
+#       # =====================================================
+#       # CREATE PR (only if branch metadata exists)
+#       # =====================================================
+#       - name: Create PR via API
+#         if: hashFiles('agent_output/agent_meta.json') != ''
+#         uses: actions/github-script@v7
+#         env:
+#           BASE_BRANCH: ${{ env.BASE_BRANCH }}
+#         with:
+#           script: |
+#             const fs = require('fs');
+#             const meta = JSON.parse(fs.readFileSync('agent_output/agent_meta.json', 'utf8'));
+#             const branch = meta.branch;
+  
+#             const { owner, repo } = context.repo;
+  
+#             // Check if PR already exists
+#             const existing = await github.rest.pulls.list({
+#               owner,
+#               repo,
+#               state: 'open',
+#               head: `${owner}:${branch}`
+#             });
+  
+#             if (existing.data.length > 0) {
+#               console.log("PR already exists:", existing.data[0].html_url);
+#               return;
+#             }
+  
+#             const pr = await github.rest.pulls.create({
+#               owner,
+#               repo,
+#               title: "Agentic AI Autofix",
+#               head: branch,
+#               base: process.env.BASE_BRANCH,
+#               body: "Automated security patch generated by Agentic AI."
+#             });
+  
+#             console.log("PR created:", pr.data.html_url);
+  
+#       # =====================================================
+#       # BUILD PR COMMENT BODY
+#       # =====================================================
+#       - name: Build PR comment body
+#         if: hashFiles('agent_output/agent_meta.json') != ''
+#         run: |
+#           {
+#             echo "### 🤖 Agentic AI — Autofix Summary"
+#             echo ""
+#             echo "- **Aggregate Decision**: \`${{ needs.Aggregate-Scanning-Reports.outputs.decision }}\`"
+#             echo ""
+#             if [ -f agent_output/agent_patch.diff ]; then
+#               echo "<details><summary>Generated Diff (first 200 lines)</summary>"
+#               echo
+#               head -n 200 agent_output/agent_patch.diff | sed 's/^/    /'
+#               echo
+#               echo "</details>"
+#             else
+#               echo "_No patch file found._"
+#             fi
+#           } > agent_output/pr_comment.md
+  
+#       # =====================================================
+#       # POST PR COMMENT
+#       # =====================================================
+#       - name: Post PR comment
+#         if: hashFiles('agent_output/agent_meta.json') != ''
+#         uses: actions/github-script@v7
+#         with:
+#           script: |
+#             const fs = require('fs');
+#             const meta = JSON.parse(fs.readFileSync('agent_output/agent_meta.json', 'utf8'));
+#             const branch = meta.branch;
+#             const body = fs.readFileSync('agent_output/pr_comment.md', 'utf8');
+  
+#             const { owner, repo } = context.repo;
+  
+#             const { data: prs } = await github.rest.pulls.list({
+#               owner,
+#               repo,
+#               state: 'open',
+#               head: `${owner}:${branch}`
+#             });
+  
+#             if (!prs.length) {
+#               console.log("No open PR found for branch:", branch);
+#               return;
+#             }
+  
+#             await github.rest.issues.createComment({
+#               owner,
+#               repo,
+#               issue_number: prs[0].number,
+#               body
+#             });
+  
+#             console.log("Comment posted to PR:", prs[0].html_url);
