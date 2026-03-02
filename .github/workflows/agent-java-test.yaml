@@ -1,4 +1,4 @@
-name: DevSecOps Agentic AI Pipeline (BugBuster)
+name: DevSecOps Agentic AI Pipeline (BugBuster main pipeline)
 
 on:
   push:
