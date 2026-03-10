@@ -16,16 +16,66 @@ def query_for(item: dict) -> str:
 # Helpers
 # ============================================================
 
-def _resolve_full_path(path: str) -> str:
-    # normalize: remove leading slash so absolute paths become relative
-    normalized = path.lstrip("/")
-    p = pathlib.Path(normalized)
-    if p.exists():
-        return str(p)
-    prefixed = pathlib.Path("java-pilot-app") / p
-    if prefixed.exists():
-        return str(prefixed)
-    return ""
+# def _resolve_full_path(path: str) -> str:
+#     # normalize: remove leading slash so absolute paths become relative
+#     normalized = path.lstrip("/")
+#     p = pathlib.Path(normalized)
+#     if p.exists():
+#         return str(p)
+#     prefixed = pathlib.Path("java-pilot-app") / p
+#     if prefixed.exists():
+#         return str(prefixed)
+#     return ""
+
+
+import os
+import pathlib
+from typing import Optional
+
+REPO_ROOT = pathlib.Path(os.getenv("GITHUB_WORKSPACE", ".")).resolve()
+
+def _resolve_full_path(path: str) -> Optional[str]:
+    """
+    Resolve incoming path into a file inside the repository.
+    Returns absolute string path if found, else None.
+    """
+    if not path:
+        return None
+
+    # Normalize: drop leading slash and collapse redundant slashes
+    normalized = pathlib.Path(path.lstrip("/"))
+
+    # Candidate 1: repo root / normalized (e.g., repo/s3_insecure.tf)
+    cand1 = (REPO_ROOT / normalized).resolve()
+    try:
+        cand1.relative_to(REPO_ROOT)
+    except Exception:
+        cand1 = None
+
+    if cand1 and cand1.exists():
+        return str(cand1)
+
+    # Candidate 2: repo root / java-pilot-app / terraform / <name>
+    cand2 = (REPO_ROOT / "java-pilot-app" / "terraform" / normalized.name).resolve()
+    try:
+        cand2.relative_to(REPO_ROOT)
+    except Exception:
+        cand2 = None
+
+    if cand2 and cand2.exists():
+        return str(cand2)
+
+    # Candidate 3: repo root / terraform / <name>
+    cand3 = (REPO_ROOT / "terraform" / normalized.name).resolve()
+    try:
+        cand3.relative_to(REPO_ROOT)
+    except Exception:
+        cand3 = None
+
+    if cand3 and cand3.exists():
+        return str(cand3)
+
+    return None
 
 
 
