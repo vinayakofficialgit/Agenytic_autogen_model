@@ -24,7 +24,7 @@ env:
   LLM_EXPLAIN: "0"
   LLM_MODE: "openai"
   BASE_BRANCH: "feature/devsecops-agent-bgbstr"
-  SEVERITY_MODE: "threshold"
+  SEVERITY_MODE: "threshold"       #exact
 
 jobs:
 

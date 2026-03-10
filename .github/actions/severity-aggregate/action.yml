@@ -8,7 +8,8 @@ inputs:
     description: "Output directory for overall_summary.(json|md)"
     required: true
   min_severity:
-    description: "Threshold: CRITICAL|HIGH|MEDIUM|LOW"
+    description: "
+    : CRITICAL|HIGH|MEDIUM|LOW"
     required: true
 outputs:
   decision:
