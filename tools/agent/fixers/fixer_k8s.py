@@ -19,18 +19,6 @@ def query_for(item: dict) -> str:
 # Helpers
 # ============================================================
 
-# def _resolve_full_path(path: str) -> str:
-#     p = pathlib.Path(path)
-
-#     if p.exists():
-#         return str(p)
-
-#     prefixed = pathlib.Path("java-pilot-app") / p
-#     if prefixed.exists():
-#         return str(prefixed)
-
-#     return ""
-
 
 def _resolve_full_path(path: str) -> str:
     # normalize: remove leading slash so absolute paths become relative
@@ -42,6 +30,8 @@ def _resolve_full_path(path: str) -> str:
     if prefixed.exists():
         return str(prefixed)
     return ""
+
+
 
 
 
